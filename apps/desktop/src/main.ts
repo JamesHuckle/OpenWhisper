@@ -1,64 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
+import { LogicalSize } from "@tauri-apps/api/dpi";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { register } from "@tauri-apps/plugin-global-shortcut";
 import "./styles.css";
 
-type ModelsResponse = { models: string[] };
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 type TranscriptEvent = { type: "partial" | "final"; text: string };
 type PollResponse = { events: TranscriptEvent[]; done?: boolean };
-type AudioDeviceOption = { id: string; label: string };
 type AppSettings = { openaiApiKey: string };
 
-const app = document.querySelector<HTMLDivElement>("#app");
-if (!app) {
-  throw new Error("App root not found");
-}
+type WidgetState = "idle" | "recording" | "transcribing" | "error";
 
-app.innerHTML = `
-  <h1>OpenWhisper</h1>
-  <div class="card">
-    <h3>OpenAI API key</h3>
-    <p class="muted">Paste your key once. It is stored locally on this device.</p>
-    <div class="settings-row">
-      <input id="openai-key" class="text-input" type="password" placeholder="sk-..." autocomplete="off" />
-      <button id="btn-save-key">Save key</button>
-    </div>
-    <pre id="settings-output">Key not configured.</pre>
-  </div>
-  <div class="card">
-    <h3>Worker health</h3>
-    <button id="btn-ping">Ping worker</button>
-    <button id="btn-models" class="secondary">List models</button>
-    <pre id="models-output">No data yet.</pre>
-  </div>
-  <div class="card">
-    <h3>Session smoke test</h3>
-    <button id="btn-start">Start session</button>
-    <button id="btn-record" class="secondary">Start mic</button>
-    <button id="btn-finalize" class="secondary">Stop + transcribe</button>
-    <button id="btn-stop" class="secondary">Stop session</button>
-    <div class="mic-controls">
-      <label for="mic-device">Mic</label>
-      <select id="mic-device" class="mic-select">
-        <option value="default">Default microphone</option>
-      </select>
-    </div>
-    <pre id="session-output">No session started.</pre>
-  </div>
-  <div class="card">
-    <h3>Live transcript</h3>
-    <pre id="transcript-output">No transcript yet.</pre>
-  </div>
-`;
-
-const modelsOutput = document.querySelector<HTMLPreElement>("#models-output");
-const sessionOutput = document.querySelector<HTMLPreElement>("#session-output");
-const transcriptOutput = document.querySelector<HTMLPreElement>("#transcript-output");
-const settingsOutput = document.querySelector<HTMLPreElement>("#settings-output");
-const apiKeyInput = document.querySelector<HTMLInputElement>("#openai-key");
-
-if (!modelsOutput || !sessionOutput || !transcriptOutput || !settingsOutput || !apiKeyInput) {
-  throw new Error("Missing output element");
-}
-
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let state: WidgetState = "idle";
 let currentSessionId: string | null = null;
 let pollTimer: number | null = null;
 let finalTranscript = "";
@@ -66,334 +25,433 @@ let mediaRecorder: MediaRecorder | null = null;
 let recordingMimeType = "audio/webm";
 let isRecording = false;
 const pendingChunkUploads = new Set<Promise<void>>();
-let availableMicDevices: AudioDeviceOption[] = [];
 
-function normalizeMicError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
-  if (lower.includes("notallowederror") || lower.includes("permission denied")) {
-    return {
-      error: "Microphone permission denied or blocked by platform",
-      details:
-        "Allow microphone access for this app/window. On WSL2/WSLg this can also mean platform-level mic bridging is unavailable.",
-    };
-  }
-  if (lower.includes("notfounderror")) {
-    return {
-      error: "No microphone input device found",
-      details: "Connect a microphone and ensure the OS can see it.",
-    };
-  }
-  if (lower.includes("notreadableerror")) {
-    return {
-      error: "Microphone device is busy or unavailable",
-      details: "Close other apps using the mic and retry.",
-    };
-  }
-  return { error: message };
-}
+let audioContext: AudioContext | null = null;
+let analyser: AnalyserNode | null = null;
+let micStream: MediaStream | null = null;
+let volumeRafId: number | null = null;
 
-function getMicSelect() {
-  return document.querySelector<HTMLSelectElement>("#mic-device");
-}
+const WIDGET_SIZE = 80;
+const MENU_WIDTH = 340;
+const MENU_HEIGHT = 420;
 
-function selectedMicDeviceId() {
-  const select = getMicSelect();
-  return select?.value || "default";
-}
+// ---------------------------------------------------------------------------
+// DOM
+// ---------------------------------------------------------------------------
+const app = document.getElementById("app")!;
+app.innerHTML = `
+  <div id="widget" data-tauri-drag-region>
+    <svg id="mic-ring" viewBox="0 0 80 80" class="mic-ring">
+      <circle cx="40" cy="40" r="36" class="ring-bg" />
+      <circle cx="40" cy="40" r="36" class="ring-vol" />
+    </svg>
 
-function selectedMicLabel() {
-  const id = selectedMicDeviceId();
-  if (id === "default") {
-    return "Default microphone";
-  }
-  return availableMicDevices.find((device) => device.id === id)?.label ?? "Selected microphone";
-}
+    <button id="btn-mic" class="mic-btn" title="Click to record (Ctrl+Shift+Space)">
+      <svg class="icon-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="1" width="6" height="12" rx="3" />
+        <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+        <line x1="12" y1="19" x2="12" y2="23" />
+        <line x1="8" y1="23" x2="16" y2="23" />
+      </svg>
+      <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor">
+        <rect x="6" y="6" width="12" height="12" rx="2" />
+      </svg>
+      <svg class="icon-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round" />
+      </svg>
+    </button>
 
-function renderMicDevices() {
-  const select = getMicSelect();
-  if (!select) {
-    return;
-  }
-  const previous = select.value;
-  const options: AudioDeviceOption[] = [
-    { id: "default", label: "Default microphone" },
-    ...availableMicDevices,
-  ];
-  select.innerHTML = "";
-  for (const option of options) {
-    const el = document.createElement("option");
-    el.value = option.id;
-    el.textContent = option.label;
-    select.appendChild(el);
-  }
-  if (options.some((option) => option.id === previous)) {
-    select.value = previous;
-  }
-}
+    <button id="btn-dropdown" class="dropdown-btn" title="Select microphone">
+      <svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 4l4 4 4-4z"/></svg>
+    </button>
 
-async function loadMicDevices() {
+    <div id="mic-menu" class="mic-menu hidden">
+      <div class="menu-section">Microphone</div>
+      <div id="mic-list"></div>
+      <div class="menu-divider"></div>
+      <div class="menu-section">OpenAI API Key</div>
+      <div class="menu-item" id="menu-key-status">Not configured</div>
+      <input id="menu-key-input" class="menu-key-input" type="password" placeholder="sk-..." autocomplete="off" />
+      <button id="menu-key-save" class="menu-key-save">Save</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+`;
+
+const widget = document.getElementById("widget")!;
+const btnMic = document.getElementById("btn-mic") as HTMLButtonElement;
+const btnDropdown = document.getElementById("btn-dropdown") as HTMLButtonElement;
+const micMenu = document.getElementById("mic-menu")!;
+const micList = document.getElementById("mic-list")!;
+const toast = document.getElementById("toast")!;
+const ringVol = widget.querySelector<SVGCircleElement>(".ring-vol")!;
+const menuKeyStatus = document.getElementById("menu-key-status")!;
+const menuKeyInput = document.getElementById("menu-key-input") as HTMLInputElement;
+const menuKeySave = document.getElementById("menu-key-save") as HTMLButtonElement;
+
+const RING_CIRCUMFERENCE = 2 * Math.PI * 36;
+ringVol.style.strokeDasharray = `${RING_CIRCUMFERENCE}`;
+ringVol.style.strokeDashoffset = `${RING_CIRCUMFERENCE}`;
+
+// ---------------------------------------------------------------------------
+// Mic devices
+// ---------------------------------------------------------------------------
+type MicDevice = { id: string; label: string };
+let micDevices: MicDevice[] = [];
+let selectedMicId = "default";
+
+async function refreshMicDevices() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((t) => t.stop());
+  } catch {
+    // permission denied — will show empty list
+  }
   const devices = await navigator.mediaDevices.enumerateDevices();
-  const audioInputs = devices.filter((device) => device.kind === "audioinput");
-  availableMicDevices = audioInputs.map((device, index) => ({
-    id: device.deviceId,
-    label: device.label || `Microphone ${index + 1}`,
-  }));
-  renderMicDevices();
+  micDevices = devices
+    .filter((d) => d.kind === "audioinput")
+    .map((d, i) => ({ id: d.deviceId, label: d.label || `Microphone ${i + 1}` }));
+  renderMicList();
 }
 
-async function ensureMicPermissionAndDevices() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  for (const track of stream.getTracks()) {
-    track.stop();
+function renderMicList() {
+  micList.innerHTML = "";
+  const all: MicDevice[] = [{ id: "default", label: "System default" }, ...micDevices];
+  for (const dev of all) {
+    const el = document.createElement("div");
+    el.className = `menu-item${dev.id === selectedMicId ? " selected" : ""}`;
+    el.textContent = dev.label;
+    el.addEventListener("click", () => {
+      selectedMicId = dev.id;
+      renderMicList();
+      closeMenu();
+    });
+    micList.appendChild(el);
   }
-  await loadMicDevices();
 }
 
-async function setModelsOutput(value: unknown) {
-  modelsOutput.textContent = JSON.stringify(value, null, 2);
+// ---------------------------------------------------------------------------
+// Menu
+// ---------------------------------------------------------------------------
+function toggleMenu() {
+  micMenu.classList.toggle("hidden");
+  if (!micMenu.classList.contains("hidden")) {
+    resizeForMenu(true);
+  } else {
+    resizeForMenu(false);
+  }
 }
 
-async function setSessionOutput(value: unknown) {
-  sessionOutput.textContent = JSON.stringify(value, null, 2);
+function closeMenu() {
+  micMenu.classList.add("hidden");
+  resizeForMenu(false);
 }
 
-async function setTranscriptOutput(value: string) {
-  transcriptOutput.textContent = value;
+async function resizeForMenu(open: boolean) {
+  const win = getCurrentWindow();
+  if (open) {
+    await win.setSize(new LogicalSize(MENU_WIDTH, MENU_HEIGHT));
+  } else {
+    await win.setSize(new LogicalSize(WIDGET_SIZE, WIDGET_SIZE));
+  }
 }
 
-async function setSettingsOutput(value: unknown) {
-  settingsOutput.textContent = JSON.stringify(value, null, 2);
+btnDropdown.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleMenu();
+});
+
+document.addEventListener("click", (e) => {
+  if (!micMenu.contains(e.target as Node) && e.target !== btnDropdown) {
+    if (!micMenu.classList.contains("hidden")) closeMenu();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Toast
+// ---------------------------------------------------------------------------
+let toastTimer: number | null = null;
+function showToast(msg: string, durationMs = 3000) {
+  toast.textContent = msg;
+  toast.classList.remove("hidden");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toast.classList.add("hidden"), durationMs);
 }
 
-async function loadAppSettings() {
-  const settings = await invoke<AppSettings>("app_get_settings");
-  apiKeyInput.value = settings.openaiApiKey || "";
-  await setSettingsOutput({
-    hasOpenAiApiKey: Boolean(settings.openaiApiKey),
-    status: settings.openaiApiKey ? "configured" : "missing",
-  });
+// ---------------------------------------------------------------------------
+// Visual state
+// ---------------------------------------------------------------------------
+function setState(next: WidgetState) {
+  state = next;
+  widget.dataset.state = next;
+}
+
+// ---------------------------------------------------------------------------
+// Volume ring animation
+// ---------------------------------------------------------------------------
+function startVolumeLoop() {
+  if (!analyser) return;
+  const buf = new Uint8Array(analyser.fftSize);
+  const tick = () => {
+    analyser!.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = (buf[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / buf.length);
+    const level = Math.min(rms / 0.35, 1);
+    const offset = RING_CIRCUMFERENCE * (1 - level);
+    ringVol.style.strokeDashoffset = `${offset}`;
+    volumeRafId = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function stopVolumeLoop() {
+  if (volumeRafId !== null) {
+    cancelAnimationFrame(volumeRafId);
+    volumeRafId = null;
+  }
+  ringVol.style.strokeDashoffset = `${RING_CIRCUMFERENCE}`;
+}
+
+// ---------------------------------------------------------------------------
+// Base64 helper
+// ---------------------------------------------------------------------------
+function toBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+// ---------------------------------------------------------------------------
+// Recording
+// ---------------------------------------------------------------------------
+async function startRecording() {
+  if (state !== "idle") return;
+  setState("recording");
+
+  try {
+    const settings = await invoke<AppSettings>("app_get_settings");
+    if (!settings.openaiApiKey) {
+      showToast("Set your OpenAI API key first (click arrow)");
+      setState("idle");
+      return;
+    }
+
+    const constraints: MediaStreamConstraints = {
+      audio: selectedMicId === "default" ? true : { deviceId: { exact: selectedMicId } },
+    };
+    micStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    audioContext = new AudioContext();
+    const source = audioContext.createMediaStreamSource(micStream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    startVolumeLoop();
+
+    const result = await invoke<{ session_id: string }>("worker_start_session", { profileId: "default" });
+    currentSessionId = result.session_id;
+    finalTranscript = "";
+    startPolling();
+
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+    recordingMimeType = "audio/webm";
+    mediaRecorder = new MediaRecorder(micStream, { mimeType });
+
+    mediaRecorder.ondataavailable = async (e: BlobEvent) => {
+      if (!currentSessionId || e.data.size === 0) return;
+      const p = (async () => {
+        const chunkBase64 = toBase64(await e.data.arrayBuffer());
+        await invoke("worker_append_audio_chunk", { sessionId: currentSessionId, chunkBase64 });
+      })();
+      pendingChunkUploads.add(p);
+      p.finally(() => pendingChunkUploads.delete(p));
+    };
+
+    mediaRecorder.onstop = () => {
+      micStream?.getTracks().forEach((t) => t.stop());
+      isRecording = false;
+    };
+
+    mediaRecorder.start(800);
+    isRecording = true;
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : String(err));
+    cleanup();
+    setState("idle");
+  }
+}
+
+async function stopRecording() {
+  if (state !== "recording" || !currentSessionId) return;
+  setState("transcribing");
+  stopVolumeLoop();
+
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    await new Promise<void>((resolve) => {
+      mediaRecorder!.addEventListener("stop", () => resolve(), { once: true });
+      mediaRecorder!.stop();
+    });
+  }
+
+  if (audioContext) {
+    audioContext.close();
+    audioContext = null;
+    analyser = null;
+  }
+
+  await Promise.all(Array.from(pendingChunkUploads));
+
+  try {
+    await invoke("worker_finalize_session_audio", {
+      sessionId: currentSessionId,
+      mimeType: recordingMimeType,
+    });
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : String(err));
+  }
+}
+
+function cleanup() {
+  stopVolumeLoop();
+  stopPolling();
+  if (audioContext) {
+    audioContext.close();
+    audioContext = null;
+    analyser = null;
+  }
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+  }
+  micStream?.getTracks().forEach((t) => t.stop());
+  mediaRecorder = null;
+  micStream = null;
+  currentSessionId = null;
+}
+
+// ---------------------------------------------------------------------------
+// Polling
+// ---------------------------------------------------------------------------
+function startPolling() {
+  stopPolling();
+  pollTimer = window.setInterval(() => void pollOnce(), 350);
 }
 
 function stopPolling() {
   if (pollTimer !== null) {
-    window.clearInterval(pollTimer);
+    clearInterval(pollTimer);
     pollTimer = null;
   }
 }
 
 async function pollOnce() {
-  if (!currentSessionId) {
-    return;
-  }
-  const response = await invoke<PollResponse>("worker_poll_session_events", { sessionId: currentSessionId });
-  const events = response.events ?? [];
-  for (const event of events) {
-    if (event.type === "partial") {
-      await setTranscriptOutput(`${finalTranscript}\n${event.text}`.trim());
+  if (!currentSessionId) return;
+  try {
+    const resp = await invoke<PollResponse>("worker_poll_session_events", { sessionId: currentSessionId });
+    for (const ev of resp.events ?? []) {
+      if (ev.type === "final") {
+        finalTranscript = `${finalTranscript} ${ev.text}`.trim();
+      }
     }
-    if (event.type === "final") {
-      finalTranscript = `${finalTranscript} ${event.text}`.trim();
-      await setTranscriptOutput(finalTranscript);
+    if (resp.done) {
+      stopPolling();
+      if (finalTranscript) {
+        await invoke("paste_to_target", { text: finalTranscript });
+        showToast("Transcribed and pasted", 2000);
+      }
+      cleanup();
+      setState("idle");
     }
-  }
-  if (response.done) {
-    stopPolling();
+  } catch {
+    // transient poll errors are non-fatal
   }
 }
 
-function startPolling() {
-  stopPolling();
-  pollTimer = window.setInterval(() => {
-    void pollOnce();
-  }, 350);
+// ---------------------------------------------------------------------------
+// Toggle
+// ---------------------------------------------------------------------------
+async function toggleRecording() {
+  if (state === "idle") {
+    await startRecording();
+  } else if (state === "recording") {
+    await stopRecording();
+  }
 }
 
-function toBase64(arrayBuffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(arrayBuffer);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const slice = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode(...slice);
+btnMic.addEventListener("click", (e) => {
+  e.stopPropagation();
+  void toggleRecording();
+});
+
+// ---------------------------------------------------------------------------
+// Settings (API key)
+// ---------------------------------------------------------------------------
+async function loadSettings() {
+  try {
+    const s = await invoke<AppSettings>("app_get_settings");
+    menuKeyInput.value = s.openaiApiKey || "";
+    menuKeyStatus.textContent = s.openaiApiKey ? "Key configured" : "Not configured";
+    menuKeyStatus.className = `menu-item ${s.openaiApiKey ? "key-ok" : "key-missing"}`;
+  } catch {
+    menuKeyStatus.textContent = "Not configured";
   }
-  return btoa(binary);
 }
 
-async function startMicCapture() {
-  if (!currentSessionId) {
-    await setSessionOutput({ error: "Start a session first" });
-    return;
+menuKeySave.addEventListener("click", async () => {
+  const key = menuKeyInput.value.trim();
+  try {
+    await invoke<AppSettings>("app_save_settings", { openaiApiKey: key });
+    menuKeyStatus.textContent = key ? "Key saved" : "Key cleared";
+    menuKeyStatus.className = `menu-item ${key ? "key-ok" : "key-missing"}`;
+    showToast(key ? "API key saved" : "API key cleared");
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : String(err));
   }
-  if (isRecording) {
-    await setSessionOutput({ info: "Already recording" });
-    return;
-  }
+});
 
-  await ensureMicPermissionAndDevices();
-  const requestedDeviceId = selectedMicDeviceId();
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio:
-      requestedDeviceId === "default"
-        ? true
-        : {
-            deviceId: { exact: requestedDeviceId },
-          },
-  });
-  const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-    ? "audio/webm;codecs=opus"
-    : "audio/webm";
-  recordingMimeType = "audio/webm";
-  mediaRecorder = new MediaRecorder(stream, { mimeType });
-
-  mediaRecorder.ondataavailable = async (event: BlobEvent) => {
-    if (!currentSessionId || event.data.size === 0) {
-      return;
-    }
-    const uploadPromise = (async () => {
-      const buffer = await event.data.arrayBuffer();
-      const chunkBase64 = toBase64(buffer);
-      await invoke("worker_append_audio_chunk", {
-        sessionId: currentSessionId,
-        chunkBase64,
-      });
-    })();
-    pendingChunkUploads.add(uploadPromise);
-    await uploadPromise.finally(() => pendingChunkUploads.delete(uploadPromise));
-  };
-
-  mediaRecorder.onstop = () => {
-    for (const track of stream.getTracks()) {
-      track.stop();
-    }
-    isRecording = false;
-  };
-
-  mediaRecorder.start(800);
-  isRecording = true;
-  await setSessionOutput({
-    status: "recording",
-    session_id: currentSessionId,
-    microphone: selectedMicLabel(),
-  });
-}
-
-async function stopMicAndFinalize() {
-  if (!currentSessionId) {
-    await setSessionOutput({ error: "No active session" });
-    return;
-  }
-  if (!mediaRecorder) {
-    await setSessionOutput({ error: "Start mic before transcribing" });
-    return;
-  }
-  if (mediaRecorder.state !== "inactive") {
-    await new Promise<void>((resolve) => {
-      mediaRecorder?.addEventListener(
-        "stop",
-        () => {
-          resolve();
-        },
-        { once: true },
-      );
-      mediaRecorder?.stop();
+// ---------------------------------------------------------------------------
+// Global shortcut: Ctrl+Shift+Space
+// ---------------------------------------------------------------------------
+async function registerShortcut() {
+  const win = getCurrentWindow();
+  try {
+    await register("Control+Shift+Space", (event) => {
+      if (event.state === "Pressed") {
+        void invoke("save_target_window").then(async () => {
+          await win.show();
+          await win.setFocus();
+          await toggleRecording();
+        });
+      }
     });
+  } catch (err) {
+    console.warn("Failed to register Ctrl+Shift+Space shortcut:", err);
   }
-  await Promise.all(Array.from(pendingChunkUploads));
-  const result = await invoke("worker_finalize_session_audio", {
-    sessionId: currentSessionId,
-    mimeType: recordingMimeType,
-  });
-  await setSessionOutput({ status: "finalized", result });
 }
 
-document.querySelector<HTMLButtonElement>("#btn-ping")?.addEventListener("click", async () => {
-  try {
-    const result = await invoke("worker_ping");
-    await setModelsOutput(result);
-  } catch (error) {
-    await setModelsOutput({ error: String(error) });
-  }
-});
+// ---------------------------------------------------------------------------
+// Tray: listen for toggle-recording emitted by the Rust tray menu
+// ---------------------------------------------------------------------------
+void listen("toggle-recording", () => void toggleRecording());
 
-document.querySelector<HTMLButtonElement>("#btn-models")?.addEventListener("click", async () => {
-  try {
-    const result = await invoke<ModelsResponse>("worker_list_models");
-    await setModelsOutput(result);
-  } catch (error) {
-    await setModelsOutput({ error: String(error) });
-  }
-});
-
-document.querySelector<HTMLButtonElement>("#btn-start")?.addEventListener("click", async () => {
-  try {
-    if (!apiKeyInput.value.trim()) {
-      await setSessionOutput({ error: "Set your OPENAI_API_KEY first" });
-      return;
-    }
-    const result = await invoke<{ session_id: string }>("worker_start_session", { profileId: "default" });
-    currentSessionId = result.session_id;
-    finalTranscript = "";
-    await setTranscriptOutput("Session started. Listening...");
-    await setSessionOutput({ status: "started", session_id: currentSessionId });
-    startPolling();
-  } catch (error) {
-    await setSessionOutput({ error: String(error) });
-  }
-});
-
-document.querySelector<HTMLButtonElement>("#btn-record")?.addEventListener("click", async () => {
-  try {
-    await startMicCapture();
-  } catch (error) {
-    await setSessionOutput(normalizeMicError(error));
-  }
-});
-
-document.querySelector<HTMLButtonElement>("#btn-finalize")?.addEventListener("click", async () => {
-  try {
-    await stopMicAndFinalize();
-  } catch (error) {
-    await setSessionOutput({ error: String(error) });
-  }
-});
-
-document.querySelector<HTMLButtonElement>("#btn-stop")?.addEventListener("click", async () => {
-  if (!currentSessionId) {
-    await setSessionOutput({ error: "No active session" });
-    return;
-  }
-  if (mediaRecorder && isRecording) {
-    mediaRecorder.stop();
-  }
-  try {
-    const result = await invoke("worker_stop_session", { sessionId: currentSessionId });
-    await setSessionOutput(result);
-    currentSessionId = null;
-    stopPolling();
-  } catch (error) {
-    await setSessionOutput({ error: String(error) });
-  }
-});
-
-document.querySelector<HTMLButtonElement>("#btn-save-key")?.addEventListener("click", async () => {
-  try {
-    const openaiApiKey = apiKeyInput.value.trim();
-    await invoke<AppSettings>("app_save_settings", { openaiApiKey });
-    await setSettingsOutput({
-      hasOpenAiApiKey: Boolean(openaiApiKey),
-      status: openaiApiKey ? "saved" : "cleared",
-    });
-  } catch (error) {
-    await setSettingsOutput({ error: String(error) });
-  }
-});
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+setState("idle");
+void loadSettings();
+void refreshMicDevices();
+void registerShortcut();
 
 if (navigator.mediaDevices?.addEventListener) {
-  navigator.mediaDevices.addEventListener("devicechange", () => {
-    void loadMicDevices();
-  });
+  navigator.mediaDevices.addEventListener("devicechange", () => void refreshMicDevices());
 }
-void loadAppSettings();
-void loadMicDevices();
-

@@ -6,9 +6,97 @@ use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, State,
+};
 use tokio::sync::Mutex;
 use worker_client::WorkerClient;
+
+// ---------------------------------------------------------------------------
+// Platform: text insertion via clipboard + simulated Ctrl+V
+// ---------------------------------------------------------------------------
+#[cfg(target_os = "windows")]
+mod text_inserter {
+    use std::sync::atomic::{AtomicIsize, Ordering};
+
+    static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
+
+    const INPUT_KEYBOARD: u32 = 1;
+    const KEYEVENTF_KEYUP: u32 = 0x0002;
+    const VK_CONTROL: u16 = 0x11;
+    const VK_V: u16 = 0x56;
+
+    #[repr(C)]
+    struct KbdInput {
+        input_type: u32,
+        _pad0: u32,
+        w_vk: u16,
+        w_scan: u16,
+        dw_flags: u32,
+        time: u32,
+        _pad1: u32,
+        dw_extra_info: usize,
+        _union_pad: [u8; 8],
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SendInput(c_inputs: u32, p_inputs: *const KbdInput, cb_size: i32) -> u32;
+        fn GetForegroundWindow() -> isize;
+        fn SetForegroundWindow(h_wnd: isize) -> i32;
+        fn GetWindowThreadProcessId(h_wnd: isize, lp_process_id: *mut u32) -> u32;
+    }
+
+    fn is_own_process(hwnd: isize) -> bool {
+        let mut pid: u32 = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        pid == std::process::id()
+    }
+
+    /// Snapshot the current foreground window, ignoring our own process.
+    /// Called on a 150 ms cadence from a background thread AND as a
+    /// one-shot from the global-shortcut handler for extra precision.
+    pub fn save_foreground() {
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd != 0 && !is_own_process(hwnd) {
+            TARGET_HWND.store(hwnd, Ordering::Relaxed);
+        }
+    }
+
+    pub fn restore_and_paste() {
+        let hwnd = TARGET_HWND.load(Ordering::Relaxed);
+        if hwnd != 0 {
+            unsafe { SetForegroundWindow(hwnd) };
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        unsafe {
+            let size = std::mem::size_of::<KbdInput>() as i32;
+            let inputs = [
+                kbd(VK_CONTROL, 0),
+                kbd(VK_V, 0),
+                kbd(VK_V, KEYEVENTF_KEYUP),
+                kbd(VK_CONTROL, KEYEVENTF_KEYUP),
+            ];
+            SendInput(4, inputs.as_ptr(), size);
+        }
+    }
+
+    fn kbd(vk: u16, flags: u32) -> KbdInput {
+        KbdInput {
+            input_type: INPUT_KEYBOARD,
+            _pad0: 0,
+            w_vk: vk,
+            w_scan: 0,
+            dw_flags: flags,
+            time: 0,
+            _pad1: 0,
+            dw_extra_info: 0,
+            _union_pad: [0; 8],
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -204,6 +292,25 @@ async fn worker_finalize_session_audio(
     .await
 }
 
+#[tauri::command]
+async fn save_target_window() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    text_inserter::save_foreground();
+    Ok(())
+}
+
+#[tauri::command]
+async fn paste_to_target(text: String) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.set_text(&text))
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    text_inserter::restore_and_paste();
+
+    Ok(())
+}
+
 fn settings_path(app_handle: &AppHandle) -> Result<PathBuf> {
     let mut dir = app_handle
         .path()
@@ -233,6 +340,106 @@ fn save_settings(app_handle: &AppHandle, settings: &AppSettings) -> Result<()> {
     Ok(())
 }
 
+fn make_tray_icon() -> tauri::image::Image<'static> {
+    const S: u32 = 32;
+    let mut rgba = vec![0u8; (S * S * 4) as usize];
+    let center = S as f32 / 2.0;
+    let radius = center - 2.0;
+
+    for y in 0..S {
+        for x in 0..S {
+            let dx = x as f32 + 0.5 - center;
+            let dy = y as f32 + 0.5 - center;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let i = ((y * S + x) * 4) as usize;
+
+            let alpha = if dist <= radius - 0.7 {
+                255.0
+            } else if dist <= radius + 0.7 {
+                ((radius + 0.7 - dist) / 1.4 * 255.0).clamp(0.0, 255.0)
+            } else {
+                0.0
+            };
+
+            if alpha > 0.0 {
+                rgba[i] = 0x22;
+                rgba[i + 1] = 0xc5;
+                rgba[i + 2] = 0x5e;
+                rgba[i + 3] = alpha as u8;
+            }
+        }
+    }
+
+    let leaked: &'static [u8] = Box::leak(rgba.into_boxed_slice());
+    tauri::image::Image::new(leaked, S, S)
+}
+
+fn setup_tray(app: &tauri::App) -> Result<()> {
+    let show_i = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)
+        .map_err(|e| anyhow!("{e}"))?;
+    let record_i =
+        MenuItem::with_id(app, "record", "Toggle Recording  (Ctrl+Shift+Space)", true, None::<&str>)
+            .map_err(|e| anyhow!("{e}"))?;
+    let sep =
+        PredefinedMenuItem::separator(app).map_err(|e| anyhow!("{e}"))?;
+    let quit_i = MenuItem::with_id(app, "quit", "Quit OpenWhisper", true, None::<&str>)
+        .map_err(|e| anyhow!("{e}"))?;
+
+    let menu = Menu::with_items(app, &[&show_i, &record_i, &sep, &quit_i])
+        .map_err(|e| anyhow!("{e}"))?;
+
+    TrayIconBuilder::new()
+        .icon(make_tray_icon())
+        .tooltip("OpenWhisper – Ctrl+Shift+Space to dictate")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    if w.is_visible().unwrap_or(false) {
+                        let _ = w.hide();
+                    } else {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                }
+            }
+            "record" => {
+                #[cfg(target_os = "windows")]
+                text_inserter::save_foreground();
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+                let _ = app.emit("toggle-recording", ());
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(w) = app.get_webview_window("main") {
+                    if w.is_visible().unwrap_or(false) {
+                        let _ = w.hide();
+                    } else {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                }
+            }
+        })
+        .build(app)
+        .map_err(|e| anyhow!("{e}"))?;
+
+    Ok(())
+}
+
 pub fn run() {
     let app_state = Arc::new(AppState {
         worker: Mutex::new(None),
@@ -240,6 +447,7 @@ pub fn run() {
     });
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(app_state)
         .setup(|app| {
             let loaded = load_settings(app.handle()).unwrap_or_default();
@@ -249,6 +457,17 @@ pub fn run() {
                 .lock()
                 .map_err(|_| anyhow!("Failed to lock settings during setup"))?;
             *settings = loaded;
+
+            if let Err(e) = setup_tray(app) {
+                eprintln!("Failed to create tray icon: {e}");
+            }
+
+            #[cfg(target_os = "windows")]
+            std::thread::spawn(|| loop {
+                text_inserter::save_foreground();
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -260,7 +479,9 @@ pub fn run() {
             worker_stop_session,
             worker_poll_session_events,
             worker_append_audio_chunk,
-            worker_finalize_session_audio
+            worker_finalize_session_audio,
+            save_target_window,
+            paste_to_target
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

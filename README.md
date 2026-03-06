@@ -4,8 +4,14 @@ WhisperFlow is a cross-platform desktop dictation app that captures live speech,
 
 ## Run locally
 
+**Bash / WSL / Git Bash:**
 ```bash
 ./scripts/run-local.sh
+```
+
+**PowerShell (Windows):**
+```powershell
+.\scripts\run-local.ps1
 ```
 
 **Prerequisites:** [Rust](https://rustup.rs), [uv](https://docs.astral.sh/uv/) (Python), [Node.js](https://nodejs.org). On Linux/WSL, install native deps: `sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf`

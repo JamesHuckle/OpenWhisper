@@ -10,11 +10,18 @@
     "devUrl": "http://localhost:5173"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "OpenWhisper",
-        "width": 980,
-        "height": 700
+        "width": 80,
+        "height": 80,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "dragDropEnabled": false
       }
     ]
   },

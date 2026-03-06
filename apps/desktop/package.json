@@ -11,7 +11,8 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.0.0"
+    "@tauri-apps/api": "2.0.0",
+    "@tauri-apps/plugin-global-shortcut": "^2.3.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.0.0",
@@ -19,4 +20,3 @@
     "vite": "^5.4.8"
   }
 }
-

@@ -1,91 +1,284 @@
+/* ===== Reset & Transparent Canvas ===== */
 :root {
   color-scheme: dark;
-  font-family: Inter, Segoe UI, Roboto, sans-serif;
+  --accent: #22c55e;
+  --accent-dim: rgba(34, 197, 94, 0.25);
+  --surface: rgba(20, 24, 32, 0.92);
+  --surface-solid: #141820;
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #f0f4ff;
+  --text-muted: #8a99b4;
+  --danger: #ef4444;
+  --ring-bg: rgba(255, 255, 255, 0.06);
 }
 
-body {
+* {
   margin: 0;
-  background: #0f1218;
-  color: #f6f8ff;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  background: transparent;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  font-family: "Segoe UI", Inter, system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 #app {
-  max-width: 760px;
-  margin: 0 auto;
-  padding: 24px;
+  width: 100%;
+  height: 100%;
+  position: relative;
 }
 
-.card {
-  border: 1px solid #262c36;
-  border-radius: 14px;
-  padding: 16px;
-  margin-bottom: 16px;
-  background: #171c24;
+/* ===== Widget container ===== */
+#widget {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  margin: 4px;
 }
 
-button {
-  border: 1px solid #2f7cff;
-  background: #2f7cff;
-  color: white;
-  border-radius: 8px;
-  padding: 8px 14px;
-  cursor: pointer;
-  margin-right: 8px;
+/* ===== Mic ring (SVG volume indicator) ===== */
+.mic-ring {
+  position: absolute;
+  inset: 0;
+  width: 72px;
+  height: 72px;
+  pointer-events: none;
+  transform: rotate(-90deg);
 }
 
-button.secondary {
-  background: transparent;
+.ring-bg {
+  fill: none;
+  stroke: var(--ring-bg);
+  stroke-width: 4;
 }
 
-.muted {
-  margin-top: 0;
-  color: #9fb0c8;
-  font-size: 13px;
+.ring-vol {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 4;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 60ms linear;
+  filter: drop-shadow(0 0 6px var(--accent-dim));
 }
 
-.settings-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.text-input {
-  flex: 1;
-  min-width: 220px;
-  border: 1px solid #2a3240;
-  border-radius: 8px;
-  background: #10151d;
-  color: #dbe6ff;
-  padding: 8px 10px;
-}
-
-.mic-controls {
-  margin-top: 10px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border: 1px solid #2a3240;
-  border-radius: 10px;
-  background: #121821;
-}
-
-.mic-controls label {
-  color: #9fb0c8;
-  font-size: 12px;
-  letter-spacing: 0.01em;
-}
-
-.mic-select {
-  background: transparent;
-  color: #dbe6ff;
+/* ===== Main mic button ===== */
+.mic-btn {
+  position: absolute;
+  inset: 12px;
+  width: 48px;
+  height: 48px;
   border: none;
-  outline: none;
-  font-size: 13px;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, box-shadow 0.15s;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  z-index: 2;
 }
 
-pre {
+.mic-btn:hover {
+  background: rgba(30, 36, 48, 0.95);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.6);
+}
+
+.mic-btn:active {
+  transform: scale(0.95);
+}
+
+.mic-btn svg {
+  width: 20px;
+  height: 20px;
+  grid-area: 1 / 1;
+}
+
+/* Icon visibility by state */
+.icon-mic,
+.icon-stop,
+.icon-spin {
+  transition: opacity 0.15s;
+}
+
+.icon-stop,
+.icon-spin {
+  opacity: 0;
+}
+
+[data-state="recording"] .icon-mic { opacity: 0; }
+[data-state="recording"] .icon-stop { opacity: 1; color: var(--danger); }
+
+[data-state="transcribing"] .icon-mic { opacity: 0; }
+[data-state="transcribing"] .icon-spin {
+  opacity: 1;
+  animation: spin 0.8s linear infinite;
+}
+
+[data-state="recording"] .mic-btn {
+  box-shadow: 0 0 0 3px var(--accent-dim), 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===== Dropdown arrow ===== */
+.dropdown-btn {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-solid);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  z-index: 3;
+  transition: background 0.15s, color 0.15s;
+}
+
+.dropdown-btn:hover {
+  background: rgba(40, 48, 64, 0.95);
+  color: var(--text);
+}
+
+.dropdown-btn svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* ===== Dropdown menu ===== */
+.mic-menu {
+  position: absolute;
+  top: 78px;
+  left: 0;
+  width: 330px;
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 0;
+  z-index: 10;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.mic-menu.hidden {
+  display: none;
+}
+
+.menu-section {
+  padding: 8px 14px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.menu-item {
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.1s;
+  line-height: 1.35;
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.menu-item.selected {
+  color: var(--accent);
+}
+
+.menu-item.selected::before {
+  content: "✓ ";
+}
+
+.menu-item.key-ok {
+  color: var(--accent);
+  cursor: default;
+}
+
+.menu-item.key-missing {
+  color: var(--danger);
+  cursor: default;
+}
+
+.menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 6px 0;
+}
+
+.menu-key-input {
+  display: block;
+  width: calc(100% - 28px);
+  margin: 6px 14px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.menu-key-input:focus {
+  border-color: var(--accent);
+}
+
+.menu-key-save {
+  display: block;
+  width: calc(100% - 28px);
+  margin: 6px 14px 8px;
+  padding: 7px 0;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #000;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.menu-key-save:hover {
+  opacity: 0.85;
+}
+
+/* ===== Toast ===== */
+.toast {
+  position: fixed;
+  bottom: 90px;
+  left: 4px;
+  background: var(--surface-solid);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 12px;
+  max-width: 320px;
   white-space: pre-wrap;
   word-break: break-word;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  transition: opacity 0.2s;
 }
 
+.toast.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
