@@ -19,14 +19,27 @@ use worker_client::WorkerClient;
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "windows")]
 mod text_inserter {
-    use std::sync::atomic::{AtomicIsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
     static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
+    static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
+    static WIN_KEY_HELD: AtomicBool = AtomicBool::new(false);
+    static SHORTCUT_FIRED: AtomicBool = AtomicBool::new(false);
 
     const INPUT_KEYBOARD: u32 = 1;
     const KEYEVENTF_KEYUP: u32 = 0x0002;
     const VK_CONTROL: u16 = 0x11;
     const VK_V: u16 = 0x56;
+
+    const WH_KEYBOARD_LL: i32 = 13;
+    const WM_KEYDOWN: u32 = 0x0100;
+    const WM_KEYUP: u32 = 0x0101;
+    const WM_SYSKEYDOWN: u32 = 0x0104;
+    const WM_SYSKEYUP: u32 = 0x0105;
+    const VK_LWIN: u32 = 0x5B;
+    const VK_RWIN: u32 = 0x5C;
+    const VK_S: u32 = 0x53;
+    const LLKHF_INJECTED: u32 = 0x10;
 
     #[repr(C)]
     struct KbdInput {
@@ -41,12 +54,40 @@ mod text_inserter {
         _union_pad: [u8; 8],
     }
 
+    #[repr(C)]
+    struct KbdLlHookStruct {
+        vk_code: u32,
+        scan_code: u32,
+        flags: u32,
+        time: u32,
+        dw_extra_info: usize,
+    }
+
     #[link(name = "user32")]
     extern "system" {
         fn SendInput(c_inputs: u32, p_inputs: *const KbdInput, cb_size: i32) -> u32;
         fn GetForegroundWindow() -> isize;
         fn SetForegroundWindow(h_wnd: isize) -> i32;
         fn GetWindowThreadProcessId(h_wnd: isize, lp_process_id: *mut u32) -> u32;
+        fn SetWindowsHookExW(
+            id_hook: i32,
+            lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize,
+            h_mod: isize,
+            dw_thread_id: u32,
+        ) -> isize;
+        fn CallNextHookEx(
+            hhk: isize,
+            n_code: i32,
+            w_param: usize,
+            l_param: isize,
+        ) -> isize;
+        fn GetMessageW(
+            lp_msg: *mut u64,
+            h_wnd: isize,
+            w_msg_filter_min: u32,
+            w_msg_filter_max: u32,
+        ) -> i32;
+        fn GetModuleHandleW(lp_module_name: *const u16) -> isize;
     }
 
     fn is_own_process(hwnd: isize) -> bool {
@@ -56,13 +97,16 @@ mod text_inserter {
     }
 
     /// Snapshot the current foreground window, ignoring our own process.
-    /// Called on a 150 ms cadence from a background thread AND as a
-    /// one-shot from the global-shortcut handler for extra precision.
     pub fn save_foreground() {
         let hwnd = unsafe { GetForegroundWindow() };
         if hwnd != 0 && !is_own_process(hwnd) {
             TARGET_HWND.store(hwnd, Ordering::Relaxed);
         }
+    }
+
+    /// Returns `true` once if Win+S was pressed since the last call.
+    pub fn take_shortcut_flag() -> bool {
+        SHORTCUT_FIRED.swap(false, Ordering::SeqCst)
     }
 
     pub fn restore_and_paste() {
@@ -80,6 +124,67 @@ mod text_inserter {
                 kbd(VK_CONTROL, KEYEVENTF_KEYUP),
             ];
             SendInput(4, inputs.as_ptr(), size);
+        }
+    }
+
+    // ----- Low-level keyboard hook (intercepts Win+S before the shell) -----
+
+    unsafe extern "system" fn ll_keyboard_proc(
+        n_code: i32,
+        w_param: usize,
+        l_param: isize,
+    ) -> isize {
+        if n_code >= 0 {
+            let info = &*(l_param as *const KbdLlHookStruct);
+
+            if info.flags & LLKHF_INJECTED == 0 {
+                let msg = w_param as u32;
+                let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+                let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+
+                match info.vk_code {
+                    VK_LWIN | VK_RWIN => {
+                        if down {
+                            WIN_KEY_HELD.store(true, Ordering::SeqCst);
+                        } else if up {
+                            WIN_KEY_HELD.store(false, Ordering::SeqCst);
+                        }
+                    }
+                    VK_S if down && WIN_KEY_HELD.load(Ordering::SeqCst) => {
+                        SHORTCUT_FIRED.store(true, Ordering::SeqCst);
+                        // Inject a harmless key so Windows counts a "combo"
+                        // and won't open Start menu when Win is released.
+                        let size = std::mem::size_of::<KbdInput>() as i32;
+                        let noop = [kbd(0xFF, 0), kbd(0xFF, KEYEVENTF_KEYUP)];
+                        SendInput(2, noop.as_ptr(), size);
+                        return 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        CallNextHookEx(
+            HOOK_HANDLE.load(Ordering::Relaxed),
+            n_code,
+            w_param,
+            l_param,
+        )
+    }
+
+    /// Installs the low-level keyboard hook and runs a message pump.
+    /// Blocks forever — must be called from a dedicated thread.
+    pub fn install_keyboard_hook() {
+        let h_mod = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let hook =
+            unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, h_mod, 0) };
+        HOOK_HANDLE.store(hook, Ordering::Relaxed);
+
+        let mut msg_buf = [0u64; 8];
+        loop {
+            let ret = unsafe { GetMessageW(msg_buf.as_mut_ptr(), 0, 0, 0) };
+            if ret <= 0 {
+                break;
+            }
         }
     }
 
@@ -293,13 +398,6 @@ async fn worker_finalize_session_audio(
 }
 
 #[tauri::command]
-async fn save_target_window() -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    text_inserter::save_foreground();
-    Ok(())
-}
-
-#[tauri::command]
 async fn paste_to_target(text: String) -> Result<(), String> {
     arboard::Clipboard::new()
         .and_then(|mut c| c.set_text(&text))
@@ -378,7 +476,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
     let show_i = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)
         .map_err(|e| anyhow!("{e}"))?;
     let record_i =
-        MenuItem::with_id(app, "record", "Toggle Recording  (Ctrl+Shift+Space)", true, None::<&str>)
+        MenuItem::with_id(app, "record", "Toggle Recording  (Win+S)", true, None::<&str>)
             .map_err(|e| anyhow!("{e}"))?;
     let sep =
         PredefinedMenuItem::separator(app).map_err(|e| anyhow!("{e}"))?;
@@ -390,7 +488,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
 
     TrayIconBuilder::new()
         .icon(make_tray_icon())
-        .tooltip("OpenWhisper – Ctrl+Shift+Space to dictate")
+        .tooltip("OpenWhisper – Win+S to dictate")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -447,7 +545,6 @@ pub fn run() {
     });
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(app_state)
         .setup(|app| {
             let loaded = load_settings(app.handle()).unwrap_or_default();
@@ -463,10 +560,23 @@ pub fn run() {
             }
 
             #[cfg(target_os = "windows")]
-            std::thread::spawn(|| loop {
-                text_inserter::save_foreground();
-                std::thread::sleep(std::time::Duration::from_millis(150));
-            });
+            {
+                std::thread::spawn(|| text_inserter::install_keyboard_hook());
+
+                let poll_handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    text_inserter::save_foreground();
+                    if text_inserter::take_shortcut_flag() {
+                        text_inserter::save_foreground();
+                        if let Some(w) = poll_handle.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                        let _ = poll_handle.emit("toggle-recording", ());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                });
+            }
 
             Ok(())
         })
@@ -480,7 +590,6 @@ pub fn run() {
             worker_poll_session_events,
             worker_append_audio_chunk,
             worker_finalize_session_audio,
-            save_target_window,
             paste_to_target
         ])
         .run(tauri::generate_context!())

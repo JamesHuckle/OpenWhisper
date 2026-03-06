@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { register } from "@tauri-apps/plugin-global-shortcut";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -46,7 +45,7 @@ app.innerHTML = `
       <circle cx="40" cy="40" r="36" class="ring-vol" />
     </svg>
 
-    <button id="btn-mic" class="mic-btn" title="Click to record (Ctrl+Shift+Space)">
+    <button id="btn-mic" class="mic-btn" title="Click to record (Win+S)">
       <svg class="icon-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="9" y="1" width="6" height="12" rx="3" />
         <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
@@ -420,27 +419,7 @@ menuKeySave.addEventListener("click", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Global shortcut: Ctrl+Shift+Space
-// ---------------------------------------------------------------------------
-async function registerShortcut() {
-  const win = getCurrentWindow();
-  try {
-    await register("Control+Shift+Space", (event) => {
-      if (event.state === "Pressed") {
-        void invoke("save_target_window").then(async () => {
-          await win.show();
-          await win.setFocus();
-          await toggleRecording();
-        });
-      }
-    });
-  } catch (err) {
-    console.warn("Failed to register Ctrl+Shift+Space shortcut:", err);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Tray: listen for toggle-recording emitted by the Rust tray menu
+// Tray / Win+S: listen for toggle-recording emitted by Rust
 // ---------------------------------------------------------------------------
 void listen("toggle-recording", () => void toggleRecording());
 
@@ -450,7 +429,6 @@ void listen("toggle-recording", () => void toggleRecording());
 setState("idle");
 void loadSettings();
 void refreshMicDevices();
-void registerShortcut();
 
 if (navigator.mediaDevices?.addEventListener) {
   navigator.mediaDevices.addEventListener("devicechange", () => void refreshMicDevices());

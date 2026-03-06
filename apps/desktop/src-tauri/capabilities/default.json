@@ -12,9 +12,6 @@
     "core:window:allow-center",
     "core:window:allow-close",
     "core:window:allow-show",
-    "core:window:allow-hide",
-    "global-shortcut:allow-register",
-    "global-shortcut:allow-unregister",
-    "global-shortcut:allow-is-registered"
+    "core:window:allow-hide"
   ]
 }
