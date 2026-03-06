@@ -1,0 +1,23 @@
+[project]
+name = "openwhisper-worker"
+version = "0.1.0"
+description = "OpenWhisper Python worker for speech model orchestration"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.60.0",
+  "pydantic>=2.10.0"
+]
+
+[project.scripts]
+openwhisper-worker = "openwhisper_worker.__main__:main"
+
+[dependency-groups]
+dev = [
+  "pyinstaller>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
