@@ -5,6 +5,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+if (Test-Path $cargoBin) {
+    $env:Path = "$cargoBin;$env:Path"
+}
+
 function Import-VsBuildToolsEnvironment {
   if (Get-Command link.exe -ErrorAction SilentlyContinue) {
     return

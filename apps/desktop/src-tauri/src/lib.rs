@@ -439,37 +439,10 @@ fn save_settings(app_handle: &AppHandle, settings: &AppSettings) -> Result<()> {
 }
 
 fn make_tray_icon() -> tauri::image::Image<'static> {
-    const S: u32 = 32;
-    let mut rgba = vec![0u8; (S * S * 4) as usize];
-    let center = S as f32 / 2.0;
-    let radius = center - 2.0;
-
-    for y in 0..S {
-        for x in 0..S {
-            let dx = x as f32 + 0.5 - center;
-            let dy = y as f32 + 0.5 - center;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let i = ((y * S + x) * 4) as usize;
-
-            let alpha = if dist <= radius - 0.7 {
-                255.0
-            } else if dist <= radius + 0.7 {
-                ((radius + 0.7 - dist) / 1.4 * 255.0).clamp(0.0, 255.0)
-            } else {
-                0.0
-            };
-
-            if alpha > 0.0 {
-                rgba[i] = 0x22;
-                rgba[i + 1] = 0xc5;
-                rgba[i + 2] = 0x5e;
-                rgba[i + 3] = alpha as u8;
-            }
-        }
-    }
-
-    let leaked: &'static [u8] = Box::leak(rgba.into_boxed_slice());
-    tauri::image::Image::new(leaked, S, S)
+    let bytes = include_bytes!("../icons/32x32.png");
+    tauri::image::Image::from_bytes(bytes)
+        .expect("tray icon 32x32.png")
+        .to_owned()
 }
 
 fn setup_tray(app: &tauri::App) -> Result<()> {

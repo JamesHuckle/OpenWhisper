@@ -118,9 +118,23 @@ class WorkerServer:
 
         session = self._sessions[session_id]
         if not session.audio_bytes:
-            return self._err(request.id, "bad_request", "No audio captured for session")
+            session.events.append({"type": "error", "text": "No audio captured"})
+            session.finalized = True
+            return self._ok(request.id, {"final_text": ""})
 
-        text = self._openai.transcribe_bytes(bytes(session.audio_bytes), mime_type=mime_type)
+        try:
+            text = self._openai.transcribe_bytes(bytes(session.audio_bytes), mime_type=mime_type)
+        except Exception as exc:  # noqa: BLE001
+            msg = "Transcription timed out" if "timeout" in str(exc).lower() else str(exc)
+            session.events.append({"type": "error", "text": msg})
+            session.finalized = True
+            return self._ok(request.id, {"final_text": ""})
+
+        if not text.strip():
+            session.events.append({"type": "error", "text": "No speech detected"})
+            session.finalized = True
+            return self._ok(request.id, {"final_text": ""})
+
         session.events.append({"type": "final", "text": text})
         session.finalized = True
         return self._ok(request.id, {"final_text": text})

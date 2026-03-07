@@ -4,7 +4,20 @@ import io
 import os
 from typing import Any
 
+from httpx import Timeout
 from openai import OpenAI
+
+# Streaming: bail after 5s with no data (first token or between events)
+_STREAM_TIMEOUT = Timeout(connect=10.0, read=5.0, write=30.0, pool=10.0)
+# Blocking: full response arrives in one shot, needs more headroom
+_BLOCKING_TIMEOUT = Timeout(connect=10.0, read=15.0, write=30.0, pool=10.0)
+
+_STREAMING_MODELS = frozenset({
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-mini-transcribe-2025-12-15",
+    "gpt-4o-transcribe-diarize",
+})
 
 
 class OpenWhisperOpenAI:
@@ -40,19 +53,38 @@ class OpenWhisperOpenAI:
             raise RuntimeError("No audio bytes provided")
 
         client = self._get_client()
-        extension = self._extension_for_mime(mime_type)
-        filename = f"session_audio{extension}"
-        audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = filename
+        audio_file = self._make_audio_file(audio_bytes, mime_type)
 
+        if self._model in _STREAMING_MODELS:
+            return self._transcribe_streaming(client, audio_file)
+        return self._transcribe_blocking(client, audio_file)
+
+    def _transcribe_streaming(self, client: OpenAI, audio_file: io.BytesIO) -> str:
+        with client.audio.transcriptions.create(
+            model=self._model,
+            file=audio_file,
+            stream=True,
+            response_format="json",
+            timeout=_STREAM_TIMEOUT,
+        ) as stream:
+            for event in stream:
+                if event.type == "transcript.text.done":
+                    return event.text
+        return ""
+
+    def _transcribe_blocking(self, client: OpenAI, audio_file: io.BytesIO) -> str:
         transcription = client.audio.transcriptions.create(
             model=self._model,
             file=audio_file,
+            timeout=_BLOCKING_TIMEOUT,
         )
-        text = getattr(transcription, "text", None)
-        if not text:
-            raise RuntimeError("Transcription API returned empty text")
-        return text
+        return getattr(transcription, "text", "") or ""
+
+    def _make_audio_file(self, audio_bytes: bytes, mime_type: str) -> io.BytesIO:
+        extension = self._extension_for_mime(mime_type)
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = f"session_audio{extension}"
+        return audio_file
 
     @staticmethod
     def _extension_for_mime(mime_type: str) -> str:

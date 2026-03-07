@@ -7,7 +7,7 @@ import "./styles.css";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-type TranscriptEvent = { type: "partial" | "final"; text: string };
+type TranscriptEvent = { type: "partial" | "final" | "error"; text: string };
 type PollResponse = { events: TranscriptEvent[]; done?: boolean };
 type AppSettings = { openaiApiKey: string };
 
@@ -29,8 +29,10 @@ let audioContext: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let micStream: MediaStream | null = null;
 let volumeRafId: number | null = null;
+let transcribeTimer: number | null = null;
 
 const WIDGET_SIZE = 80;
+const TRANSCRIBE_TIMEOUT_MS = 20_000;
 const MENU_WIDTH = 340;
 const MENU_HEIGHT = 420;
 
@@ -217,6 +219,27 @@ function stopVolumeLoop() {
 }
 
 // ---------------------------------------------------------------------------
+// Transcription timeout
+// ---------------------------------------------------------------------------
+function startTranscribeTimeout() {
+  clearTranscribeTimeout();
+  transcribeTimer = window.setTimeout(() => {
+    if (state === "transcribing") {
+      showToast("Transcription timed out — try again");
+      cleanup();
+      setState("idle");
+    }
+  }, TRANSCRIBE_TIMEOUT_MS);
+}
+
+function clearTranscribeTimeout() {
+  if (transcribeTimer !== null) {
+    clearTimeout(transcribeTimer);
+    transcribeTimer = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Base64 helper
 // ---------------------------------------------------------------------------
 function toBase64(buf: ArrayBuffer): string {
@@ -294,6 +317,7 @@ async function startRecording() {
 async function stopRecording() {
   if (state !== "recording" || !currentSessionId) return;
   setState("transcribing");
+  startTranscribeTimeout();
   stopVolumeLoop();
 
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
@@ -318,12 +342,15 @@ async function stopRecording() {
     });
   } catch (err) {
     showToast(err instanceof Error ? err.message : String(err));
+    cleanup();
+    setState("idle");
   }
 }
 
 function cleanup() {
   stopVolumeLoop();
   stopPolling();
+  clearTranscribeTimeout();
   if (audioContext) {
     audioContext.close();
     audioContext = null;
@@ -360,9 +387,12 @@ async function pollOnce() {
     for (const ev of resp.events ?? []) {
       if (ev.type === "final") {
         finalTranscript = `${finalTranscript} ${ev.text}`.trim();
+      } else if (ev.type === "error") {
+        showToast(ev.text || "Transcription failed", 3000);
       }
     }
     if (resp.done) {
+      clearTranscribeTimeout();
       stopPolling();
       if (finalTranscript) {
         await invoke("paste_to_target", { text: finalTranscript });

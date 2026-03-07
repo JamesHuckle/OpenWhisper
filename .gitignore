@@ -9,4 +9,18 @@ dist/
 target/
 .idea/
 .vscode/
+.next/
+out/
 
+# Build artifacts
+build/
+*.toc
+*.pyz
+*.pkg
+base_library.zip
+warn-*.txt
+xref-*.html
+
+# Built executables
+binaries/
+*.exe

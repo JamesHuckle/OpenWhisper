@@ -1,0 +1,61 @@
+import { FloatingMic } from "./floating-mic";
+import { DownloadButton } from "./download-button";
+import { GITHUB_URL } from "@/lib/config";
+import { GitHubIcon } from "./icons";
+
+export function Hero() {
+  return (
+    <section className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-6 pt-20 pb-32">
+      {/* Background gradient */}
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,var(--color-accent-glow)_0%,transparent_70%)]" />
+
+      <div className="relative z-10 flex max-w-3xl flex-col items-center text-center">
+        {/* Badge */}
+        <div className="animate-fade-in-up mb-8 inline-flex items-center gap-2 rounded-full border border-border bg-bg-elevated/60 px-4 py-1.5 text-sm text-text-muted backdrop-blur-sm">
+          <span className="h-2 w-2 rounded-full bg-emerald-400" />
+          Open source &middot; Free forever
+        </div>
+
+        {/* Floating mic demo */}
+        <div className="animate-fade-in-up delay-100 mb-10">
+          <FloatingMic />
+        </div>
+
+        {/* Headline */}
+        <h1 className="animate-fade-in-up delay-200 text-5xl font-extrabold leading-[1.1] tracking-tight sm:text-6xl md:text-7xl">
+          Voice to text,
+          <br />
+          <span className="bg-gradient-to-r from-accent to-purple-400 bg-clip-text text-transparent">
+            everywhere.
+          </span>
+        </h1>
+
+        {/* Subtitle */}
+        <p className="animate-fade-in-up delay-300 mt-6 max-w-xl text-lg leading-relaxed text-text-muted sm:text-xl">
+          A tiny floating microphone that lives on your desktop. Speak
+          naturally, and OpenWhisper transcribes in real-time and pastes text
+          into any app you&apos;re using.
+        </p>
+
+        {/* CTA */}
+        <div className="animate-fade-in-up delay-400 mt-10 flex flex-col items-center gap-4 sm:flex-row">
+          <DownloadButton />
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-xl border border-border px-6 py-4 text-sm font-medium text-text-muted transition-colors hover:border-text-muted hover:text-text"
+          >
+            <GitHubIcon className="h-5 w-5" />
+            View on GitHub
+          </a>
+        </div>
+
+        {/* Version note */}
+        <p className="animate-fade-in-up delay-500 mt-6 text-xs text-text-muted/60">
+          Windows 10+ &middot; v0.1.0 &middot; ~80 MB
+        </p>
+      </div>
+    </section>
+  );
+}
