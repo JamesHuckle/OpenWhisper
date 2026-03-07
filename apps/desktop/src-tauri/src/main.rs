@@ -3,4 +3,3 @@
 fn main() {
     openwhisper_desktop_lib::run();
 }
-

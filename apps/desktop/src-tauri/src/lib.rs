@@ -5,12 +5,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size,
+    State, Window, WindowEvent,
 };
+use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 use worker_client::WorkerClient;
 
@@ -19,12 +23,16 @@ use worker_client::WorkerClient;
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "windows")]
 mod text_inserter {
-    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
     static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
     static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
-    static WIN_KEY_HELD: AtomicBool = AtomicBool::new(false);
-    static SHORTCUT_FIRED: AtomicBool = AtomicBool::new(false);
+    static CTRL_HELD: AtomicBool = AtomicBool::new(false);
+    static PRESS_TO_TALK_ACTIVE: AtomicBool = AtomicBool::new(false);
+    static SPACE_SWALLOWED: AtomicBool = AtomicBool::new(false);
+    static PRESS_TO_TALK_START: AtomicBool = AtomicBool::new(false);
+    static PRESS_TO_TALK_STOP: AtomicBool = AtomicBool::new(false);
+    static DEBUG_EVENT_BITS: AtomicU32 = AtomicU32::new(0);
 
     const INPUT_KEYBOARD: u32 = 1;
     const KEYEVENTF_KEYUP: u32 = 0x0002;
@@ -36,10 +44,19 @@ mod text_inserter {
     const WM_KEYUP: u32 = 0x0101;
     const WM_SYSKEYDOWN: u32 = 0x0104;
     const WM_SYSKEYUP: u32 = 0x0105;
-    const VK_LWIN: u32 = 0x5B;
-    const VK_RWIN: u32 = 0x5C;
-    const VK_S: u32 = 0x53;
+    const VK_CONTROL_CODE: u32 = 0x11;
+    const VK_LCONTROL_CODE: u32 = 0xA2;
+    const VK_RCONTROL_CODE: u32 = 0xA3;
+    const VK_SPACE: u32 = 0x20;
     const LLKHF_INJECTED: u32 = 0x10;
+    const DBG_CTRL_DOWN: u32 = 1 << 0;
+    const DBG_CTRL_UP: u32 = 1 << 1;
+    const DBG_SPACE_DOWN: u32 = 1 << 2;
+    const DBG_SPACE_REPEAT: u32 = 1 << 3;
+    const DBG_SPACE_UP: u32 = 1 << 4;
+    const DBG_START_FLAG: u32 = 1 << 5;
+    const DBG_STOP_BY_CTRL: u32 = 1 << 6;
+    const DBG_STOP_BY_SPACE: u32 = 1 << 7;
 
     #[repr(C)]
     struct KbdInput {
@@ -75,12 +92,7 @@ mod text_inserter {
             h_mod: isize,
             dw_thread_id: u32,
         ) -> isize;
-        fn CallNextHookEx(
-            hhk: isize,
-            n_code: i32,
-            w_param: usize,
-            l_param: isize,
-        ) -> isize;
+        fn CallNextHookEx(hhk: isize, n_code: i32, w_param: usize, l_param: isize) -> isize;
         fn GetMessageW(
             lp_msg: *mut u64,
             h_wnd: isize,
@@ -104,9 +116,47 @@ mod text_inserter {
         }
     }
 
-    /// Returns `true` once if Win+S was pressed since the last call.
-    pub fn take_shortcut_flag() -> bool {
-        SHORTCUT_FIRED.swap(false, Ordering::SeqCst)
+    /// Returns `true` once when press-to-talk should start.
+    pub fn take_press_to_talk_start() -> bool {
+        PRESS_TO_TALK_START.swap(false, Ordering::SeqCst)
+    }
+
+    /// Returns `true` once when press-to-talk should stop.
+    pub fn take_press_to_talk_stop() -> bool {
+        PRESS_TO_TALK_STOP.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn take_debug_events() -> u32 {
+        DEBUG_EVENT_BITS.swap(0, Ordering::SeqCst)
+    }
+
+    pub fn describe_debug_events(bits: u32) -> String {
+        let mut events = Vec::new();
+        if bits & DBG_CTRL_DOWN != 0 {
+            events.push("ctrl_down");
+        }
+        if bits & DBG_CTRL_UP != 0 {
+            events.push("ctrl_up");
+        }
+        if bits & DBG_SPACE_DOWN != 0 {
+            events.push("space_down");
+        }
+        if bits & DBG_SPACE_REPEAT != 0 {
+            events.push("space_repeat");
+        }
+        if bits & DBG_SPACE_UP != 0 {
+            events.push("space_up");
+        }
+        if bits & DBG_START_FLAG != 0 {
+            events.push("start_flag");
+        }
+        if bits & DBG_STOP_BY_CTRL != 0 {
+            events.push("stop_flag_ctrl_up");
+        }
+        if bits & DBG_STOP_BY_SPACE != 0 {
+            events.push("stop_flag_space_up");
+        }
+        events.join(",")
     }
 
     pub fn restore_and_paste() {
@@ -127,8 +177,11 @@ mod text_inserter {
         }
     }
 
-    // ----- Low-level keyboard hook (intercepts Win+S before the shell) -----
+    // ----- Low-level keyboard hook (Ctrl+Space hold-to-talk) -----
 
+    // The hook proc must stay extremely small to avoid Windows timing
+    // it out. It only flips atomics and swallows Space while the
+    // Ctrl+Space press-to-talk gesture is active.
     unsafe extern "system" fn ll_keyboard_proc(
         n_code: i32,
         w_param: usize,
@@ -143,21 +196,43 @@ mod text_inserter {
                 let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
 
                 match info.vk_code {
-                    VK_LWIN | VK_RWIN => {
+                    VK_CONTROL_CODE | VK_LCONTROL_CODE | VK_RCONTROL_CODE => {
                         if down {
-                            WIN_KEY_HELD.store(true, Ordering::SeqCst);
+                            CTRL_HELD.store(true, Ordering::SeqCst);
+                            DEBUG_EVENT_BITS.fetch_or(DBG_CTRL_DOWN, Ordering::SeqCst);
                         } else if up {
-                            WIN_KEY_HELD.store(false, Ordering::SeqCst);
+                            CTRL_HELD.store(false, Ordering::SeqCst);
+                            DEBUG_EVENT_BITS.fetch_or(DBG_CTRL_UP, Ordering::SeqCst);
+                            if PRESS_TO_TALK_ACTIVE.swap(false, Ordering::SeqCst) {
+                                PRESS_TO_TALK_STOP.store(true, Ordering::SeqCst);
+                                DEBUG_EVENT_BITS.fetch_or(DBG_STOP_BY_CTRL, Ordering::SeqCst);
+                            }
                         }
                     }
-                    VK_S if down && WIN_KEY_HELD.load(Ordering::SeqCst) => {
-                        SHORTCUT_FIRED.store(true, Ordering::SeqCst);
-                        // Inject a harmless key so Windows counts a "combo"
-                        // and won't open Start menu when Win is released.
-                        let size = std::mem::size_of::<KbdInput>() as i32;
-                        let noop = [kbd(0xFF, 0), kbd(0xFF, KEYEVENTF_KEYUP)];
-                        SendInput(2, noop.as_ptr(), size);
-                        return 1;
+                    VK_SPACE => {
+                        if down && CTRL_HELD.load(Ordering::SeqCst) {
+                            SPACE_SWALLOWED.store(true, Ordering::SeqCst);
+                            DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_DOWN, Ordering::SeqCst);
+                            if !PRESS_TO_TALK_ACTIVE.swap(true, Ordering::SeqCst) {
+                                PRESS_TO_TALK_START.store(true, Ordering::SeqCst);
+                                DEBUG_EVENT_BITS.fetch_or(DBG_START_FLAG, Ordering::SeqCst);
+                            }
+                            return 1;
+                        }
+
+                        if SPACE_SWALLOWED.load(Ordering::SeqCst) && down {
+                            DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_REPEAT, Ordering::SeqCst);
+                            return 1;
+                        }
+
+                        if SPACE_SWALLOWED.swap(false, Ordering::SeqCst) && up {
+                            DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_UP, Ordering::SeqCst);
+                            if PRESS_TO_TALK_ACTIVE.swap(false, Ordering::SeqCst) {
+                                PRESS_TO_TALK_STOP.store(true, Ordering::SeqCst);
+                                DEBUG_EVENT_BITS.fetch_or(DBG_STOP_BY_SPACE, Ordering::SeqCst);
+                            }
+                            return 1;
+                        }
                     }
                     _ => {}
                 }
@@ -171,12 +246,11 @@ mod text_inserter {
         )
     }
 
-    /// Installs the low-level keyboard hook and runs a message pump.
+    /// Installs the low-level keyboard hook and runs a blocking message pump.
     /// Blocks forever — must be called from a dedicated thread.
     pub fn install_keyboard_hook() {
         let h_mod = unsafe { GetModuleHandleW(std::ptr::null()) };
-        let hook =
-            unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, h_mod, 0) };
+        let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, h_mod, 0) };
         HOOK_HANDLE.store(hook, Ordering::Relaxed);
 
         let mut msg_buf = [0u64; 8];
@@ -203,20 +277,160 @@ mod text_inserter {
     }
 }
 
+#[cfg(target_os = "windows")]
+mod overlay_positioner {
+    use std::mem::size_of;
+
+    const MONITOR_DEFAULTTOPRIMARY: u32 = 1;
+    const OVERLAY_BOTTOM_MARGIN: i32 = 10;
+
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    #[repr(C)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[repr(C)]
+    struct MonitorInfo {
+        cb_size: u32,
+        rc_monitor: Rect,
+        rc_work: Rect,
+        dw_flags: u32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn MonitorFromPoint(point: Point, dw_flags: u32) -> isize;
+        fn GetMonitorInfoW(h_monitor: isize, lpmi: *mut MonitorInfo) -> i32;
+    }
+
+    pub fn primary_monitor_anchor() -> Option<(i32, i32)> {
+        let monitor = unsafe {
+            MonitorFromPoint(
+                Point { x: 0, y: 0 },
+                MONITOR_DEFAULTTOPRIMARY,
+            )
+        };
+        if monitor == 0 {
+            return None;
+        }
+
+        let mut info = MonitorInfo {
+            cb_size: size_of::<MonitorInfo>() as u32,
+            rc_monitor: Rect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            rc_work: Rect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            dw_flags: 0,
+        };
+
+        if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+            return None;
+        }
+
+        Some((
+            (info.rc_work.left + info.rc_work.right) / 2,
+            info.rc_work.bottom - OVERLAY_BOTTOM_MARGIN,
+        ))
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
     openai_api_key: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FrontendSettings {
+    has_openai_api_key: bool,
+    openai_api_key_preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OverlayAnchor {
+    center_x: i32,
+    bottom_y: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OverlayFrame {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+impl OverlayFrame {
+    fn matches(&self, x: i32, y: i32, width: i32, height: i32) -> bool {
+        const TOLERANCE: i32 = 2;
+
+        (self.x - x).abs() <= TOLERANCE
+            && (self.y - y).abs() <= TOLERANCE
+            && (self.width - width).abs() <= TOLERANCE
+            && (self.height - height).abs() <= TOLERANCE
+    }
+}
+
 struct AppState {
     worker: Mutex<Option<WorkerClient>>,
     settings: std::sync::Mutex<AppSettings>,
+    overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
+    overlay_layout_locked: AtomicBool,
+    overlay_expected_frame: std::sync::Mutex<Option<OverlayFrame>>,
+}
+
+fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
+    let openai_api_key_preview = masked_api_key_preview(&settings.openai_api_key);
+    FrontendSettings {
+        has_openai_api_key: openai_api_key_preview.is_some(),
+        openai_api_key_preview,
+    }
+}
+
+fn masked_api_key_preview(api_key: &str) -> Option<String> {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let prefix: String = trimmed.chars().take(4).collect();
+    let total_chars = trimmed.chars().count();
+    if total_chars <= 4 {
+        Some(prefix)
+    } else {
+        Some(format!("{prefix}{}", "*".repeat(8)))
+    }
 }
 
 #[derive(Debug, Serialize)]
 struct SessionStartResponse {
     session_id: String,
+}
+
+fn debug_log_line(source: &str, message: &str) {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    eprintln!("[openwhisper][{now_ms}][{source}] {message}");
 }
 
 async fn with_worker_request(
@@ -255,13 +469,23 @@ async fn with_worker_request(
 }
 
 #[tauri::command]
-async fn app_get_settings(state: State<'_, Arc<AppState>>) -> Result<AppSettings, String> {
+async fn app_get_settings(state: State<'_, Arc<AppState>>) -> Result<FrontendSettings, String> {
     let settings = state
         .settings
         .lock()
         .map_err(|_| "Failed to lock settings".to_string())?
         .clone();
-    Ok(settings)
+    Ok(frontend_settings_from(&settings))
+}
+
+#[tauri::command]
+async fn app_get_openai_api_key(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let settings = state
+        .settings
+        .lock()
+        .map_err(|_| "Failed to lock settings".to_string())?
+        .clone();
+    Ok(settings.openai_api_key)
 }
 
 #[tauri::command]
@@ -269,7 +493,7 @@ async fn app_save_settings(
     app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
     openai_api_key: String,
-) -> Result<AppSettings, String> {
+) -> Result<FrontendSettings, String> {
     let updated = AppSettings {
         openai_api_key: openai_api_key.trim().to_string(),
     };
@@ -287,7 +511,7 @@ async fn app_save_settings(
     let mut worker = state.worker.lock().await;
     *worker = None;
 
-    Ok(updated)
+    Ok(frontend_settings_from(&updated))
 }
 
 #[tauri::command]
@@ -398,6 +622,20 @@ async fn worker_finalize_session_audio(
 }
 
 #[tauri::command]
+fn debug_log(message: String) -> Result<(), String> {
+    debug_log_line("frontend", &message);
+    Ok(())
+}
+
+#[tauri::command]
+fn open_api_keys_page(app_handle: AppHandle) -> Result<(), String> {
+    app_handle
+        .opener()
+        .open_url("https://platform.openai.com/api-keys", None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn paste_to_target(text: String) -> Result<(), String> {
     arboard::Clipboard::new()
         .and_then(|mut c| c.set_text(&text))
@@ -405,6 +643,80 @@ async fn paste_to_target(text: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     text_inserter::restore_and_paste();
+
+    Ok(())
+}
+
+#[tauri::command]
+fn overlay_apply_layout(
+    window: Window,
+    state: State<'_, Arc<AppState>>,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let anchor = {
+            let mut guard = state
+                .overlay_anchor
+                .lock()
+                .map_err(|_| "Failed to lock overlay anchor".to_string())?;
+
+            if guard.is_none() {
+                if let Some((center_x, bottom_y)) =
+                    overlay_positioner::primary_monitor_anchor()
+                {
+                    *guard = Some(OverlayAnchor { center_x, bottom_y });
+                }
+            }
+
+            *guard
+        };
+
+        if let Some(anchor) = anchor {
+            let scale = window.scale_factor().map_err(|e| e.to_string())?;
+            let physical_width = (width * scale).round() as i32;
+            let physical_height = (height * scale).round() as i32;
+            let x = anchor.center_x - physical_width / 2;
+            let y = anchor.bottom_y - physical_height;
+
+            {
+                let mut expected = state
+                    .overlay_expected_frame
+                    .lock()
+                    .map_err(|_| "Failed to lock overlay frame".to_string())?;
+                *expected = Some(OverlayFrame {
+                    x,
+                    y,
+                    width: physical_width,
+                    height: physical_height,
+                });
+            }
+
+            state.overlay_layout_locked.store(true, Ordering::SeqCst);
+
+            let size_result = window
+                .set_size(Size::Logical(LogicalSize::new(width, height)))
+                .map_err(|e| e.to_string());
+
+            if let Err(err) = size_result {
+                state.overlay_layout_locked.store(false, Ordering::SeqCst);
+                return Err(err);
+            }
+
+            let position_result = window
+                .set_position(Position::Physical(PhysicalPosition::new(x, y)))
+                .map_err(|e| e.to_string());
+
+            state.overlay_layout_locked.store(false, Ordering::SeqCst);
+            position_result?;
+            return Ok(());
+        }
+    }
+
+    window
+        .set_size(Size::Logical(LogicalSize::new(width, height)))
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -445,43 +757,67 @@ fn make_tray_icon() -> tauri::image::Image<'static> {
         .to_owned()
 }
 
+fn reveal_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        debug_log_line("window", "reveal_main_window");
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        let _ = window.emit("overlay-revealed", ());
+    }
+}
+
+fn reveal_overlay_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        debug_log_line("window", "reveal_overlay_window");
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.emit("overlay-revealed", ());
+    }
+}
+
+fn hide_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        debug_log_line("window", "hide_main_window");
+        let _ = window.hide();
+    }
+}
+
+fn launched_from_autostart() -> bool {
+    std::env::args_os().any(|arg| arg == "--autostart")
+}
+
 fn setup_tray(app: &tauri::App) -> Result<()> {
     let show_i = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)
         .map_err(|e| anyhow!("{e}"))?;
-    let record_i =
-        MenuItem::with_id(app, "record", "Toggle Recording  (Win+S)", true, None::<&str>)
-            .map_err(|e| anyhow!("{e}"))?;
-    let sep =
-        PredefinedMenuItem::separator(app).map_err(|e| anyhow!("{e}"))?;
+    let record_i = MenuItem::with_id(app, "record", "Toggle Recording", true, None::<&str>)
+        .map_err(|e| anyhow!("{e}"))?;
+    let sep = PredefinedMenuItem::separator(app).map_err(|e| anyhow!("{e}"))?;
     let quit_i = MenuItem::with_id(app, "quit", "Quit OpenWhisper", true, None::<&str>)
         .map_err(|e| anyhow!("{e}"))?;
 
-    let menu = Menu::with_items(app, &[&show_i, &record_i, &sep, &quit_i])
-        .map_err(|e| anyhow!("{e}"))?;
+    let menu =
+        Menu::with_items(app, &[&show_i, &record_i, &sep, &quit_i]).map_err(|e| anyhow!("{e}"))?;
 
     TrayIconBuilder::new()
         .icon(make_tray_icon())
-        .tooltip("OpenWhisper – Win+S to dictate")
+        .tooltip("OpenWhisper – hold Ctrl+Space to talk")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
                 if let Some(w) = app.get_webview_window("main") {
                     if w.is_visible().unwrap_or(false) {
-                        let _ = w.hide();
+                        hide_main_window(app);
                     } else {
-                        let _ = w.show();
-                        let _ = w.set_focus();
+                        reveal_main_window(app);
                     }
                 }
             }
             "record" => {
                 #[cfg(target_os = "windows")]
                 text_inserter::save_foreground();
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
+                reveal_main_window(app);
                 let _ = app.emit("toggle-recording", ());
             }
             "quit" => app.exit(0),
@@ -497,10 +833,9 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
                 let app = tray.app_handle();
                 if let Some(w) = app.get_webview_window("main") {
                     if w.is_visible().unwrap_or(false) {
-                        let _ = w.hide();
+                        hide_main_window(&app);
                     } else {
-                        let _ = w.show();
-                        let _ = w.set_focus();
+                        reveal_main_window(&app);
                     }
                 }
             }
@@ -515,10 +850,69 @@ pub fn run() {
     let app_state = Arc::new(AppState {
         worker: Mutex::new(None),
         settings: std::sync::Mutex::new(AppSettings::default()),
+        overlay_anchor: std::sync::Mutex::new(None),
+        overlay_layout_locked: AtomicBool::new(false),
+        overlay_expected_frame: std::sync::Mutex::new(None),
     });
 
     tauri::Builder::default()
         .manage(app_state)
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .args(["--autostart"])
+                .build(),
+        )
+        .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    hide_main_window(&window.app_handle());
+                }
+                WindowEvent::Moved(position) => {
+                    let app_state = window.state::<Arc<AppState>>().inner().clone();
+
+                    if app_state
+                        .overlay_layout_locked
+                        .load(Ordering::SeqCst)
+                    {
+                        return;
+                    }
+
+                    if let Ok(size) = window.outer_size() {
+                        if let Ok(mut expected) = app_state.overlay_expected_frame.lock()
+                        {
+                            if expected
+                                .as_ref()
+                                .is_some_and(|frame| {
+                                    frame.matches(
+                                        position.x,
+                                        position.y,
+                                        size.width as i32,
+                                        size.height as i32,
+                                    )
+                                })
+                            {
+                                *expected = None;
+                                return;
+                            }
+                        }
+
+                        if let Ok(mut anchor) = app_state.overlay_anchor.lock() {
+                            *anchor = Some(OverlayAnchor {
+                                center_x: position.x + size.width as i32 / 2,
+                                bottom_y: position.y + size.height as i32,
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        })
         .setup(|app| {
             let loaded = load_settings(app.handle()).unwrap_or_default();
             let state = app.state::<Arc<AppState>>();
@@ -532,6 +926,10 @@ pub fn run() {
                 eprintln!("Failed to create tray icon: {e}");
             }
 
+            if !launched_from_autostart() {
+                reveal_main_window(app.handle());
+            }
+
             #[cfg(target_os = "windows")]
             {
                 std::thread::spawn(|| text_inserter::install_keyboard_hook());
@@ -539,15 +937,31 @@ pub fn run() {
                 let poll_handle = app.handle().clone();
                 std::thread::spawn(move || loop {
                     text_inserter::save_foreground();
-                    if text_inserter::take_shortcut_flag() {
-                        text_inserter::save_foreground();
-                        if let Some(w) = poll_handle.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                        let _ = poll_handle.emit("toggle-recording", ());
+                    let should_start = text_inserter::take_press_to_talk_start();
+                    let should_stop = text_inserter::take_press_to_talk_stop();
+                    let debug_events = text_inserter::take_debug_events();
+                    if debug_events != 0 {
+                        debug_log_line(
+                            "hook",
+                            &format!(
+                                "events={} start_pending={} stop_pending={}",
+                                text_inserter::describe_debug_events(debug_events),
+                                should_start,
+                                should_stop
+                            ),
+                        );
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    if should_start {
+                        debug_log_line("shortcut", "emit press-to-talk-start");
+                        text_inserter::save_foreground();
+                        reveal_overlay_window(&poll_handle);
+                        let _ = poll_handle.emit("press-to-talk-start", ());
+                    }
+                    if should_stop {
+                        debug_log_line("shortcut", "emit press-to-talk-stop");
+                        let _ = poll_handle.emit("press-to-talk-stop", ());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
                 });
             }
 
@@ -555,6 +969,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_get_settings,
+            app_get_openai_api_key,
             app_save_settings,
             worker_ping,
             worker_list_models,
@@ -563,9 +978,11 @@ pub fn run() {
             worker_poll_session_events,
             worker_append_audio_chunk,
             worker_finalize_session_audio,
-            paste_to_target
+            debug_log,
+            open_api_keys_page,
+            paste_to_target,
+            overlay_apply_layout
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-

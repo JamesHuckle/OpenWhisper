@@ -1,9 +1,11 @@
 import { FloatingMic } from "./floating-mic";
 import { DownloadButton } from "./download-button";
 import { GITHUB_URL } from "@/lib/config";
+import { getLatestVersion } from "@/lib/github";
 import { GitHubIcon } from "./icons";
 
-export function Hero() {
+export async function Hero() {
+  const version = await getLatestVersion();
   return (
     <section className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-6 pt-20 pb-32">
       {/* Background gradient */}
@@ -53,7 +55,7 @@ export function Hero() {
 
         {/* Version note */}
         <p className="animate-fade-in-up delay-500 mt-6 text-xs text-text-muted/60">
-          Windows 10+ &middot; v0.1.0 &middot; ~80 MB
+          Windows 10+ &middot; {version ?? "latest"} &middot; ~80 MB
         </p>
       </div>
     </section>

@@ -45,14 +45,21 @@ impl WorkerClient {
         let mut last_err: Option<anyhow::Error> = None;
         let mut child_opt: Option<Child> = None;
 
-        if let Some(worker_bin) = worker_bin_candidates(app_handle).into_iter().find(|p| p.exists()) {
+        if let Some(worker_bin) = worker_bin_candidates(app_handle)
+            .into_iter()
+            .find(|p| p.exists())
+        {
             let mut cmd = Command::new(&worker_bin);
             cmd.stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
             #[cfg(target_os = "windows")]
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            if let Some(key) = openai_api_key.as_ref().map(|k| k.trim()).filter(|k| !k.is_empty()) {
+            if let Some(key) = openai_api_key
+                .as_ref()
+                .map(|k| k.trim())
+                .filter(|k| !k.is_empty())
+            {
                 cmd.env("OPENAI_API_KEY", key);
             }
 
@@ -81,7 +88,11 @@ impl WorkerClient {
                     .stderr(std::process::Stdio::piped());
                 #[cfg(target_os = "windows")]
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-                if let Some(key) = openai_api_key.as_ref().map(|k| k.trim()).filter(|k| !k.is_empty()) {
+                if let Some(key) = openai_api_key
+                    .as_ref()
+                    .map(|k| k.trim())
+                    .filter(|k| !k.is_empty())
+                {
                     cmd.env("OPENAI_API_KEY", key);
                 }
 
@@ -101,9 +112,8 @@ impl WorkerClient {
             }
         }
 
-        let mut child = child_opt.ok_or_else(|| {
-            last_err.unwrap_or_else(|| anyhow!("Failed to spawn worker process"))
-        })?;
+        let mut child = child_opt
+            .ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("Failed to spawn worker process")))?;
 
         let stdin = child
             .stdin
@@ -176,7 +186,9 @@ impl WorkerClient {
         if response.ok {
             Ok(response.result.unwrap_or(Value::Null))
         } else {
-            let err = response.error.ok_or_else(|| anyhow!("Unknown worker error"))?;
+            let err = response
+                .error
+                .ok_or_else(|| anyhow!("Unknown worker error"))?;
             Err(anyhow!("{}: {}", err.code, err.message))
         }
     }
@@ -189,12 +201,13 @@ impl Drop for WorkerClient {
 }
 
 fn worker_src_path() -> String {
-    let default = worker_root_path()
-        .join("src")
-        .to_string_lossy()
-        .to_string();
+    let default = worker_root_path().join("src").to_string_lossy().to_string();
 
-    let raw = env::var("OPENWHISPER_WORKER_SRC").unwrap_or(default);
+    let raw = if cfg!(debug_assertions) {
+        env::var("OPENWHISPER_WORKER_SRC").unwrap_or(default)
+    } else {
+        default
+    };
     let path = PathBuf::from(raw);
     if path.is_absolute() {
         path.to_string_lossy().to_string()
@@ -213,12 +226,14 @@ fn worker_root_path() -> PathBuf {
 fn worker_bin_candidates(app_handle: &AppHandle) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
 
-    if let Ok(raw) = env::var("OPENWHISPER_WORKER_BIN") {
-        let path = PathBuf::from(raw);
-        if path.is_absolute() {
-            paths.push(path);
-        } else {
-            paths.push(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
+    if cfg!(debug_assertions) {
+        if let Ok(raw) = env::var("OPENWHISPER_WORKER_BIN") {
+            let path = PathBuf::from(raw);
+            if path.is_absolute() {
+                paths.push(path);
+            } else {
+                paths.push(Path::new(env!("CARGO_MANIFEST_DIR")).join(path));
+            }
         }
     }
 
@@ -228,7 +243,10 @@ fn worker_bin_candidates(app_handle: &AppHandle) -> Vec<PathBuf> {
         vec!["binaries/openwhisper-worker", "openwhisper-worker"]
     };
     for candidate in resource_candidates {
-        if let Ok(path) = app_handle.path().resolve(candidate, BaseDirectory::Resource) {
+        if let Ok(path) = app_handle
+            .path()
+            .resolve(candidate, BaseDirectory::Resource)
+        {
             paths.push(path);
         }
     }
@@ -248,8 +266,10 @@ fn worker_bin_candidates(app_handle: &AppHandle) -> Vec<PathBuf> {
 }
 
 fn python_candidates(worker_src: &str) -> Vec<String> {
-    if let Ok(custom_bin) = env::var("OPENWHISPER_PYTHON_BIN") {
-        return vec![custom_bin];
+    if cfg!(debug_assertions) {
+        if let Ok(custom_bin) = env::var("OPENWHISPER_PYTHON_BIN") {
+            return vec![custom_bin];
+        }
     }
 
     let mut candidates: Vec<String> = Vec::new();

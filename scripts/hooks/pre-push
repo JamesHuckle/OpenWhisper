@@ -1,0 +1,29 @@
+#!/bin/sh
+# Git pre-push hook — triggers a release build when pushing to main.
+# Skip with: SKIP_RELEASE=1 git push
+
+if [ "$OPENWHISPER_RELEASING" = "1" ]; then
+  exit 0
+fi
+
+if [ "$SKIP_RELEASE" = "1" ]; then
+  exit 0
+fi
+
+pushing_main=0
+while read local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main) pushing_main=1 ;;
+  esac
+done
+
+if [ "$pushing_main" -eq 0 ]; then
+  exit 0
+fi
+
+echo ""
+echo "==> Pre-push hook: pushing to main — starting release build..."
+echo ""
+
+powershell.exe -ExecutionPolicy Bypass -File "$(git rev-parse --show-toplevel)/scripts/pre-push-release.ps1"
+exit $?

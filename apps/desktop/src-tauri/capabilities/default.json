@@ -12,6 +12,8 @@
     "core:window:allow-center",
     "core:window:allow-close",
     "core:window:allow-show",
-    "core:window:allow-hide"
+    "core:window:allow-hide",
+    "autostart:allow-enable",
+    "autostart:allow-is-enabled"
   ]
 }

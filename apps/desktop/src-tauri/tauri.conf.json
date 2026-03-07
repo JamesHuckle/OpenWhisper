@@ -15,8 +15,9 @@
       {
         "label": "main",
         "title": "OpenWhisper",
-        "width": 80,
-        "height": 80,
+        "width": 88,
+        "height": 28,
+        "visible": false,
         "resizable": false,
         "decorations": false,
         "transparent": true,

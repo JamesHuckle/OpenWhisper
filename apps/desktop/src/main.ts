@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  enable as enableAutostart,
+  isEnabled as isAutostartEnabled,
+} from "@tauri-apps/plugin-autostart";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -9,9 +11,12 @@ import "./styles.css";
 // ---------------------------------------------------------------------------
 type TranscriptEvent = { type: "partial" | "final" | "error"; text: string };
 type PollResponse = { events: TranscriptEvent[]; done?: boolean };
-type AppSettings = { openaiApiKey: string };
-
+type AppSettings = {
+  hasOpenaiApiKey: boolean;
+  openaiApiKeyPreview: string | null;
+};
 type WidgetState = "idle" | "recording" | "transcribing" | "error";
+type MicDevice = { id: string; label: string };
 
 // ---------------------------------------------------------------------------
 // State
@@ -23,6 +28,8 @@ let finalTranscript = "";
 let mediaRecorder: MediaRecorder | null = null;
 let recordingMimeType = "audio/webm";
 let isRecording = false;
+let pressToTalkHeld = false;
+let pressToTalkStarting = false;
 const pendingChunkUploads = new Set<Promise<void>>();
 
 let audioContext: AudioContext | null = null;
@@ -30,41 +37,51 @@ let analyser: AnalyserNode | null = null;
 let micStream: MediaStream | null = null;
 let volumeRafId: number | null = null;
 let transcribeTimer: number | null = null;
+let micDevices: MicDevice[] = [];
+let selectedMicId = "default";
+let menuOpen = false;
 
-const WIDGET_SIZE = 80;
+const IDLE_WIDGET_WIDTH = 88;
+const IDLE_WIDGET_HEIGHT = 28;
+const ACTIVE_WIDGET_WIDTH = 164;
+const ACTIVE_WIDGET_HEIGHT = 34;
 const TRANSCRIBE_TIMEOUT_MS = 20_000;
 const MENU_WIDTH = 340;
 const MENU_HEIGHT = 420;
+const MENU_GAP = 12;
 
 // ---------------------------------------------------------------------------
 // DOM
 // ---------------------------------------------------------------------------
 const app = document.getElementById("app")!;
 app.innerHTML = `
-  <div id="widget" data-tauri-drag-region>
-    <svg id="mic-ring" viewBox="0 0 80 80" class="mic-ring">
-      <circle cx="40" cy="40" r="36" class="ring-bg" />
-      <circle cx="40" cy="40" r="36" class="ring-vol" />
-    </svg>
+  <div id="widget-shell" data-tauri-drag-region>
+    <div id="widget" data-tauri-drag-region>
+      <button id="btn-mic" class="mic-btn" title="Click to toggle recording or hold Ctrl+Space to talk">
+        <span class="mic-badge" aria-hidden="true">
+          <svg class="icon-mic" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 15.25A3.25 3.25 0 0 0 15.25 12V6.25a3.25 3.25 0 1 0-6.5 0V12A3.25 3.25 0 0 0 12 15.25Z" />
+            <path d="M6.5 11.5a.75.75 0 0 1 .75.75 4.75 4.75 0 0 0 9.5 0 .75.75 0 0 1 1.5 0 6.25 6.25 0 0 1-5.5 6.21v1.79h2a.75.75 0 0 1 0 1.5h-5.5a.75.75 0 0 1 0-1.5h2v-1.79a6.25 6.25 0 0 1-5.5-6.21.75.75 0 0 1 .75-.75Z" />
+          </svg>
+          <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6.5" y="6.5" width="11" height="11" rx="3" />
+          </svg>
+          <svg class="icon-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+            <path d="M12 2.75A9.25 9.25 0 0 1 21.25 12" stroke-linecap="round" />
+          </svg>
+        </span>
+        <span class="meter" aria-hidden="true">
+          <span class="meter-track"></span>
+          <span id="meter-fill" class="meter-fill"></span>
+        </span>
+      </button>
 
-    <button id="btn-mic" class="mic-btn" title="Click to record (Win+S)">
-      <svg class="icon-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="9" y="1" width="6" height="12" rx="3" />
-        <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
-        <line x1="12" y1="19" x2="12" y2="23" />
-        <line x1="8" y1="23" x2="16" y2="23" />
-      </svg>
-      <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="6" y="6" width="12" height="12" rx="2" />
-      </svg>
-      <svg class="icon-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round" />
-      </svg>
-    </button>
-
-    <button id="btn-dropdown" class="dropdown-btn" title="Select microphone">
-      <svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 4l4 4 4-4z"/></svg>
-    </button>
+      <button id="btn-dropdown" class="dropdown-btn" title="Select microphone and settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M7.5 10.5 12 15 16.5 10.5" />
+        </svg>
+      </button>
+    </div>
 
     <div id="mic-menu" class="mic-menu hidden">
       <div class="menu-section">Microphone</div>
@@ -72,8 +89,10 @@ app.innerHTML = `
       <div class="menu-divider"></div>
       <div class="menu-section">OpenAI API Key</div>
       <div class="menu-item" id="menu-key-status">Not configured</div>
-      <input id="menu-key-input" class="menu-key-input" type="password" placeholder="sk-..." autocomplete="off" />
-      <button id="menu-key-save" class="menu-key-save">Save</button>
+      <input id="menu-key-input" class="menu-key-input" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+      <a id="menu-key-link" class="menu-link" href="https://platform.openai.com/api-keys">
+        <span class="menu-link-bold">Create or manage</span> keys at platform.openai.com/api-keys
+      </a>
     </div>
   </div>
 
@@ -86,22 +105,68 @@ const btnDropdown = document.getElementById("btn-dropdown") as HTMLButtonElement
 const micMenu = document.getElementById("mic-menu")!;
 const micList = document.getElementById("mic-list")!;
 const toast = document.getElementById("toast")!;
-const ringVol = widget.querySelector<SVGCircleElement>(".ring-vol")!;
+const meterFill = document.getElementById("meter-fill")!;
 const menuKeyStatus = document.getElementById("menu-key-status")!;
 const menuKeyInput = document.getElementById("menu-key-input") as HTMLInputElement;
-const menuKeySave = document.getElementById("menu-key-save") as HTMLButtonElement;
+const menuKeyLink = document.getElementById("menu-key-link") as HTMLAnchorElement;
 
-const RING_CIRCUMFERENCE = 2 * Math.PI * 36;
-ringVol.style.strokeDasharray = `${RING_CIRCUMFERENCE}`;
-ringVol.style.strokeDashoffset = `${RING_CIRCUMFERENCE}`;
+let storedKeyPreview = "";
+let showingStoredKeyPreview = false;
+let keyInputDirty = false;
+let keySaveInFlight = false;
+let keyRevealInFlight = false;
+
+setMeterLevel(0.12);
+
+function logDebug(message: string) {
+  const timestamp = new Date().toISOString();
+  void invoke("debug_log", { message: `${timestamp} ${message}` }).catch(() => {});
+}
+
+function setMeterLevel(level: number) {
+  const clamped = Math.max(0.08, Math.min(level, 1));
+  meterFill.style.setProperty("--meter-level", clamped.toFixed(3));
+}
+
+function isWidgetExpanded() {
+  return state !== "idle";
+}
+
+function getWidgetSize() {
+  return isWidgetExpanded()
+    ? { width: ACTIVE_WIDGET_WIDTH, height: ACTIVE_WIDGET_HEIGHT }
+    : { width: IDLE_WIDGET_WIDTH, height: IDLE_WIDGET_HEIGHT };
+}
+
+function syncWidgetFrame() {
+  const widgetSize = getWidgetSize();
+  widget.style.setProperty("--widget-width", `${widgetSize.width}px`);
+  widget.style.setProperty("--widget-height", `${widgetSize.height}px`);
+  widget.dataset.expanded = String(isWidgetExpanded());
+  widget.dataset.menuOpen = String(menuOpen);
+}
+
+function getWindowLayout() {
+  const widgetSize = getWidgetSize();
+  if (!menuOpen) {
+    return widgetSize;
+  }
+
+  return {
+    width: Math.max(widgetSize.width, MENU_WIDTH),
+    height: widgetSize.height + MENU_GAP + MENU_HEIGHT,
+  };
+}
+
+async function applyOverlayLayout() {
+  syncWidgetFrame();
+  const layout = getWindowLayout();
+  await invoke("overlay_apply_layout", { width: layout.width, height: layout.height });
+}
 
 // ---------------------------------------------------------------------------
 // Mic devices
 // ---------------------------------------------------------------------------
-type MicDevice = { id: string; label: string };
-let micDevices: MicDevice[] = [];
-let selectedMicId = "default";
-
 async function refreshMicDevices() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -136,26 +201,23 @@ function renderMicList() {
 // Menu
 // ---------------------------------------------------------------------------
 function toggleMenu() {
-  micMenu.classList.toggle("hidden");
-  if (!micMenu.classList.contains("hidden")) {
-    resizeForMenu(true);
-  } else {
-    resizeForMenu(false);
-  }
+  void (micMenu.classList.contains("hidden") ? openMenu() : collapseOverlay());
+}
+
+async function openMenu() {
+  menuOpen = true;
+  micMenu.classList.remove("hidden");
+  await applyOverlayLayout();
 }
 
 function closeMenu() {
-  micMenu.classList.add("hidden");
-  resizeForMenu(false);
+  void collapseOverlay();
 }
 
-async function resizeForMenu(open: boolean) {
-  const win = getCurrentWindow();
-  if (open) {
-    await win.setSize(new LogicalSize(MENU_WIDTH, MENU_HEIGHT));
-  } else {
-    await win.setSize(new LogicalSize(WIDGET_SIZE, WIDGET_SIZE));
-  }
+async function collapseOverlay() {
+  menuOpen = false;
+  micMenu.classList.add("hidden");
+  await applyOverlayLayout();
 }
 
 btnDropdown.addEventListener("click", (e) => {
@@ -184,16 +246,20 @@ function showToast(msg: string, durationMs = 3000) {
 // Visual state
 // ---------------------------------------------------------------------------
 function setState(next: WidgetState) {
+  logDebug(`setState ${state} -> ${next}`);
   state = next;
   widget.dataset.state = next;
+  void applyOverlayLayout();
 }
 
 // ---------------------------------------------------------------------------
-// Volume ring animation
+// Volume meter animation
 // ---------------------------------------------------------------------------
 function startVolumeLoop() {
   if (!analyser) return;
   const buf = new Uint8Array(analyser.fftSize);
+  let smoothedLevel = 0.08;
+
   const tick = () => {
     analyser!.getByteTimeDomainData(buf);
     let sum = 0;
@@ -202,20 +268,24 @@ function startVolumeLoop() {
       sum += v * v;
     }
     const rms = Math.sqrt(sum / buf.length);
-    const level = Math.min(rms / 0.35, 1);
-    const offset = RING_CIRCUMFERENCE * (1 - level);
-    ringVol.style.strokeDashoffset = `${offset}`;
+    const level = Math.min(rms / 0.16, 1);
+    smoothedLevel =
+      level > smoothedLevel
+        ? smoothedLevel * 0.35 + level * 0.65
+        : smoothedLevel * 0.72 + level * 0.28;
+    setMeterLevel(0.08 + smoothedLevel * 0.92);
     volumeRafId = requestAnimationFrame(tick);
   };
+
   tick();
 }
 
-function stopVolumeLoop() {
+function stopVolumeLoop(restingLevel = 0.12) {
   if (volumeRafId !== null) {
     cancelAnimationFrame(volumeRafId);
     volumeRafId = null;
   }
-  ringVol.style.strokeDashoffset = `${RING_CIRCUMFERENCE}`;
+  setMeterLevel(restingLevel);
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +295,7 @@ function startTranscribeTimeout() {
   clearTranscribeTimeout();
   transcribeTimer = window.setTimeout(() => {
     if (state === "transcribing") {
-      showToast("Transcription timed out — try again");
+      showToast("Transcription timed out - try again");
       cleanup();
       setState("idle");
     }
@@ -256,12 +326,15 @@ function toBase64(buf: ArrayBuffer): string {
 // Recording
 // ---------------------------------------------------------------------------
 async function startRecording() {
+  logDebug(
+    `startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
+  );
   if (state !== "idle") return;
   setState("recording");
 
   try {
     const settings = await invoke<AppSettings>("app_get_settings");
-    if (!settings.openaiApiKey) {
+    if (!settings.hasOpenaiApiKey) {
       showToast("Set your OpenAI API key first (click arrow)");
       setState("idle");
       return;
@@ -279,7 +352,9 @@ async function startRecording() {
     source.connect(analyser);
     startVolumeLoop();
 
-    const result = await invoke<{ session_id: string }>("worker_start_session", { profileId: "default" });
+    const result = await invoke<{ session_id: string }>("worker_start_session", {
+      profileId: "default",
+    });
     currentSessionId = result.session_id;
     finalTranscript = "";
     startPolling();
@@ -307,7 +382,9 @@ async function startRecording() {
 
     mediaRecorder.start(800);
     isRecording = true;
+    logDebug(`startRecording ready session=${currentSessionId ?? "none"} held=${pressToTalkHeld}`);
   } catch (err) {
+    logDebug(`startRecording error=${err instanceof Error ? err.message : String(err)}`);
     showToast(err instanceof Error ? err.message : String(err));
     cleanup();
     setState("idle");
@@ -315,10 +392,11 @@ async function startRecording() {
 }
 
 async function stopRecording() {
+  logDebug(`stopRecording enter state=${state} session=${currentSessionId ?? "none"}`);
   if (state !== "recording" || !currentSessionId) return;
   setState("transcribing");
   startTranscribeTimeout();
-  stopVolumeLoop();
+  stopVolumeLoop(0.66);
 
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     await new Promise<void>((resolve) => {
@@ -340,7 +418,9 @@ async function stopRecording() {
       sessionId: currentSessionId,
       mimeType: recordingMimeType,
     });
+    logDebug(`stopRecording finalized session=${currentSessionId}`);
   } catch (err) {
+    logDebug(`stopRecording error=${err instanceof Error ? err.message : String(err)}`);
     showToast(err instanceof Error ? err.message : String(err));
     cleanup();
     setState("idle");
@@ -348,6 +428,7 @@ async function stopRecording() {
 }
 
 function cleanup() {
+  logDebug(`cleanup state=${state} session=${currentSessionId ?? "none"}`);
   stopVolumeLoop();
   stopPolling();
   clearTranscribeTimeout();
@@ -383,7 +464,9 @@ function stopPolling() {
 async function pollOnce() {
   if (!currentSessionId) return;
   try {
-    const resp = await invoke<PollResponse>("worker_poll_session_events", { sessionId: currentSessionId });
+    const resp = await invoke<PollResponse>("worker_poll_session_events", {
+      sessionId: currentSessionId,
+    });
     for (const ev of resp.events ?? []) {
       if (ev.type === "final") {
         finalTranscript = `${finalTranscript} ${ev.text}`.trim();
@@ -417,6 +500,39 @@ async function toggleRecording() {
   }
 }
 
+async function handlePressToTalkStart() {
+  logDebug(
+    `pressToTalkStart event state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
+  );
+  pressToTalkHeld = true;
+  if (state !== "idle" || pressToTalkStarting) return;
+
+  pressToTalkStarting = true;
+  try {
+    await startRecording();
+  } finally {
+    pressToTalkStarting = false;
+  }
+
+  // If the user released the shortcut while startup was still in flight,
+  // stop immediately once recording is actually active.
+  if (!pressToTalkHeld && state === "recording") {
+    logDebug("pressToTalkStart detected release during startup");
+    await stopRecording();
+  }
+}
+
+async function handlePressToTalkStop() {
+  logDebug(
+    `pressToTalkStop event state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
+  );
+  pressToTalkHeld = false;
+  if (pressToTalkStarting) return;
+  if (state === "recording") {
+    await stopRecording();
+  }
+}
+
 btnMic.addEventListener("click", (e) => {
   e.stopPropagation();
   void toggleRecording();
@@ -425,39 +541,166 @@ btnMic.addEventListener("click", (e) => {
 // ---------------------------------------------------------------------------
 // Settings (API key)
 // ---------------------------------------------------------------------------
-async function loadSettings() {
+function applyStoredKeyPreview(preview: string | null) {
+  storedKeyPreview = preview ?? "";
+  showingStoredKeyPreview = storedKeyPreview.length > 0;
+  keyInputDirty = false;
+  menuKeyInput.type = showingStoredKeyPreview ? "text" : "password";
+  menuKeyInput.value = storedKeyPreview;
+}
+
+function selectStoredKeyPreview() {
+  if (!showingStoredKeyPreview) return;
+  requestAnimationFrame(() => menuKeyInput.select());
+}
+
+function restoreStoredKeyPreview() {
+  if (keyInputDirty) return;
+  applyStoredKeyPreview(storedKeyPreview || null);
+}
+
+function applySettingsUi(settings: AppSettings, configuredLabel = "Key configured") {
+  applyStoredKeyPreview(settings.openaiApiKeyPreview);
+  menuKeyStatus.textContent = settings.hasOpenaiApiKey ? configuredLabel : "Not configured";
+  menuKeyStatus.className = `menu-item ${settings.hasOpenaiApiKey ? "key-ok" : "key-missing"}`;
+}
+
+async function persistKeyInput() {
+  if (keySaveInFlight || !keyInputDirty) return;
+
+  keySaveInFlight = true;
+  const key = menuKeyInput.value.trim();
   try {
-    const s = await invoke<AppSettings>("app_get_settings");
-    menuKeyInput.value = s.openaiApiKey || "";
-    menuKeyStatus.textContent = s.openaiApiKey ? "Key configured" : "Not configured";
-    menuKeyStatus.className = `menu-item ${s.openaiApiKey ? "key-ok" : "key-missing"}`;
-  } catch {
-    menuKeyStatus.textContent = "Not configured";
+    const updated = await invoke<AppSettings>("app_save_settings", { openaiApiKey: key });
+    applySettingsUi(updated, updated.hasOpenaiApiKey ? "Key saved" : "Key cleared");
+    showToast(updated.hasOpenaiApiKey ? "API key saved" : "API key cleared");
+  } catch (err) {
+    keyInputDirty = true;
+    showToast(err instanceof Error ? err.message : String(err));
+  } finally {
+    keySaveInFlight = false;
   }
 }
 
-menuKeySave.addEventListener("click", async () => {
-  const key = menuKeyInput.value.trim();
+async function revealStoredKeyForEdit() {
+  if (!showingStoredKeyPreview || keyRevealInFlight) return;
+
+  keyRevealInFlight = true;
+  showingStoredKeyPreview = false;
+  menuKeyInput.type = "text";
+  requestAnimationFrame(() => menuKeyInput.select());
+
   try {
-    await invoke<AppSettings>("app_save_settings", { openaiApiKey: key });
-    menuKeyStatus.textContent = key ? "Key saved" : "Key cleared";
-    menuKeyStatus.className = `menu-item ${key ? "key-ok" : "key-missing"}`;
-    showToast(key ? "API key saved" : "API key cleared");
+    const key = await invoke<string>("app_get_openai_api_key");
+    if (keyInputDirty || document.activeElement !== menuKeyInput) {
+      return;
+    }
+
+    menuKeyInput.value = key;
+    requestAnimationFrame(() => menuKeyInput.select());
+  } catch (err) {
+    if (!keyInputDirty) {
+      restoreStoredKeyPreview();
+    }
+    showToast(err instanceof Error ? err.message : String(err));
+  } finally {
+    keyRevealInFlight = false;
+  }
+}
+
+async function loadSettings() {
+  try {
+    const settings = await invoke<AppSettings>("app_get_settings");
+    applySettingsUi(settings);
+  } catch {
+    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null });
+  }
+}
+
+async function ensureAutostartEnabled() {
+  try {
+    if (!(await isAutostartEnabled())) {
+      await enableAutostart();
+      logDebug("autostart enabled");
+    }
+  } catch (err) {
+    logDebug(`autostart enable failed=${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+menuKeyInput.addEventListener("focus", () => {
+  selectStoredKeyPreview();
+  void revealStoredKeyForEdit();
+});
+
+menuKeyInput.addEventListener("click", () => {
+  selectStoredKeyPreview();
+  void revealStoredKeyForEdit();
+});
+
+menuKeyInput.addEventListener("beforeinput", () => {
+  if (showingStoredKeyPreview) {
+    showingStoredKeyPreview = false;
+    menuKeyInput.type = "text";
+    keyInputDirty = true;
+  }
+});
+
+menuKeyInput.addEventListener("input", () => {
+  if (!showingStoredKeyPreview) {
+    keyInputDirty = true;
+  }
+});
+
+menuKeyInput.addEventListener("blur", () => {
+  if (!keyInputDirty) {
+    restoreStoredKeyPreview();
+    return;
+  }
+  void persistKeyInput();
+});
+
+menuKeyInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    menuKeyInput.blur();
+  }
+});
+
+menuKeyLink.addEventListener("click", async (event) => {
+  event.preventDefault();
+  try {
+    await invoke("open_api_keys_page");
   } catch (err) {
     showToast(err instanceof Error ? err.message : String(err));
   }
 });
 
 // ---------------------------------------------------------------------------
-// Tray / Win+S: listen for toggle-recording emitted by Rust
+// Tray / global shortcuts: listen for recording events emitted by Rust
 // ---------------------------------------------------------------------------
-void listen("toggle-recording", () => void toggleRecording());
+void listen("toggle-recording", () => {
+  logDebug("event toggle-recording");
+  return void toggleRecording();
+});
+void listen("press-to-talk-start", () => {
+  logDebug("event press-to-talk-start");
+  return void handlePressToTalkStart();
+});
+void listen("press-to-talk-stop", () => {
+  logDebug("event press-to-talk-stop");
+  return void handlePressToTalkStop();
+});
+void listen("overlay-revealed", () => void collapseOverlay());
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 setState("idle");
+syncWidgetFrame();
+void collapseOverlay();
 void loadSettings();
+void ensureAutostartEnabled();
 void refreshMicDevices();
 
 if (navigator.mediaDevices?.addEventListener) {
