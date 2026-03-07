@@ -19,6 +19,13 @@ _STREAMING_MODELS = frozenset({
     "gpt-4o-transcribe-diarize",
 })
 
+_PROMPT_SUPPORTED_MODELS = frozenset({
+    "whisper-1",
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-mini-transcribe-2025-12-15",
+})
+
 
 class OpenWhisperOpenAI:
     def __init__(self) -> None:
@@ -48,36 +55,47 @@ class OpenWhisperOpenAI:
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "model": self._model}
 
-    def transcribe_bytes(self, audio_bytes: bytes, mime_type: str) -> str:
+    def transcribe_bytes(self, audio_bytes: bytes, mime_type: str, prompt: str = "") -> str:
         if not audio_bytes:
             raise RuntimeError("No audio bytes provided")
 
         client = self._get_client()
         audio_file = self._make_audio_file(audio_bytes, mime_type)
+        effective_prompt = prompt if prompt and self._model in _PROMPT_SUPPORTED_MODELS else ""
 
         if self._model in _STREAMING_MODELS:
-            return self._transcribe_streaming(client, audio_file)
-        return self._transcribe_blocking(client, audio_file)
+            return self._transcribe_streaming(client, audio_file, effective_prompt)
+        return self._transcribe_blocking(client, audio_file, effective_prompt)
 
-    def _transcribe_streaming(self, client: OpenAI, audio_file: io.BytesIO) -> str:
-        with client.audio.transcriptions.create(
-            model=self._model,
-            file=audio_file,
-            stream=True,
-            response_format="json",
-            timeout=_STREAM_TIMEOUT,
-        ) as stream:
+    def _transcribe_streaming(
+        self, client: OpenAI, audio_file: io.BytesIO, prompt: str
+    ) -> str:
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "file": audio_file,
+            "stream": True,
+            "response_format": "json",
+            "timeout": _STREAM_TIMEOUT,
+        }
+        if prompt:
+            kwargs["prompt"] = prompt
+        with client.audio.transcriptions.create(**kwargs) as stream:
             for event in stream:
                 if event.type == "transcript.text.done":
                     return event.text
         return ""
 
-    def _transcribe_blocking(self, client: OpenAI, audio_file: io.BytesIO) -> str:
-        transcription = client.audio.transcriptions.create(
-            model=self._model,
-            file=audio_file,
-            timeout=_BLOCKING_TIMEOUT,
-        )
+    def _transcribe_blocking(
+        self, client: OpenAI, audio_file: io.BytesIO, prompt: str
+    ) -> str:
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "file": audio_file,
+            "timeout": _BLOCKING_TIMEOUT,
+        }
+        if prompt:
+            kwargs["prompt"] = prompt
+        transcription = client.audio.transcriptions.create(**kwargs)
         return getattr(transcription, "text", "") or ""
 
     def _make_audio_file(self, audio_bytes: bytes, mime_type: str) -> io.BytesIO:

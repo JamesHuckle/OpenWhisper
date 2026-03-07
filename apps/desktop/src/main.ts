@@ -14,6 +14,7 @@ type PollResponse = { events: TranscriptEvent[]; done?: boolean };
 type AppSettings = {
   hasOpenaiApiKey: boolean;
   openaiApiKeyPreview: string | null;
+  transcriptionPrompt: string;
 };
 type WidgetState = "idle" | "recording" | "transcribing" | "error";
 type MicDevice = { id: string; label: string };
@@ -47,7 +48,7 @@ const ACTIVE_WIDGET_WIDTH = 164;
 const ACTIVE_WIDGET_HEIGHT = 34;
 const TRANSCRIBE_TIMEOUT_MS = 20_000;
 const MENU_WIDTH = 340;
-const MENU_HEIGHT = 420;
+const MENU_HEIGHT = 540;
 const MENU_GAP = 12;
 
 // ---------------------------------------------------------------------------
@@ -93,6 +94,14 @@ app.innerHTML = `
       <a id="menu-key-link" class="menu-link" href="https://platform.openai.com/api-keys">
         <span class="menu-link-bold">Create or manage</span> keys at platform.openai.com/api-keys
       </a>
+      <div class="menu-divider"></div>
+      <div class="menu-section">Transcription Prompt</div>
+      <div id="menu-target-app" class="menu-target-app">
+        <span class="target-app-dot"></span>
+        <span id="menu-target-app-name">Detecting…</span>
+      </div>
+      <textarea id="menu-prompt-input" class="menu-prompt-input" rows="3" placeholder="e.g. Glossary: @README.md, @package.json, Daniël" spellcheck="false"></textarea>
+      <div class="menu-prompt-hint">Style guide &amp; vocabulary for the transcription model (224 token limit)</div>
     </div>
   </div>
 
@@ -109,12 +118,16 @@ const meterFill = document.getElementById("meter-fill")!;
 const menuKeyStatus = document.getElementById("menu-key-status")!;
 const menuKeyInput = document.getElementById("menu-key-input") as HTMLInputElement;
 const menuKeyLink = document.getElementById("menu-key-link") as HTMLAnchorElement;
+const menuPromptInput = document.getElementById("menu-prompt-input") as HTMLTextAreaElement;
+const menuTargetAppName = document.getElementById("menu-target-app-name")!;
 
 let storedKeyPreview = "";
 let showingStoredKeyPreview = false;
 let keyInputDirty = false;
 let keySaveInFlight = false;
 let keyRevealInFlight = false;
+let promptDirty = false;
+let promptSaveInFlight = false;
 
 setMeterLevel(0.12);
 
@@ -207,6 +220,7 @@ function toggleMenu() {
 async function openMenu() {
   menuOpen = true;
   micMenu.classList.remove("hidden");
+  startAppPoll();
   await applyOverlayLayout();
 }
 
@@ -216,6 +230,7 @@ function closeMenu() {
 
 async function collapseOverlay() {
   menuOpen = false;
+  stopAppPoll();
   micMenu.classList.add("hidden");
   await applyOverlayLayout();
 }
@@ -563,6 +578,9 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
   applyStoredKeyPreview(settings.openaiApiKeyPreview);
   menuKeyStatus.textContent = settings.hasOpenaiApiKey ? configuredLabel : "Not configured";
   menuKeyStatus.className = `menu-item ${settings.hasOpenaiApiKey ? "key-ok" : "key-missing"}`;
+  if (!promptDirty) {
+    menuPromptInput.value = settings.transcriptionPrompt ?? "";
+  }
 }
 
 async function persistKeyInput() {
@@ -613,7 +631,7 @@ async function loadSettings() {
     const settings = await invoke<AppSettings>("app_get_settings");
     applySettingsUi(settings);
   } catch {
-    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null });
+    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionPrompt: "" });
   }
 }
 
@@ -675,6 +693,63 @@ menuKeyLink.addEventListener("click", async (event) => {
     showToast(err instanceof Error ? err.message : String(err));
   }
 });
+
+// ---------------------------------------------------------------------------
+// Settings (Transcription Prompt)
+// ---------------------------------------------------------------------------
+async function persistPromptInput() {
+  if (promptSaveInFlight || !promptDirty) return;
+
+  promptSaveInFlight = true;
+  const prompt = menuPromptInput.value;
+  try {
+    const updated = await invoke<AppSettings>("app_save_settings", { transcriptionPrompt: prompt });
+    promptDirty = false;
+    applySettingsUi(updated, updated.hasOpenaiApiKey ? "Key configured" : "Not configured");
+    showToast("Transcription prompt saved");
+  } catch (err) {
+    promptDirty = true;
+    showToast(err instanceof Error ? err.message : String(err));
+  } finally {
+    promptSaveInFlight = false;
+  }
+}
+
+menuPromptInput.addEventListener("input", () => {
+  promptDirty = true;
+});
+
+menuPromptInput.addEventListener("blur", () => {
+  if (!promptDirty) return;
+  void persistPromptInput();
+});
+
+// ---------------------------------------------------------------------------
+// Foreground app detection (polls while menu is open)
+// ---------------------------------------------------------------------------
+let appPollTimer: number | null = null;
+
+async function pollForegroundApp() {
+  try {
+    const name = await invoke<string | null>("get_foreground_app");
+    menuTargetAppName.textContent = name ?? "Unknown";
+  } catch {
+    menuTargetAppName.textContent = "Unknown";
+  }
+}
+
+function startAppPoll() {
+  void pollForegroundApp();
+  stopAppPoll();
+  appPollTimer = window.setInterval(() => void pollForegroundApp(), 500);
+}
+
+function stopAppPoll() {
+  if (appPollTimer !== null) {
+    clearInterval(appPollTimer);
+    appPollTimer = null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tray / global shortcuts: listen for recording events emitted by Rust

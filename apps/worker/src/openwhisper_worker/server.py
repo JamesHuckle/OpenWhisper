@@ -14,6 +14,7 @@ from openwhisper_worker.protocol import WorkerError, WorkerRequest, WorkerRespon
 class Session:
     session_id: str
     profile_id: str
+    prompt: str
     audio_bytes: bytearray
     events: list[dict[str, Any]]
     cursor: int = 0
@@ -47,10 +48,12 @@ class WorkerServer:
 
     def _handle_start_session(self, request: WorkerRequest) -> WorkerResponse:
         profile_id = str(request.params.get("profile_id", "default"))
+        prompt = str(request.params.get("prompt", ""))
         session_id = str(uuid.uuid4())
         self._sessions[session_id] = Session(
             session_id=session_id,
             profile_id=profile_id,
+            prompt=prompt,
             audio_bytes=bytearray(),
             events=[{"type": "partial", "text": "Listening..."}],
         )
@@ -123,7 +126,11 @@ class WorkerServer:
             return self._ok(request.id, {"final_text": ""})
 
         try:
-            text = self._openai.transcribe_bytes(bytes(session.audio_bytes), mime_type=mime_type)
+            text = self._openai.transcribe_bytes(
+                bytes(session.audio_bytes),
+                mime_type=mime_type,
+                prompt=session.prompt,
+            )
         except Exception as exc:  # noqa: BLE001
             msg = "Transcription timed out" if "timeout" in str(exc).lower() else str(exc)
             session.events.append({"type": "error", "text": msg})

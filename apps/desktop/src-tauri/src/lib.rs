@@ -49,6 +49,8 @@ mod text_inserter {
     const VK_RCONTROL_CODE: u32 = 0xA3;
     const VK_SPACE: u32 = 0x20;
     const LLKHF_INJECTED: u32 = 0x10;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const MAX_PATH: usize = 260;
     const DBG_CTRL_DOWN: u32 = 1 << 0;
     const DBG_CTRL_UP: u32 = 1 << 1;
     const DBG_SPACE_DOWN: u32 = 1 << 2;
@@ -102,6 +104,18 @@ mod text_inserter {
         fn GetModuleHandleW(lp_module_name: *const u16) -> isize;
     }
 
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> isize;
+        fn CloseHandle(h_object: isize) -> i32;
+        fn QueryFullProcessImageNameW(
+            h_process: isize,
+            dw_flags: u32,
+            lp_exe_name: *mut u16,
+            lpdw_size: *mut u32,
+        ) -> i32;
+    }
+
     fn is_own_process(hwnd: isize) -> bool {
         let mut pid: u32 = 0;
         unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
@@ -114,6 +128,35 @@ mod text_inserter {
         if hwnd != 0 && !is_own_process(hwnd) {
             TARGET_HWND.store(hwnd, Ordering::Relaxed);
         }
+    }
+
+    /// Returns the executable name (without `.exe`) of the saved foreground window.
+    pub fn foreground_app_name() -> Option<String> {
+        let hwnd = TARGET_HWND.load(Ordering::Relaxed);
+        if hwnd == 0 {
+            return None;
+        }
+        let mut pid: u32 = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        if pid == 0 {
+            return None;
+        }
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle == 0 {
+            return None;
+        }
+        let mut buf = [0u16; MAX_PATH];
+        let mut size = MAX_PATH as u32;
+        let ok =
+            unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
+        unsafe { CloseHandle(handle) };
+        if ok == 0 || size == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..size as usize]);
+        path.rsplit('\\')
+            .next()
+            .map(|f| f.strip_suffix(".exe").unwrap_or(f).to_string())
     }
 
     /// Returns `true` once when press-to-talk should start.
@@ -210,6 +253,12 @@ mod text_inserter {
                         }
                     }
                     VK_SPACE => {
+                        // Check repeat first: if we're already in press-to-talk, subsequent downs are key repeat
+                        if SPACE_SWALLOWED.load(Ordering::SeqCst) && down {
+                            DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_REPEAT, Ordering::SeqCst);
+                            return 1;
+                        }
+
                         if down && CTRL_HELD.load(Ordering::SeqCst) {
                             SPACE_SWALLOWED.store(true, Ordering::SeqCst);
                             DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_DOWN, Ordering::SeqCst);
@@ -217,11 +266,6 @@ mod text_inserter {
                                 PRESS_TO_TALK_START.store(true, Ordering::SeqCst);
                                 DEBUG_EVENT_BITS.fetch_or(DBG_START_FLAG, Ordering::SeqCst);
                             }
-                            return 1;
-                        }
-
-                        if SPACE_SWALLOWED.load(Ordering::SeqCst) && down {
-                            DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_REPEAT, Ordering::SeqCst);
                             return 1;
                         }
 
@@ -351,10 +395,26 @@ mod overlay_positioner {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+fn default_transcription_prompt() -> String {
+    "I was editing @README.md and checking @package.json in my IDE. Let me also look at @tsconfig.json and the @src directory.".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
+    #[serde(default)]
     openai_api_key: String,
+    #[serde(default = "default_transcription_prompt")]
+    transcription_prompt: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            openai_api_key: String::new(),
+            transcription_prompt: default_transcription_prompt(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -362,6 +422,7 @@ struct AppSettings {
 struct FrontendSettings {
     has_openai_api_key: bool,
     openai_api_key_preview: Option<String>,
+    transcription_prompt: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -402,6 +463,7 @@ fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
     FrontendSettings {
         has_openai_api_key: openai_api_key_preview.is_some(),
         openai_api_key_preview,
+        transcription_prompt: settings.transcription_prompt.clone(),
     }
 }
 
@@ -492,10 +554,22 @@ async fn app_get_openai_api_key(state: State<'_, Arc<AppState>>) -> Result<Strin
 async fn app_save_settings(
     app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
-    openai_api_key: String,
+    openai_api_key: Option<String>,
+    transcription_prompt: Option<String>,
 ) -> Result<FrontendSettings, String> {
-    let updated = AppSettings {
-        openai_api_key: openai_api_key.trim().to_string(),
+    let updated = {
+        let mut current = state
+            .settings
+            .lock()
+            .map_err(|_| "Failed to lock settings".to_string())?
+            .clone();
+        if let Some(key) = openai_api_key {
+            current.openai_api_key = key.trim().to_string();
+        }
+        if let Some(prompt) = transcription_prompt {
+            current.transcription_prompt = prompt;
+        }
+        current
     };
     save_settings(&app_handle, &updated).map_err(|e| e.to_string())?;
 
@@ -536,11 +610,20 @@ async fn worker_start_session(
     state: State<'_, Arc<AppState>>,
     profile_id: String,
 ) -> Result<SessionStartResponse, String> {
+    let prompt = {
+        state
+            .settings
+            .lock()
+            .map_err(|_| "Failed to lock settings".to_string())?
+            .transcription_prompt
+            .clone()
+    };
+
     let response = with_worker_request(
         &app_handle,
         &state,
         "start_session",
-        json!({ "profile_id": profile_id }),
+        json!({ "profile_id": profile_id, "prompt": prompt }),
     )
     .await?;
 
@@ -625,6 +708,18 @@ async fn worker_finalize_session_audio(
 fn debug_log(message: String) -> Result<(), String> {
     debug_log_line("frontend", &message);
     Ok(())
+}
+
+#[tauri::command]
+fn get_foreground_app() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        text_inserter::foreground_app_name()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
 }
 
 #[tauri::command]
@@ -935,33 +1030,45 @@ pub fn run() {
                 std::thread::spawn(|| text_inserter::install_keyboard_hook());
 
                 let poll_handle = app.handle().clone();
-                std::thread::spawn(move || loop {
-                    text_inserter::save_foreground();
-                    let should_start = text_inserter::take_press_to_talk_start();
-                    let should_stop = text_inserter::take_press_to_talk_stop();
-                    let debug_events = text_inserter::take_debug_events();
-                    if debug_events != 0 {
-                        debug_log_line(
-                            "hook",
-                            &format!(
-                                "events={} start_pending={} stop_pending={}",
-                                text_inserter::describe_debug_events(debug_events),
-                                should_start,
-                                should_stop
-                            ),
-                        );
-                    }
-                    if should_start {
-                        debug_log_line("shortcut", "emit press-to-talk-start");
+                std::thread::spawn(move || {
+                    let mut last_hook_log = std::time::Instant::now();
+                    let mut last_hook_event = String::new();
+                    loop {
                         text_inserter::save_foreground();
-                        reveal_overlay_window(&poll_handle);
-                        let _ = poll_handle.emit("press-to-talk-start", ());
+                        let should_start = text_inserter::take_press_to_talk_start();
+                        let should_stop = text_inserter::take_press_to_talk_stop();
+                        let debug_events = text_inserter::take_debug_events();
+                        if debug_events != 0 {
+                            let desc = text_inserter::describe_debug_events(debug_events);
+                            let now = std::time::Instant::now();
+                            let event_changed = desc != last_hook_event;
+                            let throttle_elapsed = now.duration_since(last_hook_log).as_secs() >= 3;
+                            if event_changed || throttle_elapsed {
+                                debug_log_line(
+                                    "hook",
+                                    &format!(
+                                        "events={} start_pending={} stop_pending={}",
+                                        desc,
+                                        should_start,
+                                        should_stop
+                                    ),
+                                );
+                                last_hook_log = now;
+                                last_hook_event = desc;
+                            }
+                        }
+                        if should_start {
+                            debug_log_line("shortcut", "emit press-to-talk-start");
+                            text_inserter::save_foreground();
+                            reveal_overlay_window(&poll_handle);
+                            let _ = poll_handle.emit("press-to-talk-start", ());
+                        }
+                        if should_stop {
+                            debug_log_line("shortcut", "emit press-to-talk-stop");
+                            let _ = poll_handle.emit("press-to-talk-stop", ());
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
                     }
-                    if should_stop {
-                        debug_log_line("shortcut", "emit press-to-talk-stop");
-                        let _ = poll_handle.emit("press-to-talk-stop", ());
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
                 });
             }
 
@@ -979,6 +1086,7 @@ pub fn run() {
             worker_append_audio_chunk,
             worker_finalize_session_audio,
             debug_log,
+            get_foreground_app,
             open_api_keys_page,
             paste_to_target,
             overlay_apply_layout
