@@ -26,6 +26,7 @@ let state: WidgetState = "idle";
 let currentSessionId: string | null = null;
 let pollTimer: number | null = null;
 let finalTranscript = "";
+let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
 let mediaRecorder: MediaRecorder | null = null;
 let recordingMimeType = "audio/webm";
 let isRecording = false;
@@ -77,6 +78,13 @@ app.innerHTML = `
         </span>
       </button>
 
+      <button id="btn-copy" class="copy-btn" title="Copy last transcript to clipboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="11" height="11" rx="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+      </button>
+
       <button id="btn-dropdown" class="dropdown-btn" title="Select microphone and settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
           <path d="M7.5 10.5 12 15 16.5 10.5" />
@@ -110,6 +118,7 @@ app.innerHTML = `
 
 const widget = document.getElementById("widget")!;
 const btnMic = document.getElementById("btn-mic") as HTMLButtonElement;
+const btnCopy = document.getElementById("btn-copy") as HTMLButtonElement;
 const btnDropdown = document.getElementById("btn-dropdown") as HTMLButtonElement;
 const micMenu = document.getElementById("mic-menu")!;
 const micList = document.getElementById("mic-list")!;
@@ -157,6 +166,7 @@ function syncWidgetFrame() {
   widget.style.setProperty("--widget-height", `${widgetSize.height}px`);
   widget.dataset.expanded = String(isWidgetExpanded());
   widget.dataset.menuOpen = String(menuOpen);
+  widget.dataset.hasLastTranscript = String(lastTranscript.length > 0);
 }
 
 function getWindowLayout() {
@@ -493,6 +503,9 @@ async function pollOnce() {
       clearTranscribeTimeout();
       stopPolling();
       if (finalTranscript) {
+        lastTranscript = finalTranscript;
+        localStorage.setItem("ow_last_transcript", lastTranscript);
+        syncWidgetFrame();
         await invoke("paste_to_target", { text: finalTranscript });
         showToast("Transcribed and pasted", 2000);
       }
@@ -551,6 +564,16 @@ async function handlePressToTalkStop() {
 btnMic.addEventListener("click", (e) => {
   e.stopPropagation();
   void toggleRecording();
+});
+
+btnCopy.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!lastTranscript) return;
+  navigator.clipboard.writeText(lastTranscript).then(() => {
+    showToast("Last transcript copied", 2000);
+  }).catch(() => {
+    showToast("Copy failed — try again");
+  });
 });
 
 // ---------------------------------------------------------------------------
