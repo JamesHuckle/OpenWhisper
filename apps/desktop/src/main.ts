@@ -800,6 +800,7 @@ void collapseOverlay();
 void loadSettings();
 void ensureAutostartEnabled();
 void refreshMicDevices();
+void invoke("worker_ping").catch(() => {});
 
 if (navigator.mediaDevices?.addEventListener) {
   navigator.mediaDevices.addEventListener("devicechange", () => void refreshMicDevices());
