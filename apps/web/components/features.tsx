@@ -17,13 +17,13 @@ const FEATURES = [
     icon: MicIcon,
     title: "Always-on-top mic",
     description:
-      "A sleek 80×80 pixel floating orb. Stays out of your way but always within reach.",
+      "A sleek floating pill that hovers above every window. Stays out of your way but always within reach.",
   },
   {
     icon: LockIcon,
-    title: "Private by design",
+    title: "Just your OpenAI key",
     description:
-      "Your API key, your data. Audio is sent directly to OpenAI — nothing is stored or logged.",
+      "Paste in your OpenAI API key and you're done. Audio goes straight to OpenAI — nothing stored, nothing logged.",
   },
 ];
 

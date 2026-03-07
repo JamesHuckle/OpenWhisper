@@ -3,10 +3,10 @@ import { KeyboardIcon, MicIcon, ZapIcon } from "./icons";
 const STEPS = [
   {
     icon: KeyboardIcon,
-    shortcut: "Win + S",
-    title: "Activate",
+    shortcut: "Ctrl + Space",
+    title: "Hold to record",
     description:
-      "Hit the global hotkey from any app. A tiny floating mic appears on your screen.",
+      "Hold Ctrl+Space from any app. A small floating pill appears and starts listening immediately.",
   },
   {
     icon: MicIcon,
@@ -17,10 +17,10 @@ const STEPS = [
   },
   {
     icon: ZapIcon,
-    shortcut: "Enter",
+    shortcut: "Release",
     title: "Done",
     description:
-      "Press Enter and the transcribed text is instantly pasted into whatever app you're focused on.",
+      "Let go of Ctrl+Space and the transcribed text is instantly pasted into whatever app you're in.",
   },
 ];
 

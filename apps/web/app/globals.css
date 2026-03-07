@@ -46,9 +46,21 @@ body {
   to { width: 100%; }
 }
 
+@keyframes wave-bar {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
+@keyframes idle-dot {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50% { opacity: 0.7; transform: scale(1.15); }
+}
+
 .animate-float { animation: float 4s ease-in-out infinite; }
 .animate-pulse-ring { animation: pulse-ring 2s ease-out infinite; }
 .animate-fade-in-up { animation: fade-in-up 0.7s ease-out both; }
+.animate-wave-bar { animation: wave-bar 0.7s ease-in-out infinite alternate; }
+.animate-idle-dot { animation: idle-dot 1.4s ease-in-out infinite; }
 .delay-100 { animation-delay: 0.1s; }
 .delay-200 { animation-delay: 0.2s; }
 .delay-300 { animation-delay: 0.3s; }

@@ -34,13 +34,31 @@ export async function Hero() {
 
         {/* Subtitle */}
         <p className="animate-fade-in-up delay-300 mt-6 max-w-xl text-lg leading-relaxed text-text-muted sm:text-xl">
-          A tiny floating microphone that lives on your desktop. Speak
-          naturally, and OpenWhisper transcribes in real-time and pastes text
-          into any app you&apos;re using.
+          A small floating pill that lives on your desktop. Hold{" "}
+          <kbd className="rounded border border-border bg-bg-elevated px-1.5 py-0.5 font-mono text-sm">
+            Ctrl+Space
+          </kbd>
+          , speak, release — your words appear instantly in Gmail, Slack, or
+          any app you&apos;re in.
         </p>
 
+        {/* OpenAI key callout */}
+        <div className="animate-fade-in-up delay-400 mt-6 inline-flex items-center gap-2 rounded-full border border-border bg-bg-elevated/60 px-4 py-2 text-sm text-text-muted backdrop-blur-sm">
+          <span className="text-accent">✦</span>
+          Only requires an{" "}
+          <a
+            href="https://platform.openai.com/api-keys"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-text underline-offset-2 hover:underline"
+          >
+            OpenAI API key
+          </a>{" "}
+          — takes 30 seconds to create, free to start.
+        </div>
+
         {/* CTA */}
-        <div className="animate-fade-in-up delay-400 mt-10 flex flex-col items-center gap-4 sm:flex-row">
+        <div className="animate-fade-in-up delay-500 mt-10 flex flex-col items-center gap-4 sm:flex-row">
           <DownloadButton />
           <a
             href={GITHUB_URL}
@@ -54,7 +72,7 @@ export async function Hero() {
         </div>
 
         {/* Version note */}
-        <p className="animate-fade-in-up delay-500 mt-6 text-xs text-text-muted/60">
+        <p className="animate-fade-in-up delay-600 mt-6 text-xs text-text-muted/60">
           Windows 10+ &middot; {version ?? "latest"} &middot; ~80 MB
         </p>
       </div>
