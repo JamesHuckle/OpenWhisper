@@ -85,6 +85,14 @@ app.innerHTML = `
         </svg>
       </button>
 
+      <span class="ready-dots" aria-hidden="true" title="Ready to transcribe">
+        <svg viewBox="0 0 24 8" fill="currentColor">
+          <circle cx="4" cy="4" r="2" />
+          <circle cx="12" cy="4" r="2" />
+          <circle cx="20" cy="4" r="2" />
+        </svg>
+      </span>
+
       <button id="btn-dropdown" class="dropdown-btn" title="Select microphone and settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
           <path d="M7.5 10.5 12 15 16.5 10.5" />

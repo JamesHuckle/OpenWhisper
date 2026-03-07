@@ -3,13 +3,14 @@
 import { useState, useEffect, useRef } from "react";
 
 const WAVE_HEIGHTS = [4, 8, 11, 7, 10, 5, 8];
-const IDLE_DOTS = [0, 1, 2];
 
 export function FloatingMic() {
   const [isActive, setIsActive] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
   const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showActiveBars = isActive && !isHovered;
+  const showHoverDots = isHovered;
 
   useEffect(() => {
     const initialTimeout = setTimeout(() => setIsActive(true), 800);
@@ -52,30 +53,31 @@ export function FloatingMic() {
         Hold <kbd className="font-mono font-semibold text-text">Ctrl+Space</kbd> to record
       </div>
 
-      {isActive && (
+      {showActiveBars && (
         <div className="absolute inset-0 -m-3 rounded-full bg-accent/15 animate-pulse-ring" />
       )}
 
       <div
         className={`
-          relative z-10 flex animate-float items-center gap-2
+          relative z-10 flex animate-float items-center justify-center
           rounded-full shadow-xl transition-all duration-300
           ${
-            isActive
+            showActiveBars
               ? "bg-accent shadow-accent/30 scale-105 px-4 py-2.5"
-              : isHovered
-                ? "border border-border/80 bg-bg-elevated shadow-black/30 scale-105 px-4 py-2.5"
+              : showHoverDots
+                ? "border border-border/80 bg-bg-elevated shadow-black/30 scale-105 px-5 py-2.5"
                 : "border border-border/50 bg-bg-elevated/80 shadow-black/20 px-2.5 py-2"
           }
         `}
       >
+        {/* Mic icon — fades out on hover (idle), visible when active */}
         <svg
           className={`flex-shrink-0 transition-all duration-300 ${
-            isActive
-              ? "h-4 w-4 text-white"
-              : isHovered
-                ? "h-4 w-4 text-text-muted"
-                : "h-3.5 w-3.5 text-text-muted/60"
+            showActiveBars
+              ? "h-4 w-4 text-white opacity-100"
+              : showHoverDots
+                ? "h-4 w-4 opacity-0 w-0 overflow-hidden"
+                : "h-3.5 w-3.5 text-text-muted/60 opacity-100"
           }`}
           viewBox="0 0 24 24"
           fill="none"
@@ -89,8 +91,8 @@ export function FloatingMic() {
           <line x1="12" x2="12" y1="19" y2="22" />
         </svg>
 
-        {isActive ? (
-          <div className="flex items-center gap-[3px]">
+        {showActiveBars && (
+          <div className="flex items-center gap-[3px] ml-2">
             {WAVE_HEIGHTS.map((h, i) => (
               <div
                 key={i}
@@ -99,17 +101,33 @@ export function FloatingMic() {
               />
             ))}
           </div>
-        ) : isHovered ? (
-          <div className="flex items-center gap-[5px]">
-            {IDLE_DOTS.map((i) => (
-              <div
-                key={i}
-                className="h-1.5 w-1.5 rounded-full bg-white/40 animate-idle-dot"
-                style={{ animationDelay: `${i * 0.18}s` }}
-              />
-            ))}
+        )}
+
+        {/* Dots + chevron on hover — both as SVGs, same rendering approach */}
+        {showHoverDots && (
+          <div className="flex items-center gap-3">
+            <svg
+              className="h-3 w-3 text-white/70 flex-shrink-0"
+              viewBox="0 0 24 8"
+              fill="currentColor"
+            >
+              <circle cx="4" cy="4" r="2" />
+              <circle cx="12" cy="4" r="2" />
+              <circle cx="20" cy="4" r="2" />
+            </svg>
+            <svg
+              className="h-3 w-3 text-white/50 flex-shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
           </div>
-        ) : null}
+        )}
       </div>
     </div>
   );

@@ -277,6 +277,37 @@ body {
   height: 10px;
 }
 
+.ready-dots {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 6px;
+  color: rgba(255, 255, 255, 0.6);
+  display: grid;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 140ms ease;
+  z-index: 1;
+}
+
+.ready-dots svg {
+  width: 18px;
+  height: 6px;
+}
+
+#widget:hover .ready-dots,
+#widget[data-menu-open="true"] .ready-dots {
+  opacity: 1;
+}
+
+#widget[data-state="recording"] .ready-dots,
+#widget[data-state="transcribing"] .ready-dots {
+  opacity: 0;
+}
+
 #widget[data-has-last-transcript="true"][data-state="idle"] .copy-btn {
   opacity: 1;
   pointer-events: auto;
