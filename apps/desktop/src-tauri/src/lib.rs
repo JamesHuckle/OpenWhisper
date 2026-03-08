@@ -354,12 +354,18 @@ mod overlay_positioner {
     extern "system" {
         fn MonitorFromPoint(point: Point, dw_flags: u32) -> isize;
         fn GetMonitorInfoW(h_monitor: isize, lpmi: *mut MonitorInfo) -> i32;
+        fn GetCursorPos(lp_point: *mut Point) -> i32;
     }
 
-    pub fn primary_monitor_anchor() -> Option<(i32, i32)> {
+    pub fn cursor_monitor_anchor() -> Option<(i32, i32)> {
+        let mut cursor = Point { x: 0, y: 0 };
+        if unsafe { GetCursorPos(&mut cursor) } == 0 {
+            return None;
+        }
+
         let monitor = unsafe {
             MonitorFromPoint(
-                Point { x: 0, y: 0 },
+                Point { x: cursor.x, y: cursor.y },
                 MONITOR_DEFAULTTOPRIMARY,
             )
         };
@@ -751,18 +757,17 @@ fn overlay_apply_layout(
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        // Always resolve the anchor from the cursor's current monitor so the
+        // overlay follows whichever screen the mouse is on.  Fall back to a
+        // previously cached value only when the Win32 call fails.
         let anchor = {
             let mut guard = state
                 .overlay_anchor
                 .lock()
                 .map_err(|_| "Failed to lock overlay anchor".to_string())?;
 
-            if guard.is_none() {
-                if let Some((center_x, bottom_y)) =
-                    overlay_positioner::primary_monitor_anchor()
-                {
-                    *guard = Some(OverlayAnchor { center_x, bottom_y });
-                }
+            if let Some((center_x, bottom_y)) = overlay_positioner::cursor_monitor_anchor() {
+                *guard = Some(OverlayAnchor { center_x, bottom_y });
             }
 
             *guard
