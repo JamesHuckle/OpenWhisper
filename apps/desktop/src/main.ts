@@ -15,6 +15,8 @@ type AppSettings = {
   hasOpenaiApiKey: boolean;
   openaiApiKeyPreview: string | null;
   transcriptionPrompt: string;
+  refineEnabled: boolean;
+  refinePrompt: string;
 };
 type WidgetState = "idle" | "recording" | "transcribing" | "error";
 type MicDevice = { id: string; label: string };
@@ -118,6 +120,17 @@ app.innerHTML = `
       </div>
       <textarea id="menu-prompt-input" class="menu-prompt-input" rows="3" placeholder="e.g. Glossary: @README.md, @package.json, Daniël" spellcheck="false"></textarea>
       <div class="menu-prompt-hint">Style guide &amp; vocabulary for the transcription model (224 token limit)</div>
+      <div class="menu-divider"></div>
+      <div class="menu-toggle-row">
+        <span class="menu-section menu-section-inline">Refine</span>
+        <label class="toggle-switch">
+          <input id="menu-refine-toggle" type="checkbox" />
+          <span class="toggle-track"></span>
+          <span class="toggle-thumb"></span>
+        </label>
+      </div>
+      <textarea id="menu-refine-prompt-input" class="menu-prompt-input" rows="3" placeholder="Leave blank for default: strip fillers, fix sentences, add lists when enumerated" spellcheck="false"></textarea>
+      <div class="menu-prompt-hint">Custom instructions for the refinement pass (gpt-5-nano)</div>
     </div>
   </div>
 
@@ -136,6 +149,8 @@ const menuKeyStatus = document.getElementById("menu-key-status")!;
 const menuKeyInput = document.getElementById("menu-key-input") as HTMLInputElement;
 const menuKeyLink = document.getElementById("menu-key-link") as HTMLAnchorElement;
 const menuPromptInput = document.getElementById("menu-prompt-input") as HTMLTextAreaElement;
+const menuRefineToggle = document.getElementById("menu-refine-toggle") as HTMLInputElement;
+const menuRefinePromptInput = document.getElementById("menu-refine-prompt-input") as HTMLTextAreaElement;
 const menuTargetAppName = document.getElementById("menu-target-app-name")!;
 
 let storedKeyPreview = "";
@@ -145,6 +160,8 @@ let keySaveInFlight = false;
 let keyRevealInFlight = false;
 let promptDirty = false;
 let promptSaveInFlight = false;
+let refineDirty = false;
+let refineSaveInFlight = false;
 
 setMeterLevel(0.12);
 
@@ -605,12 +622,26 @@ function restoreStoredKeyPreview() {
   applyStoredKeyPreview(storedKeyPreview || null);
 }
 
+function syncRefinePromptVisibility() {
+  const enabled = menuRefineToggle.checked;
+  menuRefinePromptInput.style.display = enabled ? "" : "none";
+  menuRefinePromptInput.nextElementSibling?.setAttribute(
+    "style",
+    enabled ? "" : "display:none",
+  );
+}
+
 function applySettingsUi(settings: AppSettings, configuredLabel = "Key configured") {
   applyStoredKeyPreview(settings.openaiApiKeyPreview);
   menuKeyStatus.textContent = settings.hasOpenaiApiKey ? configuredLabel : "Not configured";
   menuKeyStatus.className = `menu-item ${settings.hasOpenaiApiKey ? "key-ok" : "key-missing"}`;
   if (!promptDirty) {
     menuPromptInput.value = settings.transcriptionPrompt ?? "";
+  }
+  if (!refineDirty) {
+    menuRefineToggle.checked = settings.refineEnabled ?? true;
+    menuRefinePromptInput.value = settings.refinePrompt ?? "";
+    syncRefinePromptVisibility();
   }
 }
 
@@ -662,7 +693,7 @@ async function loadSettings() {
     const settings = await invoke<AppSettings>("app_get_settings");
     applySettingsUi(settings);
   } catch {
-    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionPrompt: "" });
+    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionPrompt: "", refineEnabled: true, refinePrompt: "" });
   }
 }
 
@@ -753,6 +784,43 @@ menuPromptInput.addEventListener("input", () => {
 menuPromptInput.addEventListener("blur", () => {
   if (!promptDirty) return;
   void persistPromptInput();
+});
+
+// ---------------------------------------------------------------------------
+// Settings (Refine)
+// ---------------------------------------------------------------------------
+async function persistRefineInput() {
+  if (refineSaveInFlight || !refineDirty) return;
+
+  refineSaveInFlight = true;
+  try {
+    const updated = await invoke<AppSettings>("app_save_settings", {
+      refineEnabled: menuRefineToggle.checked,
+      refinePrompt: menuRefinePromptInput.value,
+    });
+    refineDirty = false;
+    applySettingsUi(updated, updated.hasOpenaiApiKey ? "Key configured" : "Not configured");
+  } catch (err) {
+    refineDirty = true;
+    showToast(err instanceof Error ? err.message : String(err));
+  } finally {
+    refineSaveInFlight = false;
+  }
+}
+
+menuRefineToggle.addEventListener("change", () => {
+  refineDirty = true;
+  syncRefinePromptVisibility();
+  void persistRefineInput();
+});
+
+menuRefinePromptInput.addEventListener("input", () => {
+  refineDirty = true;
+});
+
+menuRefinePromptInput.addEventListener("blur", () => {
+  if (!refineDirty) return;
+  void persistRefineInput();
 });
 
 // ---------------------------------------------------------------------------

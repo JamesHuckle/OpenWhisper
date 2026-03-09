@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{path::BaseDirectory, AppHandle, Manager};
@@ -44,40 +45,10 @@ impl WorkerClient {
         let worker_src = worker_src_path();
         let mut last_err: Option<anyhow::Error> = None;
         let mut child_opt: Option<Child> = None;
+        let debug_prefers_python =
+            cfg!(debug_assertions) && env::var("OPENWHISPER_WORKER_BIN").is_err();
 
-        if let Some(worker_bin) = worker_bin_candidates(app_handle)
-            .into_iter()
-            .find(|p| p.exists())
-        {
-            let mut cmd = Command::new(&worker_bin);
-            cmd.stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            #[cfg(target_os = "windows")]
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            if let Some(key) = openai_api_key
-                .as_ref()
-                .map(|k| k.trim())
-                .filter(|k| !k.is_empty())
-            {
-                cmd.env("OPENAI_API_KEY", key);
-            }
-
-            match cmd.spawn() {
-                Ok(child) => {
-                    child_opt = Some(child);
-                }
-                Err(err) => {
-                    last_err = Some(anyhow!(
-                        "Failed to spawn bundled worker '{}': {}",
-                        worker_bin.display(),
-                        err
-                    ));
-                }
-            }
-        }
-
-        if child_opt.is_none() {
+        if debug_prefers_python {
             for python_bin in python_candidates(&worker_src) {
                 let mut cmd = Command::new(&python_bin);
                 cmd.arg("-m")
@@ -98,6 +69,87 @@ impl WorkerClient {
 
                 match cmd.spawn() {
                     Ok(child) => {
+                        eprintln!(
+                            "[openwhisper][worker] spawned python worker '{}' with PYTHONPATH='{}'",
+                            python_bin, worker_src
+                        );
+                        child_opt = Some(child);
+                        break;
+                    }
+                    Err(err) => {
+                        last_err = Some(anyhow!(
+                            "Failed to spawn worker with '{}': {}",
+                            python_bin,
+                            err
+                        ));
+                    }
+                }
+            }
+        }
+
+        if child_opt.is_none() {
+            if let Some(worker_bin) = worker_bin_candidates(app_handle)
+                .into_iter()
+                .find(|p| p.exists())
+            {
+                let mut cmd = Command::new(&worker_bin);
+                cmd.stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                if let Some(key) = openai_api_key
+                    .as_ref()
+                    .map(|k| k.trim())
+                    .filter(|k| !k.is_empty())
+                {
+                    cmd.env("OPENAI_API_KEY", key);
+                }
+
+                match cmd.spawn() {
+                    Ok(child) => {
+                        eprintln!(
+                            "[openwhisper][worker] spawned bundled worker '{}'",
+                            worker_bin.display()
+                        );
+                        child_opt = Some(child);
+                    }
+                    Err(err) => {
+                        last_err = Some(anyhow!(
+                            "Failed to spawn bundled worker '{}': {}",
+                            worker_bin.display(),
+                            err
+                        ));
+                    }
+                }
+            }
+        }
+
+        if child_opt.is_none() && !debug_prefers_python {
+            for python_bin in python_candidates(&worker_src) {
+                let mut cmd = Command::new(&python_bin);
+                cmd.arg("-m")
+                    .arg("openwhisper_worker")
+                    .env("PYTHONPATH", &worker_src)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                if let Some(key) = openai_api_key
+                    .as_ref()
+                    .map(|k| k.trim())
+                    .filter(|k| !k.is_empty())
+                {
+                    cmd.env("OPENAI_API_KEY", key);
+                }
+
+                match cmd.spawn() {
+                    Ok(child) => {
+                        eprintln!(
+                            "[openwhisper][worker] spawned python worker '{}' with PYTHONPATH='{}'",
+                            python_bin, worker_src
+                        );
                         child_opt = Some(child);
                         break;
                     }
@@ -134,6 +186,8 @@ impl WorkerClient {
             let mut reader = BufReader::new(stderr);
             let mut line = String::new();
             while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                eprint!("{}", line);
+                let _ = io::stderr().flush();
                 let mut buf = buf_clone.lock().await;
                 buf.push_str(&line);
                 // Cap at 8 KB to avoid unbounded growth.

@@ -405,6 +405,10 @@ fn default_transcription_prompt() -> String {
     "I was editing @README.md and checking @package.json in my IDE. Let me also look at @tsconfig.json and the @src directory.".to_string()
 }
 
+fn default_refine_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
@@ -412,6 +416,10 @@ struct AppSettings {
     openai_api_key: String,
     #[serde(default = "default_transcription_prompt")]
     transcription_prompt: String,
+    #[serde(default = "default_refine_enabled")]
+    refine_enabled: bool,
+    #[serde(default)]
+    refine_prompt: String,
 }
 
 impl Default for AppSettings {
@@ -419,6 +427,8 @@ impl Default for AppSettings {
         Self {
             openai_api_key: String::new(),
             transcription_prompt: default_transcription_prompt(),
+            refine_enabled: true,
+            refine_prompt: String::new(),
         }
     }
 }
@@ -429,6 +439,8 @@ struct FrontendSettings {
     has_openai_api_key: bool,
     openai_api_key_preview: Option<String>,
     transcription_prompt: String,
+    refine_enabled: bool,
+    refine_prompt: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -470,6 +482,8 @@ fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
         has_openai_api_key: openai_api_key_preview.is_some(),
         openai_api_key_preview,
         transcription_prompt: settings.transcription_prompt.clone(),
+        refine_enabled: settings.refine_enabled,
+        refine_prompt: settings.refine_prompt.clone(),
     }
 }
 
@@ -562,6 +576,8 @@ async fn app_save_settings(
     state: State<'_, Arc<AppState>>,
     openai_api_key: Option<String>,
     transcription_prompt: Option<String>,
+    refine_enabled: Option<bool>,
+    refine_prompt: Option<String>,
 ) -> Result<FrontendSettings, String> {
     let updated = {
         let mut current = state
@@ -574,6 +590,12 @@ async fn app_save_settings(
         }
         if let Some(prompt) = transcription_prompt {
             current.transcription_prompt = prompt;
+        }
+        if let Some(enabled) = refine_enabled {
+            current.refine_enabled = enabled;
+        }
+        if let Some(prompt) = refine_prompt {
+            current.refine_prompt = prompt;
         }
         current
     };
@@ -616,20 +638,24 @@ async fn worker_start_session(
     state: State<'_, Arc<AppState>>,
     profile_id: String,
 ) -> Result<SessionStartResponse, String> {
-    let prompt = {
-        state
+    let (prompt, refine_enabled, refine_prompt) = {
+        let s = state
             .settings
             .lock()
-            .map_err(|_| "Failed to lock settings".to_string())?
-            .transcription_prompt
-            .clone()
+            .map_err(|_| "Failed to lock settings".to_string())?;
+        (s.transcription_prompt.clone(), s.refine_enabled, s.refine_prompt.clone())
     };
 
     let response = with_worker_request(
         &app_handle,
         &state,
         "start_session",
-        json!({ "profile_id": profile_id, "prompt": prompt }),
+        json!({
+            "profile_id": profile_id,
+            "prompt": prompt,
+            "refine_enabled": refine_enabled,
+            "refine_prompt": refine_prompt,
+        }),
     )
     .await?;
 

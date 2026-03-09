@@ -15,6 +15,8 @@ class Session:
     session_id: str
     profile_id: str
     prompt: str
+    refine_enabled: bool
+    refine_prompt: str
     audio_bytes: bytearray
     events: list[dict[str, Any]]
     cursor: int = 0
@@ -49,11 +51,23 @@ class WorkerServer:
     def _handle_start_session(self, request: WorkerRequest) -> WorkerResponse:
         profile_id = str(request.params.get("profile_id", "default"))
         prompt = str(request.params.get("prompt", ""))
+        refine_enabled = bool(request.params.get("refine_enabled", True))
+        refine_prompt = str(request.params.get("refine_prompt", ""))
+        sys.stderr.write(
+            "[worker] start_session "
+            f"profile_id={profile_id!r} "
+            f"transcription_prompt_chars={len(prompt)} "
+            f"refine_enabled={refine_enabled} "
+            f"refine_prompt_chars={len(refine_prompt)}\n"
+        )
+        sys.stderr.flush()
         session_id = str(uuid.uuid4())
         self._sessions[session_id] = Session(
             session_id=session_id,
             profile_id=profile_id,
             prompt=prompt,
+            refine_enabled=refine_enabled,
+            refine_prompt=refine_prompt,
             audio_bytes=bytearray(),
             events=[{"type": "partial", "text": "Listening..."}],
         )
@@ -138,9 +152,37 @@ class WorkerServer:
             return self._ok(request.id, {"final_text": ""})
 
         if not text.strip():
+            sys.stderr.write(
+                f"[worker] finalize_session_audio session_id={session_id!r} empty_transcript=True\n"
+            )
+            sys.stderr.flush()
             session.events.append({"type": "error", "text": "No speech detected"})
             session.finalized = True
             return self._ok(request.id, {"final_text": ""})
+
+        if session.refine_enabled:
+            sys.stderr.write(
+                "[worker] refine begin "
+                f"session_id={session_id!r} "
+                f"text_chars={len(text)} "
+                f"custom_prompt_chars={len(session.refine_prompt)}\n"
+            )
+            sys.stderr.flush()
+            session.events.append({"type": "partial", "text": "Refining transcript..."})
+            try:
+                text = self._openai.polish(text, session.refine_prompt)
+            except Exception as exc:  # noqa: BLE001
+                sys.stderr.write(f"[worker] refine failed session_id={session_id!r} error={exc}\n")
+                sys.stderr.flush()
+                pass  # fall back to raw transcript on any LLM error
+            else:
+                sys.stderr.write(
+                    f"[worker] refine done session_id={session_id!r} text_chars={len(text)}\n"
+                )
+                sys.stderr.flush()
+        else:
+            sys.stderr.write(f"[worker] refine skipped session_id={session_id!r}\n")
+            sys.stderr.flush()
 
         session.events.append({"type": "final", "text": text})
         session.finalized = True
@@ -160,6 +202,15 @@ class WorkerServer:
 
 
 def run_stdio_server() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict", newline="\n", write_through=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(
+            encoding="utf-8",
+            errors="replace",
+            newline="\n",
+            write_through=True,
+        )
     server = WorkerServer()
     while True:
         line = sys.stdin.readline()
