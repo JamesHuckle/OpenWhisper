@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size,
-    State, Window, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size, State, Window,
+    WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
@@ -147,8 +147,7 @@ mod text_inserter {
         }
         let mut buf = [0u16; MAX_PATH];
         let mut size = MAX_PATH as u32;
-        let ok =
-            unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
+        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
         unsafe { CloseHandle(handle) };
         if ok == 0 || size == 0 {
             return None;
@@ -321,6 +320,139 @@ mod text_inserter {
     }
 }
 
+#[cfg(target_os = "macos")]
+mod text_inserter {
+    use std::process::Command;
+    use std::sync::Mutex;
+
+    const APP_BUNDLE_ID: &str = "com.openwhisper.app";
+    const APP_NAME: &str = "OpenWhisper";
+
+    #[derive(Clone)]
+    struct SavedTarget {
+        app_name: String,
+        bundle_id: Option<String>,
+    }
+
+    #[derive(Debug)]
+    struct FrontmostApp {
+        name: String,
+        bundle_id: Option<String>,
+    }
+
+    static SAVED_TARGET: Mutex<Option<SavedTarget>> = Mutex::new(None);
+
+    fn run_osascript(script: &str) -> Result<String, String> {
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|err| format!("Failed to launch osascript: {err}"))?;
+
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        }
+
+        let details = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let details = if details.is_empty() {
+            "unknown osascript failure".to_string()
+        } else {
+            details
+        };
+
+        Err(format!(
+            "macOS automation failed. Grant OpenWhisper Accessibility and Automation access in System Settings > Privacy & Security. Details: {details}"
+        ))
+    }
+
+    fn apple_string(value: &str) -> String {
+        value.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+
+    fn current_frontmost_app() -> Result<FrontmostApp, String> {
+        let output = run_osascript(
+            r#"tell application "System Events"
+set frontApp to first application process whose frontmost is true
+set frontAppName to name of frontApp
+try
+    set frontBundleId to bundle identifier of frontApp
+on error
+    set frontBundleId to ""
+end try
+return frontAppName & linefeed & frontBundleId
+end tell"#,
+        )?;
+
+        let mut lines = output.lines();
+        let name = lines.next().unwrap_or_default().trim().to_string();
+        let bundle_id = lines
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        if name.is_empty() {
+            return Err("Unable to determine frontmost macOS application".to_string());
+        }
+
+        Ok(FrontmostApp { name, bundle_id })
+    }
+
+    pub fn save_foreground() {
+        let Ok(frontmost) = current_frontmost_app() else {
+            return;
+        };
+
+        if frontmost.name == APP_NAME || frontmost.bundle_id.as_deref() == Some(APP_BUNDLE_ID) {
+            return;
+        }
+
+        if let Ok(mut guard) = SAVED_TARGET.lock() {
+            *guard = Some(SavedTarget {
+                app_name: frontmost.name,
+                bundle_id: frontmost.bundle_id,
+            });
+        }
+    }
+
+    pub fn foreground_app_name() -> Option<String> {
+        current_frontmost_app().ok().map(|app| app.name)
+    }
+
+    pub fn restore_and_paste() -> Result<(), String> {
+        let target = SAVED_TARGET.lock().ok().and_then(|guard| guard.clone());
+
+        let script = if let Some(target) = target {
+            if let Some(bundle_id) = target.bundle_id {
+                format!(
+                    r#"tell application id "{}" to activate
+delay 0.15
+tell application "System Events"
+    keystroke "v" using command down
+end tell"#,
+                    apple_string(&bundle_id)
+                )
+            } else {
+                format!(
+                    r#"tell application "{}" to activate
+delay 0.15
+tell application "System Events"
+    keystroke "v" using command down
+end tell"#,
+                    apple_string(&target.app_name)
+                )
+            }
+        } else {
+            r#"tell application "System Events"
+keystroke "v" using command down
+end tell"#
+                .to_string()
+        };
+
+        run_osascript(&script).map(|_| ())
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod overlay_positioner {
     use std::mem::size_of;
@@ -365,7 +497,10 @@ mod overlay_positioner {
 
         let monitor = unsafe {
             MonitorFromPoint(
-                Point { x: cursor.x, y: cursor.y },
+                Point {
+                    x: cursor.x,
+                    y: cursor.y,
+                },
                 MONITOR_DEFAULTTOPRIMARY,
             )
         };
@@ -548,12 +683,8 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
     }
 
     let size = window.outer_size().map_err(|e| e.to_string())?;
-    let position = overlay_window_position_for_anchor(
-        &state,
-        anchor,
-        size.width as i32,
-        size.height as i32,
-    )?;
+    let position =
+        overlay_window_position_for_anchor(&state, anchor, size.width as i32, size.height as i32)?;
 
     state.overlay_layout_locked.store(true, Ordering::SeqCst);
     let position_result = window
@@ -730,7 +861,11 @@ async fn worker_start_session(
             .settings
             .lock()
             .map_err(|_| "Failed to lock settings".to_string())?;
-        (s.transcription_prompt.clone(), s.refine_enabled, s.refine_prompt.clone())
+        (
+            s.transcription_prompt.clone(),
+            s.refine_enabled,
+            s.refine_prompt.clone(),
+        )
     };
 
     let response = with_worker_request(
@@ -835,7 +970,11 @@ fn get_foreground_app() -> Option<String> {
     {
         text_inserter::foreground_app_name()
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        text_inserter::foreground_app_name()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         None
     }
@@ -857,6 +996,9 @@ async fn paste_to_target(text: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     text_inserter::restore_and_paste();
+
+    #[cfg(target_os = "macos")]
+    text_inserter::restore_and_paste()?;
 
     Ok(())
 }
@@ -894,11 +1036,15 @@ fn overlay_apply_layout(
                 physical_height,
             )?;
 
-            app_state.overlay_layout_locked.store(true, Ordering::SeqCst);
+            app_state
+                .overlay_layout_locked
+                .store(true, Ordering::SeqCst);
             let position_result = window
                 .set_position(Position::Physical(position))
                 .map_err(|e| e.to_string());
-            app_state.overlay_layout_locked.store(false, Ordering::SeqCst);
+            app_state
+                .overlay_layout_locked
+                .store(false, Ordering::SeqCst);
             position_result?;
             return Ok(());
         }
@@ -947,6 +1093,18 @@ fn make_tray_icon() -> tauri::image::Image<'static> {
         .to_owned()
 }
 
+fn tray_tooltip() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "OpenWhisper - hold Control+Space to talk"
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        "OpenWhisper - hold Ctrl+Space to talk"
+    }
+}
+
 fn reveal_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         debug_log_line("window", "reveal_main_window");
@@ -991,7 +1149,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
 
     TrayIconBuilder::new()
         .icon(make_tray_icon())
-        .tooltip("OpenWhisper – hold Ctrl+Space to talk")
+        .tooltip(tray_tooltip())
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -1005,7 +1163,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
                 }
             }
             "record" => {
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
                 text_inserter::save_foreground();
                 reveal_main_window(app);
                 let _ = app.emit("toggle-recording", ());
@@ -1045,14 +1203,35 @@ pub fn run() {
         overlay_expected_frame: std::sync::Mutex::new(None),
     });
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(app_state)
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .args(["--autostart"])
                 .build(),
         )
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(
+        tauri_plugin_global_shortcut::Builder::new()
+            .with_shortcuts(["Ctrl+Space"])
+            .expect("failed to configure macOS global shortcut")
+            .with_handler(|app, _shortcut, event| match event.state {
+                tauri_plugin_global_shortcut::ShortcutState::Pressed => {
+                    text_inserter::save_foreground();
+                    reveal_overlay_window(app);
+                    let _ = app.emit("press-to-talk-start", ());
+                }
+                tauri_plugin_global_shortcut::ShortcutState::Released => {
+                    let _ = app.emit("press-to-talk-stop", ());
+                }
+                _ => {}
+            })
+            .build(),
+    );
+
+    builder
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
@@ -1066,27 +1245,20 @@ pub fn run() {
                 WindowEvent::Moved(position) => {
                     let app_state = window.state::<Arc<AppState>>().inner().clone();
 
-                    if app_state
-                        .overlay_layout_locked
-                        .load(Ordering::SeqCst)
-                    {
+                    if app_state.overlay_layout_locked.load(Ordering::SeqCst) {
                         return;
                     }
 
                     if let Ok(size) = window.outer_size() {
-                        if let Ok(mut expected) = app_state.overlay_expected_frame.lock()
-                        {
-                            if expected
-                                .as_ref()
-                                .is_some_and(|frame| {
-                                    frame.matches(
-                                        position.x,
-                                        position.y,
-                                        size.width as i32,
-                                        size.height as i32,
-                                    )
-                                })
-                            {
+                        if let Ok(mut expected) = app_state.overlay_expected_frame.lock() {
+                            if expected.as_ref().is_some_and(|frame| {
+                                frame.matches(
+                                    position.x,
+                                    position.y,
+                                    size.width as i32,
+                                    size.height as i32,
+                                )
+                            }) {
                                 *expected = None;
                                 return;
                             }
@@ -1133,7 +1305,8 @@ pub fn run() {
                         text_inserter::save_foreground();
                         if let Some(anchor) = cursor_overlay_anchor() {
                             if last_cursor_anchor != Some(anchor) {
-                                if let Err(err) = sync_overlay_window_to_anchor(&poll_handle, anchor)
+                                if let Err(err) =
+                                    sync_overlay_window_to_anchor(&poll_handle, anchor)
                                 {
                                     debug_log_line(
                                         "window",
@@ -1157,9 +1330,7 @@ pub fn run() {
                                     "hook",
                                     &format!(
                                         "events={} start_pending={} stop_pending={}",
-                                        desc,
-                                        should_start,
-                                        should_stop
+                                        desc, should_start, should_stop
                                     ),
                                 );
                                 last_hook_log = now;

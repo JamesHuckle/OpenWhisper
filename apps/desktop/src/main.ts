@@ -20,6 +20,16 @@ type AppSettings = {
 };
 type WidgetState = "idle" | "recording" | "transcribing" | "error";
 type MicDevice = { id: string; label: string };
+const isMac = navigator.userAgent.toLowerCase().includes("mac");
+const recordButtonTitle = isMac
+  ? "Click to toggle recording or hold Control+Space to talk"
+  : "Click to toggle recording or hold Ctrl+Space to talk";
+const preferredRecordingMimeTypes = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4;codecs=mp4a.40.2",
+  "audio/mp4",
+];
 
 // ---------------------------------------------------------------------------
 // State
@@ -61,7 +71,7 @@ const app = document.getElementById("app")!;
 app.innerHTML = `
   <div id="widget-shell" data-tauri-drag-region>
     <div id="widget" data-tauri-drag-region>
-      <button id="btn-mic" class="mic-btn" title="Click to toggle recording or hold Ctrl+Space to talk">
+      <button id="btn-mic" class="mic-btn" title="${recordButtonTitle}" aria-label="Record or stop dictation">
         <span class="mic-badge" aria-hidden="true">
           <svg class="icon-mic" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 15.25A3.25 3.25 0 0 0 15.25 12V6.25a3.25 3.25 0 1 0-6.5 0V12A3.25 3.25 0 0 0 12 15.25Z" />
@@ -80,7 +90,7 @@ app.innerHTML = `
         </span>
       </button>
 
-      <button id="btn-copy" class="copy-btn" title="Copy last transcript to clipboard">
+      <button id="btn-copy" class="copy-btn" title="Copy last transcript to clipboard" aria-label="Copy last transcript">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="9" y="9" width="11" height="11" rx="2" />
           <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
@@ -95,7 +105,7 @@ app.innerHTML = `
         </svg>
       </span>
 
-      <button id="btn-dropdown" class="dropdown-btn" title="Select microphone and settings">
+      <button id="btn-dropdown" class="dropdown-btn" title="Select microphone and settings" aria-label="Open settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
           <path d="M7.5 10.5 12 15 16.5 10.5" />
         </svg>
@@ -108,7 +118,7 @@ app.innerHTML = `
       <div class="menu-divider"></div>
       <div class="menu-section">OpenAI API Key</div>
       <div class="menu-item" id="menu-key-status">Not configured</div>
-      <input id="menu-key-input" class="menu-key-input" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+      <input id="menu-key-input" class="menu-key-input" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" aria-label="OpenAI API Key" />
       <a id="menu-key-link" class="menu-link" href="https://platform.openai.com/api-keys">
         <span class="menu-link-bold">Create or manage</span> keys at platform.openai.com/api-keys
       </a>
@@ -118,23 +128,23 @@ app.innerHTML = `
         <span class="target-app-dot"></span>
         <span id="menu-target-app-name">Detecting…</span>
       </div>
-      <textarea id="menu-prompt-input" class="menu-prompt-input" rows="3" placeholder="e.g. Glossary: @README.md, @package.json, Daniël" spellcheck="false"></textarea>
+      <textarea id="menu-prompt-input" class="menu-prompt-input" rows="3" placeholder="e.g. Glossary: @README.md, @package.json, Daniël" spellcheck="false" aria-label="Transcription Prompt"></textarea>
       <div class="menu-prompt-hint">Style guide &amp; vocabulary for the transcription model (224 token limit)</div>
       <div class="menu-divider"></div>
       <div class="menu-toggle-row">
         <span class="menu-section menu-section-inline">Refine</span>
         <label class="toggle-switch">
-          <input id="menu-refine-toggle" type="checkbox" />
+          <input id="menu-refine-toggle" type="checkbox" aria-label="Enable Refine" />
           <span class="toggle-track"></span>
           <span class="toggle-thumb"></span>
         </label>
       </div>
-      <textarea id="menu-refine-prompt-input" class="menu-prompt-input" rows="3" placeholder="Leave blank for default: strip fillers, fix sentences, add lists when enumerated" spellcheck="false"></textarea>
+      <textarea id="menu-refine-prompt-input" class="menu-prompt-input" rows="3" placeholder="Leave blank for default: strip fillers, fix sentences, add lists when enumerated" spellcheck="false" aria-label="Refine Prompt"></textarea>
       <div class="menu-prompt-hint">Custom instructions for the refinement pass (gpt-5-nano)</div>
     </div>
   </div>
 
-  <div id="toast" class="toast hidden"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite" aria-label="Status message"></div>
 `;
 
 const widget = document.getElementById("widget")!;
@@ -302,6 +312,10 @@ function setState(next: WidgetState) {
   void applyOverlayLayout();
 }
 
+function isRecordingState(value: WidgetState) {
+  return value === "recording";
+}
+
 // ---------------------------------------------------------------------------
 // Volume meter animation
 // ---------------------------------------------------------------------------
@@ -372,6 +386,29 @@ function toBase64(buf: ArrayBuffer): string {
   return btoa(binary);
 }
 
+function normalizeRecordingMimeType(mimeType: string) {
+  const normalized = mimeType.split(";")[0]?.trim().toLowerCase();
+  return normalized || "audio/webm";
+}
+
+function getMediaRecorderOptions() {
+  const preferredMimeType = preferredRecordingMimeTypes.find((candidate) =>
+    MediaRecorder.isTypeSupported(candidate),
+  );
+
+  if (!preferredMimeType) {
+    return {
+      workerMimeType: "audio/webm",
+      options: {} satisfies MediaRecorderOptions,
+    };
+  }
+
+  return {
+    workerMimeType: normalizeRecordingMimeType(preferredMimeType),
+    options: { mimeType: preferredMimeType } satisfies MediaRecorderOptions,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Recording
 // ---------------------------------------------------------------------------
@@ -409,11 +446,12 @@ async function startRecording() {
     finalTranscript = "";
     startPolling();
 
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? "audio/webm;codecs=opus"
-      : "audio/webm";
-    recordingMimeType = "audio/webm";
-    mediaRecorder = new MediaRecorder(micStream, { mimeType });
+    const { options, workerMimeType } = getMediaRecorderOptions();
+    mediaRecorder = new MediaRecorder(micStream, options);
+    recordingMimeType = normalizeRecordingMimeType(
+      mediaRecorder.mimeType || workerMimeType,
+    );
+    logDebug(`startRecording mime=${recordingMimeType}`);
 
     mediaRecorder.ondataavailable = async (e: BlobEvent) => {
       if (!currentSessionId || e.data.size === 0) return;
@@ -531,8 +569,13 @@ async function pollOnce() {
         lastTranscript = finalTranscript;
         localStorage.setItem("ow_last_transcript", lastTranscript);
         syncWidgetFrame();
-        await invoke("paste_to_target", { text: finalTranscript });
-        showToast("Transcribed and pasted", 2000);
+        try {
+          await invoke("paste_to_target", { text: finalTranscript });
+          showToast("Transcribed and pasted", 2000);
+        } catch (err) {
+          logDebug(`paste_to_target error=${err instanceof Error ? err.message : String(err)}`);
+          showToast("Transcript ready - paste failed, use Copy", 3000);
+        }
       }
       cleanup();
       setState("idle");
@@ -569,7 +612,7 @@ async function handlePressToTalkStart() {
 
   // If the user released the shortcut while startup was still in flight,
   // stop immediately once recording is actually active.
-  if (!pressToTalkHeld && state === "recording") {
+  if (!pressToTalkHeld && isRecordingState(state)) {
     logDebug("pressToTalkStart detected release during startup");
     await stopRecording();
   }

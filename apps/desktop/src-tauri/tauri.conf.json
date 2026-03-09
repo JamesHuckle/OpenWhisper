@@ -29,8 +29,12 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/icon.ico", "icons/icon.png"],
-    "resources": ["binaries/*"]
+    "icon": ["icons/icon.ico", "icons/icon.icns", "icons/icon.png"],
+    "resources": ["binaries/*"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "entitlements": "./Entitlements.plist"
+    }
   }
 }
 
