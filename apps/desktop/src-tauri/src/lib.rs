@@ -443,7 +443,7 @@ struct FrontendSettings {
     refine_prompt: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OverlayAnchor {
     center_x: i32,
     bottom_y: i32,
@@ -474,6 +474,93 @@ struct AppState {
     overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
     overlay_layout_locked: AtomicBool,
     overlay_expected_frame: std::sync::Mutex<Option<OverlayFrame>>,
+}
+
+#[cfg(target_os = "windows")]
+fn cursor_overlay_anchor() -> Option<OverlayAnchor> {
+    overlay_positioner::cursor_monitor_anchor()
+        .map(|(center_x, bottom_y)| OverlayAnchor { center_x, bottom_y })
+}
+
+fn cache_overlay_anchor(state: &Arc<AppState>, anchor: OverlayAnchor) -> Result<(), String> {
+    let mut guard = state
+        .overlay_anchor
+        .lock()
+        .map_err(|_| "Failed to lock overlay anchor".to_string())?;
+    *guard = Some(anchor);
+    Ok(())
+}
+
+fn resolve_overlay_anchor(state: &Arc<AppState>) -> Result<Option<OverlayAnchor>, String> {
+    let mut guard = state
+        .overlay_anchor
+        .lock()
+        .map_err(|_| "Failed to lock overlay anchor".to_string())?;
+
+    #[cfg(target_os = "windows")]
+    if let Some(anchor) = cursor_overlay_anchor() {
+        *guard = Some(anchor);
+    }
+
+    Ok(*guard)
+}
+
+fn overlay_window_position_for_anchor(
+    state: &Arc<AppState>,
+    anchor: OverlayAnchor,
+    physical_width: i32,
+    physical_height: i32,
+) -> Result<PhysicalPosition<i32>, String> {
+    let x = anchor.center_x - physical_width / 2;
+    let y = anchor.bottom_y - physical_height;
+
+    {
+        let mut expected = state
+            .overlay_expected_frame
+            .lock()
+            .map_err(|_| "Failed to lock overlay frame".to_string())?;
+        *expected = Some(OverlayFrame {
+            x,
+            y,
+            width: physical_width,
+            height: physical_height,
+        });
+    }
+
+    Ok(PhysicalPosition::new(x, y))
+}
+
+#[cfg(target_os = "windows")]
+fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Result<(), String> {
+    let state = app.state::<Arc<AppState>>().inner().clone();
+    cache_overlay_anchor(&state, anchor)?;
+
+    if state.overlay_layout_locked.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    if !window.is_visible().map_err(|e| e.to_string())? {
+        return Ok(());
+    }
+
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let position = overlay_window_position_for_anchor(
+        &state,
+        anchor,
+        size.width as i32,
+        size.height as i32,
+    )?;
+
+    state.overlay_layout_locked.store(true, Ordering::SeqCst);
+    let position_result = window
+        .set_position(Position::Physical(position))
+        .map_err(|e| e.to_string());
+    state.overlay_layout_locked.store(false, Ordering::SeqCst);
+    position_result
 }
 
 fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
@@ -781,60 +868,37 @@ fn overlay_apply_layout(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
+    let app_state = state.inner().clone();
+
     #[cfg(target_os = "windows")]
     {
-        // Always resolve the anchor from the cursor's current monitor so the
-        // overlay follows whichever screen the mouse is on.  Fall back to a
-        // previously cached value only when the Win32 call fails.
-        let anchor = {
-            let mut guard = state
-                .overlay_anchor
-                .lock()
-                .map_err(|_| "Failed to lock overlay anchor".to_string())?;
-
-            if let Some((center_x, bottom_y)) = overlay_positioner::cursor_monitor_anchor() {
-                *guard = Some(OverlayAnchor { center_x, bottom_y });
-            }
-
-            *guard
-        };
+        let anchor = resolve_overlay_anchor(&app_state)?;
 
         if let Some(anchor) = anchor {
             let scale = window.scale_factor().map_err(|e| e.to_string())?;
             let physical_width = (width * scale).round() as i32;
             let physical_height = (height * scale).round() as i32;
-            let x = anchor.center_x - physical_width / 2;
-            let y = anchor.bottom_y - physical_height;
-
-            {
-                let mut expected = state
-                    .overlay_expected_frame
-                    .lock()
-                    .map_err(|_| "Failed to lock overlay frame".to_string())?;
-                *expected = Some(OverlayFrame {
-                    x,
-                    y,
-                    width: physical_width,
-                    height: physical_height,
-                });
-            }
-
-            state.overlay_layout_locked.store(true, Ordering::SeqCst);
 
             let size_result = window
                 .set_size(Size::Logical(LogicalSize::new(width, height)))
                 .map_err(|e| e.to_string());
 
             if let Err(err) = size_result {
-                state.overlay_layout_locked.store(false, Ordering::SeqCst);
                 return Err(err);
             }
 
-            let position_result = window
-                .set_position(Position::Physical(PhysicalPosition::new(x, y)))
-                .map_err(|e| e.to_string());
+            let position = overlay_window_position_for_anchor(
+                &app_state,
+                anchor,
+                physical_width,
+                physical_height,
+            )?;
 
-            state.overlay_layout_locked.store(false, Ordering::SeqCst);
+            app_state.overlay_layout_locked.store(true, Ordering::SeqCst);
+            let position_result = window
+                .set_position(Position::Physical(position))
+                .map_err(|e| e.to_string());
+            app_state.overlay_layout_locked.store(false, Ordering::SeqCst);
             position_result?;
             return Ok(());
         }
@@ -1064,8 +1128,22 @@ pub fn run() {
                 std::thread::spawn(move || {
                     let mut last_hook_log = std::time::Instant::now();
                     let mut last_hook_event = String::new();
+                    let mut last_cursor_anchor: Option<OverlayAnchor> = None;
                     loop {
                         text_inserter::save_foreground();
+                        if let Some(anchor) = cursor_overlay_anchor() {
+                            if last_cursor_anchor != Some(anchor) {
+                                if let Err(err) = sync_overlay_window_to_anchor(&poll_handle, anchor)
+                                {
+                                    debug_log_line(
+                                        "window",
+                                        &format!("sync_overlay_window_to_anchor failed: {err}"),
+                                    );
+                                } else {
+                                    last_cursor_anchor = Some(anchor);
+                                }
+                            }
+                        }
                         let should_start = text_inserter::take_press_to_talk_start();
                         let should_stop = text_inserter::take_press_to_talk_stop();
                         let debug_events = text_inserter::take_debug_events();
