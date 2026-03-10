@@ -53,6 +53,8 @@ const EXPANDED_WIDTH = 100;
 const EXPANDED_HEIGHT = 28;
 const TRANSCRIBE_TIMEOUT_MS = 20_000;
 const MENU_GAP = 12;
+const API_KEY_BUBBLE_WIDTH = 188;
+const API_KEY_BUBBLE_STACK_HEIGHT = 44;
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -60,6 +62,19 @@ const MENU_GAP = 12;
 const app = document.getElementById("app")!;
 app.innerHTML = `
   <div id="widget-shell">
+    <div id="api-key-bubble" class="api-key-bubble hidden" role="button" tabindex="0" aria-label="Add your OpenAI API key in settings">
+      <span class="api-key-bubble-logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M2 4L6 20L12 10L18 20L22 4" />
+        </svg>
+      </span>
+      <span class="api-key-bubble-text">Add OpenAI API key</span>
+      <span class="api-key-bubble-arrow" aria-hidden="true">
+        <svg viewBox="0 0 20 20" fill="none">
+          <path d="M7 5L12 10L7 15" />
+        </svg>
+      </span>
+    </div>
     <div id="widget" tabindex="0" role="button" aria-label="Click to start or stop transcription">
       <div class="widget-surface" aria-hidden="true"></div>
 
@@ -123,16 +138,16 @@ app.innerHTML = `
         <span class="menu-link-bold">Create or manage</span> keys at platform.openai.com/api-keys
       </a>
       <div class="menu-divider"></div>
-      <div class="menu-section">Transcription Prompt</div>
+      <div class="menu-section">Dictionary</div>
       <div id="menu-target-app" class="menu-target-app">
         <span class="target-app-dot"></span>
         <span id="menu-target-app-name">Detecting…</span>
       </div>
       <textarea id="menu-prompt-input" class="menu-prompt-input" rows="3" placeholder="e.g. Glossary: @README.md, @package.json, Daniël" spellcheck="false"></textarea>
-      <div class="menu-prompt-hint">Style guide &amp; vocabulary for the transcription model (224 token limit)</div>
+      <div class="menu-prompt-hint">Custom vocabulary hints for the transcription model (224 token limit)</div>
       <div class="menu-divider"></div>
       <div class="menu-toggle-row">
-        <span class="menu-section menu-section-inline">Refine</span>
+        <span class="menu-section menu-section-inline">Refine with AI</span>
         <label class="toggle-switch">
           <input id="menu-refine-toggle" type="checkbox" />
           <span class="toggle-track"></span>
@@ -140,13 +155,14 @@ app.innerHTML = `
         </label>
       </div>
       <textarea id="menu-refine-prompt-input" class="menu-prompt-input" rows="3" placeholder="Leave blank for default: strip fillers, fix sentences, add lists when enumerated" spellcheck="false"></textarea>
-      <div class="menu-prompt-hint">Custom instructions for the refinement pass (gpt-5-nano)</div>
+      <div class="menu-prompt-hint">Custom instructions for the refinement pass (gpt-5-nano). This can add about 1-2 seconds to transcription time.</div>
     </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>
 `;
 
+const apiKeyBubble = document.getElementById("api-key-bubble")!;
 const widget = document.getElementById("widget")!;
 const meterCanvas = document.getElementById("meter-canvas") as HTMLCanvasElement;
 const waveBars = document.querySelectorAll<HTMLElement>(".wave-bar");
@@ -163,6 +179,7 @@ const menuRefineToggle = document.getElementById("menu-refine-toggle") as HTMLIn
 const menuRefinePromptInput = document.getElementById("menu-refine-prompt-input") as HTMLTextAreaElement;
 const menuTargetAppName = document.getElementById("menu-target-app-name")!;
 
+let hasOpenaiApiKey = false;
 let storedKeyPreview = "";
 let showingStoredKeyPreview = false;
 let keyInputDirty = false;
@@ -193,14 +210,25 @@ function getWidgetSize() {
   return { width: COLLAPSED_WIDTH, height: COLLAPSED_HEIGHT };
 }
 
+const widgetShell = document.getElementById("widget-shell")!;
+
 function syncWidgetFrame() {
   const widgetSize = getWidgetSize();
-  widget.style.setProperty("--widget-width", `${widgetSize.width}px`);
-  widget.style.setProperty("--widget-height", `${widgetSize.height}px`);
+  widgetShell.style.setProperty("--widget-width", `${widgetSize.width}px`);
+  widgetShell.style.setProperty("--widget-height", `${widgetSize.height}px`);
   widget.dataset.expanded = String(isWidgetExpanded());
   widget.dataset.hovered = String(widgetHovered);
   widget.dataset.menuOpen = String(menuOpen);
   widget.dataset.hasLastTranscript = String(lastTranscript.length > 0);
+}
+
+function syncApiKeyBubble() {
+  const show = !hasOpenaiApiKey && state === "idle";
+  if (show) {
+    apiKeyBubble.classList.remove("hidden");
+  } else {
+    apiKeyBubble.classList.add("hidden");
+  }
 }
 
 function setWidgetHovered(next: boolean) {
@@ -212,14 +240,22 @@ function setWidgetHovered(next: boolean) {
 
 function getWindowLayout() {
   const widgetSize = getWidgetSize();
+  const bubbleVisible = !hasOpenaiApiKey && state === "idle";
+  const bubbleStackHeight = bubbleVisible ? API_KEY_BUBBLE_STACK_HEIGHT : 0;
+
   if (!menuOpen || micMenu.classList.contains("hidden")) {
-    return widgetSize;
+    return {
+      width: Math.max(widgetSize.width, bubbleVisible ? API_KEY_BUBBLE_WIDTH : widgetSize.width),
+      height: widgetSize.height + bubbleStackHeight,
+    };
   }
 
   const menuRect = micMenu.getBoundingClientRect();
+  const menuStackHeight = MENU_GAP + Math.ceil(menuRect.height);
+  const totalExtraHeight = Math.max(bubbleStackHeight, menuStackHeight);
   return {
-    width: Math.max(widgetSize.width, Math.ceil(menuRect.width)),
-    height: widgetSize.height + MENU_GAP + Math.ceil(menuRect.height),
+    width: Math.max(widgetSize.width, Math.ceil(menuRect.width), bubbleVisible ? API_KEY_BUBBLE_WIDTH : 0),
+    height: widgetSize.height + totalExtraHeight,
   };
 }
 
@@ -310,7 +346,36 @@ btnDropdown.addEventListener("click", (e) => {
   toggleMenu();
 });
 
+async function openSettingsForApiKey() {
+  if (!menuOpen) {
+    await openMenu();
+  }
+  requestAnimationFrame(() => {
+    menuKeyInput.focus();
+  });
+}
+
+apiKeyBubble.addEventListener("click", (e) => {
+  e.stopPropagation();
+  e.preventDefault();
+  void openSettingsForApiKey();
+});
+
+apiKeyBubble.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    void openSettingsForApiKey();
+  }
+});
+
 function handleWidgetClick(e: MouseEvent) {
+  if (menuOpen) {
+    closeMenu();
+    e.stopPropagation();
+    e.preventDefault();
+    return;
+  }
+
   if (state === "recording" || state === "transcribing") {
     e.stopPropagation();
     e.preventDefault();
@@ -374,9 +439,13 @@ widget.addEventListener("pointerenter", handleWidgetPointerEnter);
 widget.addEventListener("pointerleave", handleWidgetPointerLeave);
 
 document.addEventListener("click", (e) => {
-  if (!micMenu.contains(e.target as Node) && e.target !== btnDropdown) {
-    if (!micMenu.classList.contains("hidden")) closeMenu();
+  if (!micMenu.contains(e.target as Node) && !micMenu.classList.contains("hidden")) {
+    closeMenu();
   }
+});
+
+window.addEventListener("blur", () => {
+  if (menuOpen) closeMenu();
 });
 
 // ---------------------------------------------------------------------------
@@ -397,6 +466,7 @@ function setState(next: WidgetState) {
   logDebug(`setState ${state} -> ${next}`);
   state = next;
   widget.dataset.state = next;
+  syncApiKeyBubble();
   void applyOverlayLayout();
 }
 
@@ -742,6 +812,8 @@ function syncRefinePromptVisibility() {
 }
 
 function applySettingsUi(settings: AppSettings, configuredLabel = "Key configured") {
+  hasOpenaiApiKey = settings.hasOpenaiApiKey;
+  syncApiKeyBubble();
   applyStoredKeyPreview(settings.openaiApiKeyPreview);
   menuKeyStatus.textContent = settings.hasOpenaiApiKey ? configuredLabel : "Not configured";
   menuKeyStatus.className = `menu-item ${settings.hasOpenaiApiKey ? "key-ok" : "key-missing"}`;
@@ -982,6 +1054,7 @@ void listen("overlay-revealed", () => void collapseOverlay());
 // ---------------------------------------------------------------------------
 widget.dataset.state = state;
 syncWidgetFrame();
+syncApiKeyBubble();
 void applyOverlayLayout(true);
 void loadSettings();
 void ensureAutostartEnabled();

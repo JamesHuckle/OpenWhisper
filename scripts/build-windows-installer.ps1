@@ -135,13 +135,39 @@ Write-Host "==> Sync worker dependencies"
 Push-Location -LiteralPath $WorkerDir
 if (Test-Path ".venv") {
   Write-Host "==> Removing existing worker .venv"
+  # Kill any Python processes that may be locking the venv (e.g. from a previous run or IDE)
+  $venvAbs = (Join-Path (Get-Location) ".venv").ToLowerInvariant()
+  Get-Process python*, pythonw* -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+      $procPath = $_.Path
+      if (-not $procPath -and $_.MainModule) { $procPath = $_.MainModule.FileName }
+      if ($procPath -and $procPath.ToLowerInvariant().StartsWith($venvAbs)) {
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        Write-Host "    Stopped Python process $($_.Id) locking .venv"
+      }
+    } catch { }
+  }
+  Start-Sleep -Seconds 1
+  $removed = $false
   try {
     Remove-Item ".venv" -Recurse -Force -ErrorAction Stop
+    $removed = $true
   } catch {
     cmd /c "rmdir /s /q .venv" | Out-Null
+    $removed = -not (Test-Path ".venv")
+  }
+  if (-not $removed) {
+    Write-Host "    First attempt failed. Stopping all Python processes and retrying..."
+    Get-Process python*, pythonw* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    try {
+      Remove-Item ".venv" -Recurse -Force -ErrorAction Stop
+    } catch {
+      cmd /c "rmdir /s /q .venv" | Out-Null
+    }
   }
   if (Test-Path ".venv") {
-    throw "Failed to remove worker .venv from build directory"
+    throw "Failed to remove worker .venv from build directory. Close any terminals/IDEs using the worker venv and retry."
   }
 }
 uv sync
@@ -160,13 +186,33 @@ Push-Location -LiteralPath $DesktopDir
 if (-not $SkipNpmInstall) {
   if (Test-Path "node_modules") {
     Write-Host "==> Removing existing node_modules"
+    # Node child processes (esbuild, rollup, tauri-cli) can lock binaries in node_modules
+    $nodeProcs = Get-Process node -ErrorAction SilentlyContinue
+    if ($nodeProcs) {
+      $nodeProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "    Stopped $($nodeProcs.Count) Node process(es) that may lock node_modules"
+      Start-Sleep -Seconds 2
+    }
+    $removed = $false
     try {
       Remove-Item "node_modules" -Recurse -Force -ErrorAction Stop
+      $removed = $true
     } catch {
       cmd /c "rmdir /s /q node_modules" | Out-Null
+      $removed = -not (Test-Path "node_modules")
+    }
+    if (-not $removed) {
+      Write-Host "    First attempt failed. Stopping all Node processes and retrying..."
+      Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 2
+      try {
+        Remove-Item "node_modules" -Recurse -Force -ErrorAction Stop
+      } catch {
+        cmd /c "rmdir /s /q node_modules" | Out-Null
+      }
     }
     if (Test-Path "node_modules") {
-      throw "Failed to remove node_modules from build directory"
+      throw "Failed to remove node_modules from build directory. Close any terminals/IDEs using the desktop app and retry."
     }
   }
   Write-Host "==> Install desktop dependencies"
