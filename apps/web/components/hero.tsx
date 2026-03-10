@@ -27,7 +27,7 @@ export async function Hero() {
         <h1 className="animate-fade-in-up delay-200 text-5xl font-extrabold leading-[1.1] tracking-tight sm:text-6xl md:text-7xl">
           Voice to text,
           <br />
-          <span className="bg-gradient-to-r from-accent to-purple-400 bg-clip-text text-transparent">
+          <span className="bg-gradient-to-r from-accent to-emerald-400 bg-clip-text text-transparent">
             everywhere.
           </span>
         </h1>
@@ -54,7 +54,7 @@ export async function Hero() {
           >
             OpenAI API key
           </a>{" "}
-          — takes 30 seconds to create, free to start.
+          — takes seconds to create.
         </div>
 
         {/* CTA */}

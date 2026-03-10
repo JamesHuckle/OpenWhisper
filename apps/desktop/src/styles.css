@@ -104,9 +104,9 @@ body {
 .stop-btn {
   position: absolute;
   top: 50%;
-  left: 3px;
-  width: 18px;
-  height: 18px;
+  left: 2px;
+  width: 26px;
+  height: 26px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -121,8 +121,8 @@ body {
 }
 
 .stop-btn svg {
-  width: 10px;
-  height: 10px;
+  width: 16px;
+  height: 16px;
 }
 
 #widget[data-state="recording"] .stop-btn,
@@ -131,71 +131,151 @@ body {
   pointer-events: auto;
 }
 
-#widget[data-state="recording"] .copy-btn,
-#widget[data-state="transcribing"] .copy-btn {
+#widget[data-state="recording"] .mic-btn,
+#widget[data-state="transcribing"] .mic-btn {
   opacity: 0;
   pointer-events: none;
 }
 
+/* Real-time volume bars — Winamp-style, driven by mic frequency data */
 .meter {
   position: absolute;
   top: 50%;
   left: 24px;
   right: 26px;
-  height: 8px;
-  border-radius: 999px;
-  overflow: hidden;
+  height: 28px;
   z-index: 1;
   transform: translateY(-50%);
   opacity: 0;
   pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  overflow: hidden;
+}
+
+/* Idle baseline — visible at rest */
+.meter-baseline {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 48px;
+  height: 2px;
+  margin-left: -24px;
+  margin-top: -1px;
+  background: rgba(158, 240, 201, 0.6);
+  border-radius: 1px;
+  pointer-events: none;
+  display: none;
+}
+
+/* Idle wobbly line — subtle wave when expanded and idle */
+.meter-idle-wave {
+  position: absolute;
+  left: 1px;
+  width: 50px;
+  height: 28px;
+  color: rgba(158, 240, 201, 0.5);
+  display: none;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.meter-idle-wave-path {
+  animation: idle-wave-wobble 2.5s ease-in-out infinite;
+}
+
+@keyframes idle-wave-wobble {
+  0%, 100% { transform: translate(0, 0) scaleY(1); opacity: 0.65; }
+  25% { transform: translate(1px, -1.5px) scaleY(1.05); opacity: 0.9; }
+  50% { transform: translate(-0.5px, 0.5px) scaleY(0.96); opacity: 0.8; }
+  75% { transform: translate(-1px, -1px) scaleY(1.02); opacity: 0.85; }
+}
+
+#widget[data-expanded="true"][data-state="transcribing"] .meter-idle-wave,
+#widget[data-expanded="true"][data-state="recording"][data-silent="true"] .meter-idle-wave {
+  display: block;
+}
+
+[data-state="idle"] .meter-idle-wave,
+#widget[data-state="recording"]:not([data-silent="true"]) .meter-idle-wave {
+  display: none;
+}
+
+#widget[data-expanded="true"][data-state="idle"] .meter,
+#widget[data-expanded="true"][data-state="transcribing"] .meter,
+#widget[data-expanded="true"][data-state="recording"] .meter {
+  opacity: 1;
+}
+
+.meter-canvas {
+  display: none;
+  width: 48px;
+  height: 28px;
+  border-radius: 4px;
+  position: relative;
+  z-index: 1;
+  transform: scaleY(1.5);
+  transform-origin: center center;
+}
+
+[data-state="recording"] .meter-baseline {
+  display: block;
+}
+
+.meter-idle-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+}
+
+[data-state="recording"] .meter-canvas {
+  display: block;
+}
+
+[data-state="recording"] .meter-idle-bars {
+  display: none;
+}
+
+[data-state="transcribing"] .meter-canvas {
+  display: none;
+}
+
+[data-state="transcribing"] .meter-idle-bars {
+  display: none;
 }
 
 #widget[data-expanded="false"] .meter,
 #widget[data-expanded="false"] .stop-btn,
-#widget[data-expanded="false"] .copy-btn,
+#widget[data-expanded="false"] .mic-btn,
 #widget[data-expanded="false"] .record-control,
 #widget[data-expanded="false"] .dropdown-btn {
   opacity: 0;
   pointer-events: none;
 }
 
-.meter-track,
-.meter-fill {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
+.wave-bar {
+  --wave-level: 0.15;
+  width: 3px;
+  height: 10px;
+  border-radius: 999px;
+  transform-origin: center bottom;
+  transform: scaleY(var(--wave-level));
+  background: linear-gradient(to top, var(--accent), var(--accent-strong));
+  box-shadow: 0 0 6px var(--accent-dim);
+  transition: transform 45ms ease-out;
+  opacity: 0;
 }
 
-.meter-track {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03)),
-    rgba(255, 255, 255, 0.02);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
-}
-
-.meter::after {
-  content: "";
-  position: absolute;
-  inset: 2px 7px;
-  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.18) 1px, transparent 1.3px);
-  background-size: 9px 9px;
-  opacity: 0.42;
-  pointer-events: none;
-}
-
-.meter-fill {
-  --meter-level: 0.12;
-  transform: scaleX(var(--meter-level));
-  transform-origin: left center;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0.85) 15%, var(--accent) 58%, var(--accent-strong) 100%);
-  box-shadow:
-    inset 0 0 10px rgba(255, 255, 255, 0.14),
-    0 0 18px var(--accent-dim);
-  transition: transform 60ms linear, opacity 140ms ease;
-  opacity: 0.26;
-}
+.wave-bar:nth-child(1) { height: 5px; }
+.wave-bar:nth-child(2) { height: 8px; }
+.wave-bar:nth-child(3) { height: 10px; }
+.wave-bar:nth-child(4) { height: 7px; }
+.wave-bar:nth-child(5) { height: 9px; }
+.wave-bar:nth-child(6) { height: 6px; }
+.wave-bar:nth-child(7) { height: 8px; }
 
 [data-state="recording"] .widget-surface {
   border-color: rgba(126, 240, 191, 0.22);
@@ -210,7 +290,25 @@ body {
   opacity: 1;
 }
 
-[data-state="recording"] .meter-fill {
+[data-state="transcribing"] .wave-bar {
+  animation: wave-bar-idle 1.2s ease-in-out infinite;
+}
+
+[data-state="transcribing"] .wave-bar:nth-child(1) { animation-delay: 0s; }
+[data-state="transcribing"] .wave-bar:nth-child(2) { animation-delay: 0.1s; }
+[data-state="transcribing"] .wave-bar:nth-child(3) { animation-delay: 0.2s; }
+[data-state="transcribing"] .wave-bar:nth-child(4) { animation-delay: 0.3s; }
+[data-state="transcribing"] .wave-bar:nth-child(5) { animation-delay: 0.2s; }
+[data-state="transcribing"] .wave-bar:nth-child(6) { animation-delay: 0.1s; }
+[data-state="transcribing"] .wave-bar:nth-child(7) { animation-delay: 0s; }
+
+@keyframes wave-bar-idle {
+  0%, 100% { opacity: 0.7; transform: scaleY(0.4); }
+  50% { opacity: 1; transform: scaleY(var(--wave-level)); }
+}
+
+[data-state="recording"] .wave-bar,
+[data-state="transcribing"] .wave-bar {
   opacity: 1;
 }
 
@@ -241,49 +339,49 @@ body {
   animation: spin 0.8s linear infinite;
 }
 
-[data-state="transcribing"] .meter-fill {
-  opacity: 0.82;
-  animation: processing 1.1s ease-in-out infinite;
-}
 
-.copy-btn {
+.mic-btn {
   position: absolute;
   top: 50%;
-  left: 3px;
-  width: 18px;
-  height: 18px;
-  border: 1px solid var(--border);
+  left: 2px;
+  width: 26px;
+  height: 26px;
+  border: none;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.03);
-  color: rgba(255, 255, 255, 0.46);
+  background: transparent;
+  color: var(--accent);
   cursor: pointer;
   display: grid;
   place-items: center;
   transform: translateY(-50%);
-  transition: color 100ms ease, border-color 100ms ease, transform 100ms ease;
+  transition: transform 100ms ease;
   opacity: 0;
   pointer-events: none;
   z-index: 2;
 }
 
-.copy-btn:hover {
-  color: var(--accent-strong);
-  border-color: var(--accent);
-  transform: translateY(-50%) scale(1.05);
+.mic-btn:hover {
+  transform: translateY(-50%) scale(1.08);
 }
 
-.copy-btn:active {
+.mic-btn:active {
   transform: translateY(-50%) scale(0.94);
 }
 
-.copy-btn svg {
-  width: 10px;
-  height: 10px;
+.mic-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
-#widget[data-expanded="true"][data-has-last-transcript="true"][data-state="idle"] .copy-btn {
-  border-color: var(--accent);
-  color: var(--accent-strong);
+#widget[data-expanded="true"][data-state="idle"] .mic-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+#widget[data-expanded="true"][data-state="idle"][data-hovered="true"] .mic-btn,
+#widget[data-expanded="true"][data-menu-open="true"][data-state="idle"] .mic-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .record-control {
@@ -327,16 +425,6 @@ body {
   cursor: pointer;
 }
 
-#widget[data-expanded="true"][data-has-last-transcript="true"][data-state="idle"] .copy-btn {
-  opacity: 0.62;
-  pointer-events: auto;
-}
-
-#widget[data-expanded="true"][data-has-last-transcript="true"][data-state="idle"][data-hovered="true"] .copy-btn,
-#widget[data-expanded="true"][data-menu-open="true"][data-has-last-transcript="true"][data-state="idle"] .copy-btn {
-  opacity: 1;
-  pointer-events: auto;
-}
 
 .dropdown-btn {
   position: absolute;
@@ -641,13 +729,3 @@ body {
   }
 }
 
-@keyframes processing {
-  0%,
-  100% {
-    transform: scaleX(0.44);
-  }
-
-  50% {
-    transform: scaleX(0.82);
-  }
-}

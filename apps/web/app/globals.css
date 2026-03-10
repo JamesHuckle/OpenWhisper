@@ -7,9 +7,9 @@
   --color-border: #3f3f46;
   --color-text: #fafafa;
   --color-text-muted: #a1a1aa;
-  --color-accent: #6366f1;
-  --color-accent-hover: #818cf8;
-  --color-accent-glow: rgba(99, 102, 241, 0.25);
+  --color-accent: #38d996;
+  --color-accent-hover: #45e6a3;
+  --color-accent-glow: rgba(56, 217, 150, 0.25);
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 

@@ -1,15 +1,21 @@
+/** Dark mode logo: dark bg (#0d1016) + green "w" (#38d996). Use everywhere for consistency. */
 export function LogoIcon({ className = "" }: { className?: string }) {
   return (
     <svg
       className={className}
-      viewBox="0 0 24 24"
+      viewBox="0 0 512 512"
       fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
     >
-      <path d="M2 4L6 20L12 10L18 20L22 4" />
+      <rect width="512" height="512" rx="96" fill="#0d1016" />
+      <g
+        transform="translate(256,256) scale(14) translate(-12,-12)"
+        stroke="#38d996"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M2 4L6 20L12 10L18 20L22 4" />
+      </g>
     </svg>
   );
 }

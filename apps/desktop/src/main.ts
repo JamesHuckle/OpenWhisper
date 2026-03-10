@@ -4,6 +4,7 @@ import {
   enable as enableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
+import { continuousVisualizer } from "sound-visualizer";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -36,10 +37,11 @@ let pressToTalkHeld = false;
 let pressToTalkStarting = false;
 const pendingChunkUploads = new Set<Promise<void>>();
 
-let audioContext: AudioContext | null = null;
-let analyser: AnalyserNode | null = null;
 let micStream: MediaStream | null = null;
-let volumeRafId: number | null = null;
+let soundVisualizer: { start: () => void; stop: () => void; reset: () => void } | null = null;
+let volumeMonitorFrameId: number | null = null;
+let volumeMonitorDisconnect: (() => void) | null = null;
+const SILENT_THRESHOLD = 14;
 let transcribeTimer: number | null = null;
 let micDevices: MicDevice[] = [];
 let selectedMicId = "default";
@@ -48,7 +50,7 @@ let menuOpen = false;
 const COLLAPSED_WIDTH = 38;
 const COLLAPSED_HEIGHT = 14;
 const EXPANDED_WIDTH = 100;
-const EXPANDED_HEIGHT = 22;
+const EXPANDED_HEIGHT = 28;
 const TRANSCRIBE_TIMEOUT_MS = 20_000;
 const MENU_GAP = 12;
 
@@ -61,9 +63,21 @@ app.innerHTML = `
     <div id="widget" tabindex="0" role="button" aria-label="Click to start or stop transcription">
       <div class="widget-surface" aria-hidden="true"></div>
 
-      <span class="meter" aria-hidden="true">
-        <span class="meter-track"></span>
-        <span id="meter-fill" class="meter-fill"></span>
+      <span class="meter meter-wave-bars" aria-hidden="true">
+        <span class="meter-baseline" aria-hidden="true"></span>
+        <svg class="meter-idle-wave" viewBox="0 0 76 28" aria-hidden="true">
+          <path class="meter-idle-wave-path" d="M0,14 C6,11 12,17 18,14 C24,11 30,17 36,14 C42,11 48,17 54,14 C60,11 66,17 72,14 C74,12 76,14" fill="none" stroke="currentColor" stroke-width="0.9" stroke-linecap="round" />
+        </svg>
+        <canvas id="meter-canvas" class="meter-canvas" width="48" height="28"></canvas>
+        <span class="meter-idle-bars">
+          <span class="wave-bar" data-bar="0"></span>
+          <span class="wave-bar" data-bar="1"></span>
+          <span class="wave-bar" data-bar="2"></span>
+          <span class="wave-bar" data-bar="3"></span>
+          <span class="wave-bar" data-bar="4"></span>
+          <span class="wave-bar" data-bar="5"></span>
+          <span class="wave-bar" data-bar="6"></span>
+        </span>
       </span>
 
       <button id="btn-stop" class="stop-btn" type="button" title="Stop recording" aria-hidden="true">
@@ -72,10 +86,11 @@ app.innerHTML = `
         </svg>
       </button>
 
-      <button id="btn-copy" class="copy-btn" type="button" title="Copy last transcript to clipboard">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="9" y="9" width="11" height="11" rx="2" />
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+      <button id="btn-mic" class="mic-btn" type="button" title="Click to start recording">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+          <line x1="12" x2="12" y1="19" y2="22" />
         </svg>
       </button>
 
@@ -133,12 +148,13 @@ app.innerHTML = `
 `;
 
 const widget = document.getElementById("widget")!;
-const btnCopy = document.getElementById("btn-copy") as HTMLButtonElement;
+const meterCanvas = document.getElementById("meter-canvas") as HTMLCanvasElement;
+const waveBars = document.querySelectorAll<HTMLElement>(".wave-bar");
+const btnMic = document.getElementById("btn-mic") as HTMLButtonElement;
 const btnDropdown = document.getElementById("btn-dropdown") as HTMLButtonElement;
 const micMenu = document.getElementById("mic-menu")!;
 const micList = document.getElementById("mic-list")!;
 const toast = document.getElementById("toast")!;
-const meterFill = document.getElementById("meter-fill")!;
 const menuKeyStatus = document.getElementById("menu-key-status")!;
 const menuKeyInput = document.getElementById("menu-key-input") as HTMLInputElement;
 const menuKeyLink = document.getElementById("menu-key-link") as HTMLAnchorElement;
@@ -161,16 +177,9 @@ let expandTimeoutId: number | null = null;
 let collapseTimeoutId: number | null = null;
 let lastAppliedLayout: { width: number; height: number } | null = null;
 
-setMeterLevel(0.12);
-
 function logDebug(message: string) {
   const timestamp = new Date().toISOString();
   void invoke("debug_log", { message: `${timestamp} ${message}` }).catch(() => {});
-}
-
-function setMeterLevel(level: number) {
-  const clamped = Math.max(0.08, Math.min(level, 1));
-  meterFill.style.setProperty("--meter-level", clamped.toFixed(3));
 }
 
 function isWidgetExpanded() {
@@ -313,7 +322,7 @@ function handleWidgetClick(e: MouseEvent) {
     }
     return;
   }
-  if (btnCopy.contains(e.target as Node) || btnDropdown.contains(e.target as Node)) return;
+  if (btnMic.contains(e.target as Node) || btnDropdown.contains(e.target as Node)) return;
   void toggleRecording();
 }
 
@@ -329,7 +338,7 @@ function handleWidgetKeydown(e: KeyboardEvent) {
     }
     return;
   }
-  if ((e.key === "Enter" || e.key === " ") && !btnCopy.contains(e.target as Node) && !btnDropdown.contains(e.target as Node)) {
+  if ((e.key === "Enter" || e.key === " ") && !btnMic.contains(e.target as Node) && !btnDropdown.contains(e.target as Node)) {
     e.preventDefault();
     void toggleRecording();
   }
@@ -392,39 +401,16 @@ function setState(next: WidgetState) {
 }
 
 // ---------------------------------------------------------------------------
-// Volume meter animation
+// Meter — sound-visualizer (recording) + idle bars (transcribing)
 // ---------------------------------------------------------------------------
-function startVolumeLoop() {
-  if (!analyser) return;
-  const buf = new Uint8Array(analyser.fftSize);
-  let smoothedLevel = 0.08;
+const VOLUME_BAR_COUNT = 7;
 
-  const tick = () => {
-    analyser!.getByteTimeDomainData(buf);
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) {
-      const v = (buf[i] - 128) / 128;
-      sum += v * v;
-    }
-    const rms = Math.sqrt(sum / buf.length);
-    const level = Math.min(rms / 0.16, 1);
-    smoothedLevel =
-      level > smoothedLevel
-        ? smoothedLevel * 0.35 + level * 0.65
-        : smoothedLevel * 0.72 + level * 0.28;
-    setMeterLevel(0.08 + smoothedLevel * 0.92);
-    volumeRafId = requestAnimationFrame(tick);
-  };
-
-  tick();
-}
-
-function stopVolumeLoop(restingLevel = 0.12) {
-  if (volumeRafId !== null) {
-    cancelAnimationFrame(volumeRafId);
-    volumeRafId = null;
-  }
-  setMeterLevel(restingLevel);
+function setWaveBarLevels(levels: number[]) {
+  waveBars.forEach((bar, i) => {
+    const level = levels[i] ?? 0.15;
+    const clamped = Math.max(0.15, Math.min(level, 1));
+    bar.style.setProperty("--wave-level", clamped.toFixed(3));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +448,48 @@ function toBase64(buf: ArrayBuffer): string {
 }
 
 // ---------------------------------------------------------------------------
+// Volume monitor — show wobbly line when mic is silent during recording
+// ---------------------------------------------------------------------------
+function startVolumeMonitor(stream: MediaStream) {
+  const ctx = new AudioContext();
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 256;
+  const source = ctx.createMediaStreamSource(stream);
+  source.connect(analyser);
+  const data = new Uint8Array(analyser.fftSize);
+
+  function tick() {
+    if (state !== "recording") return;
+    analyser.getByteTimeDomainData(data);
+    let min = 255, max = 0;
+    for (let i = 0; i < data.length; i++) {
+      if (data[i] < min) min = data[i];
+      if (data[i] > max) max = data[i];
+    }
+    const range = max - min;
+    widget.dataset.silent = range < SILENT_THRESHOLD ? "true" : "false";
+    volumeMonitorFrameId = requestAnimationFrame(tick);
+  }
+  volumeMonitorFrameId = requestAnimationFrame(tick);
+
+  volumeMonitorDisconnect = () => {
+    if (volumeMonitorFrameId !== null) {
+      cancelAnimationFrame(volumeMonitorFrameId);
+      volumeMonitorFrameId = null;
+    }
+    source.disconnect();
+    analyser.disconnect();
+    ctx.close();
+    volumeMonitorDisconnect = null;
+    delete widget.dataset.silent;
+  };
+}
+
+function stopVolumeMonitor() {
+  volumeMonitorDisconnect?.();
+}
+
+// ---------------------------------------------------------------------------
 // Recording
 // ---------------------------------------------------------------------------
 async function startRecording() {
@@ -470,6 +498,7 @@ async function startRecording() {
   );
   if (state !== "idle") return;
   setState("recording");
+  widget.dataset.silent = "true";
 
   try {
     const settings = await invoke<AppSettings>("app_get_settings");
@@ -484,12 +513,13 @@ async function startRecording() {
     };
     micStream = await navigator.mediaDevices.getUserMedia(constraints);
 
-    audioContext = new AudioContext();
-    const source = audioContext.createMediaStreamSource(micStream);
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    source.connect(analyser);
-    startVolumeLoop();
+    soundVisualizer = continuousVisualizer(micStream, meterCanvas, {
+      strokeColor: "#9ef0c9",
+      rectWidth: 3,
+      slices: 20,
+    });
+    soundVisualizer.start();
+    startVolumeMonitor(micStream);
 
     const result = await invoke<{ session_id: string }>("worker_start_session", {
       profileId: "default",
@@ -535,19 +565,18 @@ async function stopRecording() {
   if (state !== "recording" || !currentSessionId) return;
   setState("transcribing");
   startTranscribeTimeout();
-  stopVolumeLoop(0.66);
+  if (soundVisualizer) {
+    soundVisualizer.stop();
+    soundVisualizer = null;
+  }
+  stopVolumeMonitor();
+  setWaveBarLevels(Array(VOLUME_BAR_COUNT).fill(0.5));
 
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     await new Promise<void>((resolve) => {
       mediaRecorder!.addEventListener("stop", () => resolve(), { once: true });
       mediaRecorder!.stop();
     });
-  }
-
-  if (audioContext) {
-    audioContext.close();
-    audioContext = null;
-    analyser = null;
   }
 
   await Promise.all(Array.from(pendingChunkUploads));
@@ -568,14 +597,13 @@ async function stopRecording() {
 
 function cleanup() {
   logDebug(`cleanup state=${state} session=${currentSessionId ?? "none"}`);
-  stopVolumeLoop();
   stopPolling();
   clearTranscribeTimeout();
-  if (audioContext) {
-    audioContext.close();
-    audioContext = null;
-    analyser = null;
+  if (soundVisualizer) {
+    soundVisualizer.stop();
+    soundVisualizer = null;
   }
+  stopVolumeMonitor();
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
   }
@@ -675,14 +703,9 @@ async function handlePressToTalkStop() {
   }
 }
 
-btnCopy.addEventListener("click", (e) => {
+btnMic.addEventListener("click", (e) => {
   e.stopPropagation();
-  if (!lastTranscript) return;
-  navigator.clipboard.writeText(lastTranscript).then(() => {
-    showToast("Last transcript copied", 2000);
-  }).catch(() => {
-    showToast("Copy failed — try again");
-  });
+  void toggleRecording();
 });
 
 // ---------------------------------------------------------------------------

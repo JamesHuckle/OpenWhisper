@@ -6,9 +6,7 @@ export function Footer() {
     <footer className="border-t border-border px-6 py-12">
       <div className="mx-auto flex max-w-5xl flex-col items-center gap-6 sm:flex-row sm:justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-bg-elevated">
-            <LogoIcon className="h-4 w-4 text-text-muted" />
-          </div>
+          <LogoIcon className="h-7 w-7 shrink-0" />
           <span className="text-sm text-text-muted">
             OpenWhisper &middot; Open source voice-to-text
           </span>

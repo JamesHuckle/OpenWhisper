@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { AudioVisualizer } from "./audio-visualizer";
 
 const WAVE_HEIGHTS = [4, 8, 11, 7, 10, 5, 8];
 
@@ -8,9 +9,11 @@ export function FloatingMic() {
   const [isActive, setIsActive] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
+  const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const tooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showActiveBars = isActive && !isHovered;
   const showHoverDots = isHovered;
+  const useRealVisualizer = !!audioStream;
 
   useEffect(() => {
     const initialTimeout = setTimeout(() => setIsActive(true), 800);
@@ -24,6 +27,12 @@ export function FloatingMic() {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      audioStream?.getTracks().forEach((t) => t.stop());
+    };
+  }, [audioStream]);
+
   const handleMouseEnter = () => {
     setIsHovered(true);
     tooltipTimer.current = setTimeout(() => setShowTooltip(true), 120);
@@ -34,6 +43,20 @@ export function FloatingMic() {
     setShowTooltip(false);
     if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
   };
+
+  const handleClick = useCallback(async () => {
+    if (audioStream) {
+      audioStream.getTracks().forEach((t) => t.stop());
+      setAudioStream(null);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setAudioStream(stream);
+    } catch {
+      // Mic permission denied
+    }
+  }, [audioStream]);
 
   return (
     <div
@@ -50,19 +73,29 @@ export function FloatingMic() {
           ${showTooltip && !isActive ? "opacity-100 -translate-y-1" : "opacity-0 translate-y-0"}
         `}
       >
-        Hold <kbd className="font-mono font-semibold text-text">Ctrl+Space</kbd> to record
+        {audioStream ? (
+          "Click to stop"
+        ) : (
+          <>
+            Hold <kbd className="font-mono font-semibold text-text">Ctrl+Space</kbd> to record · Click to try with your mic
+          </>
+        )}
       </div>
 
-      {showActiveBars && (
+      {(showActiveBars || useRealVisualizer) && (
         <div className="absolute inset-0 -m-3 rounded-full bg-accent/15 animate-pulse-ring" />
       )}
 
       <div
+        role="button"
+        tabIndex={0}
+        onClick={handleClick}
+        onKeyDown={(e) => e.key === "Enter" && handleClick()}
         className={`
-          relative z-10 flex animate-float items-center justify-center
+          relative z-10 flex cursor-pointer animate-float items-center justify-center
           rounded-full shadow-xl transition-all duration-300
           ${
-            showActiveBars
+            showActiveBars || useRealVisualizer
               ? "bg-accent shadow-accent/30 scale-105 px-4 py-2.5"
               : showHoverDots
                 ? "border border-border/80 bg-bg-elevated shadow-black/30 scale-105 px-5 py-2.5"
@@ -73,8 +106,8 @@ export function FloatingMic() {
         {/* Mic icon — fades out on hover (idle), visible when active */}
         <svg
           className={`flex-shrink-0 transition-all duration-300 ${
-            showActiveBars
-              ? "h-4 w-4 text-white opacity-100"
+            showActiveBars || useRealVisualizer
+              ? "h-4 w-4 text-black opacity-100"
               : showHoverDots
                 ? "h-4 w-4 opacity-0 w-0 overflow-hidden"
                 : "h-3.5 w-3.5 text-text-muted/60 opacity-100"
@@ -91,15 +124,26 @@ export function FloatingMic() {
           <line x1="12" x2="12" y1="19" y2="22" />
         </svg>
 
-        {showActiveBars && (
-          <div className="flex items-center gap-[3px] ml-2">
-            {WAVE_HEIGHTS.map((h, i) => (
-              <div
-                key={i}
-                className="w-[3px] rounded-full bg-white/80 animate-wave-bar"
-                style={{ height: `${h}px`, animationDelay: `${i * 0.09}s` }}
+        {(showActiveBars || useRealVisualizer) && (
+          <div className="ml-2 flex h-5 items-center">
+            {useRealVisualizer ? (
+              <AudioVisualizer
+                audio={audioStream}
+                width={48}
+                height={28}
+                className="h-7 w-12"
               />
-            ))}
+            ) : (
+              <div className="flex items-center gap-[3px]">
+                {WAVE_HEIGHTS.map((h, i) => (
+                  <div
+                    key={i}
+                    className="w-[3px] rounded-full bg-black/70 animate-wave-bar"
+                    style={{ height: `${h}px`, animationDelay: `${i * 0.09}s` }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
 

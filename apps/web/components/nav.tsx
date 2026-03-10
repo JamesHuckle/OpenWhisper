@@ -9,9 +9,7 @@ export function Nav() {
     <nav className="fixed top-0 z-50 w-full border-b border-border/50 bg-bg/80 backdrop-blur-xl">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
         <a href="#" className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent">
-            <LogoIcon className="h-5 w-5 text-white" />
-          </div>
+          <LogoIcon className="h-8 w-8 shrink-0" />
           <span className="text-base font-semibold tracking-tight">
             OpenWhisper
           </span>

@@ -44,7 +44,7 @@ export function HowItWorks() {
               className="group relative rounded-2xl border border-border bg-bg-elevated/50 p-8 transition-all hover:border-accent/30 hover:bg-bg-elevated"
             >
               {/* Step number */}
-              <div className="absolute -top-3 left-6 flex h-7 w-7 items-center justify-center rounded-full bg-accent text-xs font-bold text-white">
+              <div className="absolute -top-3 left-6 flex h-7 w-7 items-center justify-center rounded-full bg-accent text-xs font-bold text-black">
                 {i + 1}
               </div>
 

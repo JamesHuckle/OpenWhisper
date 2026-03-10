@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { AudioVisualizer } from "./audio-visualizer";
 
 const DEMO_APPS = [
   {
@@ -38,8 +39,29 @@ export function DemoSection() {
   const [activeApp, setActiveApp] = useState(0);
   const [phase, setPhase] = useState<Phase>("idle");
   const [typed, setTyped] = useState("");
+  const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const typingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      audioStream?.getTracks().forEach((t) => t.stop());
+    };
+  }, [audioStream]);
+
+  const handleMicClick = useCallback(async () => {
+    if (audioStream) {
+      audioStream.getTracks().forEach((t) => t.stop());
+      setAudioStream(null);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setAudioStream(stream);
+    } catch {
+      // Mic permission denied
+    }
+  }, [audioStream]);
 
   const runDemo = useCallback((appIndex: number) => {
     if (typingRef.current) clearInterval(typingRef.current);
@@ -60,7 +82,7 @@ export function DemoSection() {
           clearInterval(typingRef.current!);
           timeoutRef.current = setTimeout(() => setPhase("done"), 300);
         }
-      }, 48);
+      }, 15);
     }, 1200);
   }, []);
 
@@ -71,6 +93,16 @@ export function DemoSection() {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, [runDemo]);
+
+  // Loop to next app when demo completes
+  useEffect(() => {
+    if (phase !== "done") return;
+    const t = setTimeout(
+      () => runDemo((activeApp + 1) % DEMO_APPS.length),
+      2500
+    );
+    return () => clearTimeout(t);
+  }, [phase, activeApp, runDemo]);
 
   return (
     <section id="demo" className="relative px-6 py-32">
@@ -133,11 +165,15 @@ export function DemoSection() {
           {/* Floating pill overlay — matches actual app */}
           <div className="absolute left-1/2 -bottom-5 -translate-x-1/2 flex items-center gap-2.5">
             <div
+              role="button"
+              tabIndex={0}
+              onClick={handleMicClick}
+              onKeyDown={(e) => e.key === "Enter" && handleMicClick()}
               className={`
-                flex items-center gap-2 rounded-full px-3 py-2
+                flex cursor-pointer items-center gap-2 rounded-full px-3 py-2
                 shadow-xl transition-all duration-500
                 ${
-                  phase === "recording"
+                  phase === "recording" || audioStream
                     ? "bg-accent shadow-accent/30 scale-105"
                     : "border border-border bg-bg-elevated shadow-black/30"
                 }
@@ -145,7 +181,7 @@ export function DemoSection() {
             >
               <svg
                 className={`h-3.5 w-3.5 flex-shrink-0 transition-colors ${
-                  phase === "recording" ? "text-white" : "text-text-muted"
+                  phase === "recording" || audioStream ? "text-black" : "text-text-muted"
                 }`}
                 viewBox="0 0 24 24"
                 fill="none"
@@ -158,16 +194,27 @@ export function DemoSection() {
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
                 <line x1="12" x2="12" y1="19" y2="22" />
               </svg>
-              {phase === "recording" ? (
-                <div className="flex items-center gap-[2px]">
-                  {WAVE_HEIGHTS.map((h, i) => (
-                    <div
-                      key={i}
-                      className="w-[2px] rounded-full bg-white/80 animate-wave-bar"
-                      style={{ height: `${h}px`, animationDelay: `${i * 0.09}s` }}
+              {phase === "recording" || audioStream ? (
+                audioStream ? (
+                  <div className="flex h-4 items-center">
+                    <AudioVisualizer
+                      audio={audioStream}
+                      width={48}
+                      height={24}
+                      className="h-6 w-12"
                     />
-                  ))}
-                </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-[2px]">
+                    {WAVE_HEIGHTS.map((h, i) => (
+                      <div
+                        key={i}
+                        className="w-[2px] rounded-full bg-black/70 animate-wave-bar"
+                        style={{ height: `${h}px`, animationDelay: `${i * 0.09}s` }}
+                      />
+                    ))}
+                  </div>
+                )
               ) : (
                 <span className="text-[11px] font-medium text-text-muted">
                   OpenWhisper
