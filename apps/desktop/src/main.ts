@@ -45,13 +45,11 @@ let micDevices: MicDevice[] = [];
 let selectedMicId = "default";
 let menuOpen = false;
 
-const IDLE_WIDGET_WIDTH = 88;
-const IDLE_WIDGET_HEIGHT = 28;
-const ACTIVE_WIDGET_WIDTH = 164;
-const ACTIVE_WIDGET_HEIGHT = 34;
+const COLLAPSED_WIDTH = 38;
+const COLLAPSED_HEIGHT = 14;
+const EXPANDED_WIDTH = 100;
+const EXPANDED_HEIGHT = 22;
 const TRANSCRIBE_TIMEOUT_MS = 20_000;
-const MENU_WIDTH = 340;
-const MENU_HEIGHT = 540;
 const MENU_GAP = 12;
 
 // ---------------------------------------------------------------------------
@@ -59,43 +57,40 @@ const MENU_GAP = 12;
 // ---------------------------------------------------------------------------
 const app = document.getElementById("app")!;
 app.innerHTML = `
-  <div id="widget-shell" data-tauri-drag-region>
-    <div id="widget" data-tauri-drag-region>
-      <button id="btn-mic" class="mic-btn" title="Click to toggle recording or hold Ctrl+Space to talk">
-        <span class="mic-badge" aria-hidden="true">
-          <svg class="icon-mic" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 15.25A3.25 3.25 0 0 0 15.25 12V6.25a3.25 3.25 0 1 0-6.5 0V12A3.25 3.25 0 0 0 12 15.25Z" />
-            <path d="M6.5 11.5a.75.75 0 0 1 .75.75 4.75 4.75 0 0 0 9.5 0 .75.75 0 0 1 1.5 0 6.25 6.25 0 0 1-5.5 6.21v1.79h2a.75.75 0 0 1 0 1.5h-5.5a.75.75 0 0 1 0-1.5h2v-1.79a6.25 6.25 0 0 1-5.5-6.21.75.75 0 0 1 .75-.75Z" />
-          </svg>
-          <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor">
-            <rect x="6.5" y="6.5" width="11" height="11" rx="3" />
-          </svg>
-          <svg class="icon-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
-            <path d="M12 2.75A9.25 9.25 0 0 1 21.25 12" stroke-linecap="round" />
-          </svg>
-        </span>
-        <span class="meter" aria-hidden="true">
-          <span class="meter-track"></span>
-          <span id="meter-fill" class="meter-fill"></span>
-        </span>
+  <div id="widget-shell">
+    <div id="widget" tabindex="0" role="button" aria-label="Click to start or stop transcription">
+      <div class="widget-surface" aria-hidden="true"></div>
+
+      <span class="meter" aria-hidden="true">
+        <span class="meter-track"></span>
+        <span id="meter-fill" class="meter-fill"></span>
+      </span>
+
+      <button id="btn-stop" class="stop-btn" type="button" title="Stop recording" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <rect x="6.5" y="6.5" width="11" height="11" rx="3" />
+        </svg>
       </button>
 
-      <button id="btn-copy" class="copy-btn" title="Copy last transcript to clipboard">
+      <button id="btn-copy" class="copy-btn" type="button" title="Copy last transcript to clipboard">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="9" y="9" width="11" height="11" rx="2" />
           <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
         </svg>
       </button>
 
-      <span class="ready-dots" aria-hidden="true" title="Ready to transcribe">
-        <svg viewBox="0 0 24 8" fill="currentColor">
+      <span id="record-control" class="record-control" aria-hidden="true" title="Click to toggle recording">
+        <svg class="icon-dots" viewBox="0 0 24 8" fill="currentColor">
           <circle cx="4" cy="4" r="2" />
           <circle cx="12" cy="4" r="2" />
           <circle cx="20" cy="4" r="2" />
         </svg>
+        <svg class="icon-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+          <path d="M12 2.75A9.25 9.25 0 0 1 21.25 12" stroke-linecap="round" />
+        </svg>
       </span>
 
-      <button id="btn-dropdown" class="dropdown-btn" title="Select microphone and settings">
+      <button id="btn-dropdown" class="dropdown-btn" type="button" title="Select microphone and settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
           <path d="M7.5 10.5 12 15 16.5 10.5" />
         </svg>
@@ -138,7 +133,6 @@ app.innerHTML = `
 `;
 
 const widget = document.getElementById("widget")!;
-const btnMic = document.getElementById("btn-mic") as HTMLButtonElement;
 const btnCopy = document.getElementById("btn-copy") as HTMLButtonElement;
 const btnDropdown = document.getElementById("btn-dropdown") as HTMLButtonElement;
 const micMenu = document.getElementById("mic-menu")!;
@@ -162,6 +156,10 @@ let promptDirty = false;
 let promptSaveInFlight = false;
 let refineDirty = false;
 let refineSaveInFlight = false;
+let widgetHovered = false;
+let expandTimeoutId: number | null = null;
+let collapseTimeoutId: number | null = null;
+let lastAppliedLayout: { width: number; height: number } | null = null;
 
 setMeterLevel(0.12);
 
@@ -176,13 +174,14 @@ function setMeterLevel(level: number) {
 }
 
 function isWidgetExpanded() {
-  return state !== "idle";
+  return widgetHovered || menuOpen || state !== "idle";
 }
 
 function getWidgetSize() {
-  return isWidgetExpanded()
-    ? { width: ACTIVE_WIDGET_WIDTH, height: ACTIVE_WIDGET_HEIGHT }
-    : { width: IDLE_WIDGET_WIDTH, height: IDLE_WIDGET_HEIGHT };
+  if (isWidgetExpanded()) {
+    return { width: EXPANDED_WIDTH, height: EXPANDED_HEIGHT };
+  }
+  return { width: COLLAPSED_WIDTH, height: COLLAPSED_HEIGHT };
 }
 
 function syncWidgetFrame() {
@@ -190,25 +189,43 @@ function syncWidgetFrame() {
   widget.style.setProperty("--widget-width", `${widgetSize.width}px`);
   widget.style.setProperty("--widget-height", `${widgetSize.height}px`);
   widget.dataset.expanded = String(isWidgetExpanded());
+  widget.dataset.hovered = String(widgetHovered);
   widget.dataset.menuOpen = String(menuOpen);
   widget.dataset.hasLastTranscript = String(lastTranscript.length > 0);
 }
 
+function setWidgetHovered(next: boolean) {
+  if (widgetHovered === next) return;
+  widgetHovered = next;
+  widget.dataset.hovered = String(next);
+  void applyOverlayLayout();
+}
+
 function getWindowLayout() {
   const widgetSize = getWidgetSize();
-  if (!menuOpen) {
+  if (!menuOpen || micMenu.classList.contains("hidden")) {
     return widgetSize;
   }
 
+  const menuRect = micMenu.getBoundingClientRect();
   return {
-    width: Math.max(widgetSize.width, MENU_WIDTH),
-    height: widgetSize.height + MENU_GAP + MENU_HEIGHT,
+    width: Math.max(widgetSize.width, Math.ceil(menuRect.width)),
+    height: widgetSize.height + MENU_GAP + Math.ceil(menuRect.height),
   };
 }
 
-async function applyOverlayLayout() {
+async function applyOverlayLayout(force = false) {
   syncWidgetFrame();
   const layout = getWindowLayout();
+  if (
+    !force &&
+    lastAppliedLayout?.width === layout.width &&
+    lastAppliedLayout?.height === layout.height
+  ) {
+    return;
+  }
+
+  lastAppliedLayout = layout;
   await invoke("overlay_apply_layout", { width: layout.width, height: layout.height });
 }
 
@@ -265,6 +282,15 @@ function closeMenu() {
 
 async function collapseOverlay() {
   menuOpen = false;
+  if (expandTimeoutId !== null) {
+    clearTimeout(expandTimeoutId);
+    expandTimeoutId = null;
+  }
+  if (collapseTimeoutId !== null) {
+    clearTimeout(collapseTimeoutId);
+    collapseTimeoutId = null;
+  }
+  setWidgetHovered(false);
   stopAppPoll();
   micMenu.classList.add("hidden");
   await applyOverlayLayout();
@@ -274,6 +300,69 @@ btnDropdown.addEventListener("click", (e) => {
   e.stopPropagation();
   toggleMenu();
 });
+
+function handleWidgetClick(e: MouseEvent) {
+  if (state === "recording" || state === "transcribing") {
+    e.stopPropagation();
+    e.preventDefault();
+    if (state === "recording") {
+      void stopRecording();
+    } else {
+      cleanup();
+      setState("idle");
+    }
+    return;
+  }
+  if (btnCopy.contains(e.target as Node) || btnDropdown.contains(e.target as Node)) return;
+  void toggleRecording();
+}
+
+function handleWidgetKeydown(e: KeyboardEvent) {
+  if (state === "recording" || state === "transcribing") {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (state === "recording") void stopRecording();
+      else {
+        cleanup();
+        setState("idle");
+      }
+    }
+    return;
+  }
+  if ((e.key === "Enter" || e.key === " ") && !btnCopy.contains(e.target as Node) && !btnDropdown.contains(e.target as Node)) {
+    e.preventDefault();
+    void toggleRecording();
+  }
+}
+
+widget.addEventListener("click", handleWidgetClick, true);
+
+widget.addEventListener("keydown", handleWidgetKeydown);
+
+function handleWidgetPointerEnter() {
+  if (collapseTimeoutId !== null) {
+    clearTimeout(collapseTimeoutId);
+    collapseTimeoutId = null;
+  }
+  setWidgetHovered(true);
+}
+
+function handleWidgetPointerLeave(event: PointerEvent) {
+  if (event.relatedTarget instanceof Node && widget.contains(event.relatedTarget)) {
+    return;
+  }
+  if (expandTimeoutId !== null) {
+    clearTimeout(expandTimeoutId);
+    expandTimeoutId = null;
+  }
+  if (collapseTimeoutId !== null) {
+    clearTimeout(collapseTimeoutId);
+  }
+  setWidgetHovered(false);
+}
+
+widget.addEventListener("pointerenter", handleWidgetPointerEnter);
+widget.addEventListener("pointerleave", handleWidgetPointerLeave);
 
 document.addEventListener("click", (e) => {
   if (!micMenu.contains(e.target as Node) && e.target !== btnDropdown) {
@@ -569,7 +658,7 @@ async function handlePressToTalkStart() {
 
   // If the user released the shortcut while startup was still in flight,
   // stop immediately once recording is actually active.
-  if (!pressToTalkHeld && state === "recording") {
+  if (!pressToTalkHeld && isRecording) {
     logDebug("pressToTalkStart detected release during startup");
     await stopRecording();
   }
@@ -585,11 +674,6 @@ async function handlePressToTalkStop() {
     await stopRecording();
   }
 }
-
-btnMic.addEventListener("click", (e) => {
-  e.stopPropagation();
-  void toggleRecording();
-});
 
 btnCopy.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -629,6 +713,9 @@ function syncRefinePromptVisibility() {
     "style",
     enabled ? "" : "display:none",
   );
+  if (menuOpen) {
+    void applyOverlayLayout();
+  }
 }
 
 function applySettingsUi(settings: AppSettings, configuredLabel = "Key configured") {
@@ -870,9 +957,9 @@ void listen("overlay-revealed", () => void collapseOverlay());
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
-setState("idle");
+widget.dataset.state = state;
 syncWidgetFrame();
-void collapseOverlay();
+void applyOverlayLayout(true);
 void loadSettings();
 void ensureAutostartEnabled();
 void refreshMicDevices();

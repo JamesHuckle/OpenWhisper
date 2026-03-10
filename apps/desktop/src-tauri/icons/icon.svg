@@ -1,5 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#6366f1"/>
-  <path d="M64 128 L128 384 L256 224 L384 384 L448 128" 
-        stroke="white" stroke-width="56" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <rect width="512" height="512" rx="96" fill="#0d1016"/>
+  <g transform="translate(256,256)">
+    <!-- Circular outline - light green -->
+    <circle r="140" fill="none" stroke="#38d996" stroke-width="24"/>
+    <!-- Copy icon: two overlapping squares -->
+    <g transform="translate(-48,-48)" stroke="#38d996" stroke-width="28" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <rect x="24" y="24" width="96" height="96" rx="12"/>
+      <path d="M12 12h72a12 12 0 0 1 12 12v72"/>
+    </g>
+  </g>
 </svg>

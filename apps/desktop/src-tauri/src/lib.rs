@@ -357,6 +357,7 @@ mod overlay_positioner {
         fn GetCursorPos(lp_point: *mut Point) -> i32;
     }
 
+    /// Returns the overlay anchor for the monitor under the cursor (bottom center).
     pub fn cursor_monitor_anchor() -> Option<(i32, i32)> {
         let mut cursor = Point { x: 0, y: 0 };
         if unsafe { GetCursorPos(&mut cursor) } == 0 {
@@ -399,6 +400,12 @@ mod overlay_positioner {
             info.rc_work.bottom - OVERLAY_BOTTOM_MARGIN,
         ))
     }
+}
+
+#[cfg(target_os = "windows")]
+fn cursor_overlay_anchor() -> Option<OverlayAnchor> {
+    overlay_positioner::cursor_monitor_anchor()
+        .map(|(center_x, bottom_y)| OverlayAnchor { center_x, bottom_y })
 }
 
 fn default_transcription_prompt() -> String {
@@ -449,39 +456,14 @@ struct OverlayAnchor {
     bottom_y: i32,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct OverlayFrame {
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-}
-
-impl OverlayFrame {
-    fn matches(&self, x: i32, y: i32, width: i32, height: i32) -> bool {
-        const TOLERANCE: i32 = 2;
-
-        (self.x - x).abs() <= TOLERANCE
-            && (self.y - y).abs() <= TOLERANCE
-            && (self.width - width).abs() <= TOLERANCE
-            && (self.height - height).abs() <= TOLERANCE
-    }
-}
-
 struct AppState {
     worker: Mutex<Option<WorkerClient>>,
     settings: std::sync::Mutex<AppSettings>,
     overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
     overlay_layout_locked: AtomicBool,
-    overlay_expected_frame: std::sync::Mutex<Option<OverlayFrame>>,
 }
 
 #[cfg(target_os = "windows")]
-fn cursor_overlay_anchor() -> Option<OverlayAnchor> {
-    overlay_positioner::cursor_monitor_anchor()
-        .map(|(center_x, bottom_y)| OverlayAnchor { center_x, bottom_y })
-}
-
 fn cache_overlay_anchor(state: &Arc<AppState>, anchor: OverlayAnchor) -> Result<(), String> {
     let mut guard = state
         .overlay_anchor
@@ -498,34 +480,23 @@ fn resolve_overlay_anchor(state: &Arc<AppState>) -> Result<Option<OverlayAnchor>
         .map_err(|_| "Failed to lock overlay anchor".to_string())?;
 
     #[cfg(target_os = "windows")]
-    if let Some(anchor) = cursor_overlay_anchor() {
-        *guard = Some(anchor);
+    if guard.is_none() {
+        if let Some(anchor) = cursor_overlay_anchor() {
+            *guard = Some(anchor);
+        }
     }
 
     Ok(*guard)
 }
 
 fn overlay_window_position_for_anchor(
-    state: &Arc<AppState>,
+    _state: &Arc<AppState>,
     anchor: OverlayAnchor,
     physical_width: i32,
     physical_height: i32,
 ) -> Result<PhysicalPosition<i32>, String> {
     let x = anchor.center_x - physical_width / 2;
     let y = anchor.bottom_y - physical_height;
-
-    {
-        let mut expected = state
-            .overlay_expected_frame
-            .lock()
-            .map_err(|_| "Failed to lock overlay frame".to_string())?;
-        *expected = Some(OverlayFrame {
-            x,
-            y,
-            width: physical_width,
-            height: physical_height,
-        });
-    }
 
     Ok(PhysicalPosition::new(x, y))
 }
@@ -546,6 +517,32 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
     if !window.is_visible().map_err(|e| e.to_string())? {
         return Ok(());
     }
+
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let position = overlay_window_position_for_anchor(
+        &state,
+        anchor,
+        size.width as i32,
+        size.height as i32,
+    )?;
+
+    state.overlay_layout_locked.store(true, Ordering::SeqCst);
+    let position_result = window
+        .set_position(Position::Physical(position))
+        .map_err(|e| e.to_string());
+    state.overlay_layout_locked.store(false, Ordering::SeqCst);
+    position_result
+}
+
+#[cfg(target_os = "windows")]
+fn position_main_window_before_reveal(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<Arc<AppState>>().inner().clone();
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    let Some(anchor) = resolve_overlay_anchor(&state)? else {
+        return Ok(());
+    };
 
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let position = overlay_window_position_for_anchor(
@@ -949,6 +946,11 @@ fn make_tray_icon() -> tauri::image::Image<'static> {
 
 fn reveal_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "windows")]
+        if let Err(err) = position_main_window_before_reveal(app) {
+            debug_log_line("window", &format!("position_main_window_before_reveal failed: {err}"));
+        }
+
         debug_log_line("window", "reveal_main_window");
         let _ = window.show();
         let _ = window.unminimize();
@@ -959,6 +961,11 @@ fn reveal_main_window(app: &AppHandle) {
 
 fn reveal_overlay_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "windows")]
+        if let Err(err) = position_main_window_before_reveal(app) {
+            debug_log_line("window", &format!("position_main_window_before_reveal failed: {err}"));
+        }
+
         debug_log_line("window", "reveal_overlay_window");
         let _ = window.show();
         let _ = window.unminimize();
@@ -1042,7 +1049,6 @@ pub fn run() {
         settings: std::sync::Mutex::new(AppSettings::default()),
         overlay_anchor: std::sync::Mutex::new(None),
         overlay_layout_locked: AtomicBool::new(false),
-        overlay_expected_frame: std::sync::Mutex::new(None),
     });
 
     tauri::Builder::default()
@@ -1062,43 +1068,6 @@ pub fn run() {
                 WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
                     hide_main_window(&window.app_handle());
-                }
-                WindowEvent::Moved(position) => {
-                    let app_state = window.state::<Arc<AppState>>().inner().clone();
-
-                    if app_state
-                        .overlay_layout_locked
-                        .load(Ordering::SeqCst)
-                    {
-                        return;
-                    }
-
-                    if let Ok(size) = window.outer_size() {
-                        if let Ok(mut expected) = app_state.overlay_expected_frame.lock()
-                        {
-                            if expected
-                                .as_ref()
-                                .is_some_and(|frame| {
-                                    frame.matches(
-                                        position.x,
-                                        position.y,
-                                        size.width as i32,
-                                        size.height as i32,
-                                    )
-                                })
-                            {
-                                *expected = None;
-                                return;
-                            }
-                        }
-
-                        if let Ok(mut anchor) = app_state.overlay_anchor.lock() {
-                            *anchor = Some(OverlayAnchor {
-                                center_x: position.x + size.width as i32 / 2,
-                                bottom_y: position.y + size.height as i32,
-                            });
-                        }
-                    }
                 }
                 _ => {}
             }

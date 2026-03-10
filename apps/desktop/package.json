@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "icon": "tauri icon src-tauri/icons/icon.svg && node scripts/clean-icons.cjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.0.0",
