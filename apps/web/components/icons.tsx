@@ -64,6 +64,24 @@ export function WindowsIcon({ className = "" }: { className?: string }) {
   );
 }
 
+export function AndroidIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m8 6-2-3M16 6l2-3" />
+      <path d="M5 10h14v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7Z" />
+      <path d="M7 10V9a5 5 0 0 1 10 0v1M8.5 7.5h.01M15.5 7.5h.01M8 19v2M16 19v2M3 11v5M21 11v5" />
+    </svg>
+  );
+}
+
 export function GitHubIcon({ className = "" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="currentColor">

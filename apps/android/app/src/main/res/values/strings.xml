@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenWhisper</string>
+    <string name="accessibility_description">Shows a user-controlled dictation microphone near the active keyboard and inserts only the transcript you request into the field that was focused when recording began.</string>
+    <string name="main_tagline">Dictate into any safe text field while keeping your current keyboard.</string>
+    <string name="accessibility_service_label">Accessibility service</string>
+    <string name="enable_accessibility">Enable accessibility overlay</string>
+    <string name="microphone_permission_label">Microphone permission</string>
+    <string name="grant_microphone">Grant microphone permission</string>
+    <string name="api_key_label">OpenAI API key</string>
+    <string name="api_key_hint">sk-…</string>
+    <string name="clear">Clear</string>
+    <string name="save_securely">Save securely</string>
+    <string name="demo_mode">Deterministic demo transcription</string>
+    <string name="demo_mode_explanation">Demo mode uses no microphone, network, or API key. Turn it off to use live OpenAI transcription.</string>
+    <string name="open_demo">Open end-to-end test screen</string>
+    <string name="status_format">%1$s: %2$s</string>
+    <string name="enabled">enabled</string>
+    <string name="not_enabled">not enabled</string>
+    <string name="granted">granted</string>
+    <string name="not_granted">not granted</string>
+    <string name="saved_securely">saved securely</string>
+    <string name="not_saved">not saved</string>
+    <string name="demo_title">OpenWhisper end-to-end test</string>
+    <string name="demo_instructions">Tap the first field. The microphone should appear above the keyboard. The password field must never show it.</string>
+    <string name="demo_initial_text">Hello </string>
+    <string name="safe_dictation_field">Safe dictation field</string>
+    <string name="password_field_hint">Password field (overlay forbidden)</string>
+    <string name="password_field">Password field</string>
+    <string name="start_dictation">Start OpenWhisper dictation</string>
+    <string name="stop_dictation">Stop OpenWhisper dictation</string>
+    <string name="transcribing">OpenWhisper is transcribing</string>
+    <string name="dictation_error">OpenWhisper error: %1$s</string>
+    <string name="notification_channel_name">Active dictation</string>
+    <string name="listening_notification_title">OpenWhisper is listening</string>
+    <string name="listening_notification_text">Tap the microphone again to transcribe</string>
+</resources>

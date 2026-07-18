@@ -2,6 +2,8 @@
 Thumbs.db
 .env
 *.key
+*.jks
+*.keystore
 .venv/
 __pycache__/
 *.pyc
@@ -11,6 +13,10 @@ target/
 target*/
 .idea/
 .vscode/
+.gradle/
+.tools/
+.android/
+local.properties
 .next/
 out/
 

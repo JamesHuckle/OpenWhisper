@@ -58,8 +58,9 @@ export async function Hero() {
         </div>
 
         {/* CTA */}
-        <div className="animate-fade-in-up delay-500 mt-10 flex flex-col items-center gap-4 sm:flex-row">
+        <div className="animate-fade-in-up delay-500 mt-10 flex flex-col items-center gap-4 sm:flex-row sm:flex-wrap sm:justify-center">
           <DownloadButton />
+          <DownloadButton platform="android" />
           <a
             href={GITHUB_URL}
             target="_blank"
@@ -73,7 +74,7 @@ export async function Hero() {
 
         {/* Version note */}
         <p className="animate-fade-in-up delay-600 mt-6 text-xs text-text-muted/60">
-          Windows 10+ &middot; {version ?? "latest"} &middot; ~80 MB
+          Windows 10+ &middot; Android 9+ &middot; {version ?? "latest"}
         </p>
       </div>
     </section>

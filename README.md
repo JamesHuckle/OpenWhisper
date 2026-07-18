@@ -43,6 +43,44 @@ npm run tauri:build
 
 That rebuilds the local Tauri desktop app bundle.
 
+## Android companion (Samsung Keyboard compatible)
+
+`apps/android` is a native Kotlin companion app. Android does not provide a
+supported way for a third-party app to modify Samsung Keyboard itself, so the
+app keeps the selected keyboard and docks a user-authorized accessibility mic
+over its top-right edge. It records on device, sends a WAV file directly to the
+OpenAI audio transcription endpoint, and safely inserts the result into the
+field that was focused when recording began.
+
+Download the signed Android beta from the public release page:
+
+**[Download OpenWhisper for Android](https://github.com/JamesHuckle/OpenWhisper/releases/latest/download/OpenWhisper-Android.apk)**
+
+On Windows, the repository can install its own JDK, Android SDK, and API 36
+emulator under the ignored `.tools` directory:
+
+```powershell
+.\scripts\bootstrap-android.ps1 -WithEmulator
+.\scripts\test-android.ps1
+```
+
+Build only:
+
+```powershell
+.\scripts\android.ps1 assembleDebug
+```
+
+APK output: `apps/android/app/build/outputs/apk/debug/app-debug.apk`.
+Installation, Samsung device setup, architecture, privacy constraints, and the
+test matrix are documented in [`docs/android.md`](docs/android.md).
+
+Maintainers can create and publish a signed update with:
+
+```powershell
+.\scripts\setup-android-signing.ps1 # first release only
+.\scripts\release-android.ps1
+```
+
 To rebuild the full Windows installer instead, run from the repo root:
 
 ```powershell
@@ -54,6 +92,7 @@ Installer output: `%USERPROFILE%\openwhisper-cargo-target\release\bundle\nsis\`
 This repository uses a hybrid architecture:
 
 - `apps/desktop`: Tauri 2 desktop shell (UI + tray + local control plane)
+- `apps/android`: native Android companion and accessibility keyboard overlay
 - `apps/worker`: Python worker for OpenAI transcription and text post-processing
 - `apps/web`: Next.js marketing site and download page (deployed on Vercel)
 - `packages/protocol`: shared JSON protocol contract for IPC
