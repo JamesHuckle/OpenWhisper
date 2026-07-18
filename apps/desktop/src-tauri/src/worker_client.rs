@@ -41,7 +41,11 @@ pub struct WorkerClient {
 }
 
 impl WorkerClient {
-    pub async fn spawn(app_handle: &AppHandle, openai_api_key: Option<String>) -> Result<Self> {
+    pub async fn spawn(
+        app_handle: &AppHandle,
+        openai_api_key: Option<String>,
+        transcription_model: String,
+    ) -> Result<Self> {
         let worker_src = worker_src_path();
         let mut last_err: Option<anyhow::Error> = None;
         let mut child_opt: Option<Child> = None;
@@ -59,13 +63,7 @@ impl WorkerClient {
                     .stderr(std::process::Stdio::piped());
                 #[cfg(target_os = "windows")]
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-                if let Some(key) = openai_api_key
-                    .as_ref()
-                    .map(|k| k.trim())
-                    .filter(|k| !k.is_empty())
-                {
-                    cmd.env("OPENAI_API_KEY", key);
-                }
+                apply_worker_environment(&mut cmd, openai_api_key.as_deref(), &transcription_model);
 
                 match cmd.spawn() {
                     Ok(child) => {
@@ -98,13 +96,7 @@ impl WorkerClient {
                     .stderr(std::process::Stdio::piped());
                 #[cfg(target_os = "windows")]
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-                if let Some(key) = openai_api_key
-                    .as_ref()
-                    .map(|k| k.trim())
-                    .filter(|k| !k.is_empty())
-                {
-                    cmd.env("OPENAI_API_KEY", key);
-                }
+                apply_worker_environment(&mut cmd, openai_api_key.as_deref(), &transcription_model);
 
                 match cmd.spawn() {
                     Ok(child) => {
@@ -136,13 +128,7 @@ impl WorkerClient {
                     .stderr(std::process::Stdio::piped());
                 #[cfg(target_os = "windows")]
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-                if let Some(key) = openai_api_key
-                    .as_ref()
-                    .map(|k| k.trim())
-                    .filter(|k| !k.is_empty())
-                {
-                    cmd.env("OPENAI_API_KEY", key);
-                }
+                apply_worker_environment(&mut cmd, openai_api_key.as_deref(), &transcription_model);
 
                 match cmd.spawn() {
                     Ok(child) => {
@@ -246,6 +232,13 @@ impl WorkerClient {
             Err(anyhow!("{}: {}", err.code, err.message))
         }
     }
+}
+
+fn apply_worker_environment(cmd: &mut Command, openai_api_key: Option<&str>, model: &str) {
+    if let Some(key) = openai_api_key.map(str::trim).filter(|key| !key.is_empty()) {
+        cmd.env("OPENAI_API_KEY", key);
+    }
+    cmd.env("OPENWHISPER_MODEL", model);
 }
 
 impl Drop for WorkerClient {

@@ -4,7 +4,16 @@ import {
   enable as enableAutostart,
   isEnabled as isAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 import { continuousVisualizer } from "sound-visualizer";
+import {
+  COLLAPSED_HEIGHT,
+  COLLAPSED_WIDTH,
+  EXPANDED_HEIGHT,
+  EXPANDED_WIDTH,
+  getOverlayLayout,
+} from "./overlay-layout";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -12,9 +21,14 @@ import "./styles.css";
 // ---------------------------------------------------------------------------
 type TranscriptEvent = { type: "partial" | "final" | "error"; text: string };
 type PollResponse = { events: TranscriptEvent[]; done?: boolean };
+type TranscriptionModel =
+  | "gpt-4o-mini-transcribe"
+  | "gpt-4o-transcribe"
+  | "gpt-realtime-transcribe";
 type AppSettings = {
   hasOpenaiApiKey: boolean;
   openaiApiKeyPreview: string | null;
+  transcriptionModel: TranscriptionModel;
   transcriptionPrompt: string;
   refineEnabled: boolean;
   refinePrompt: string;
@@ -29,8 +43,13 @@ let state: WidgetState = "idle";
 let currentSessionId: string | null = null;
 let pollTimer: number | null = null;
 let finalTranscript = "";
+let liveTranscript = "";
 let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
 let mediaRecorder: MediaRecorder | null = null;
+let pcmAudioContext: AudioContext | null = null;
+let pcmSource: MediaStreamAudioSourceNode | null = null;
+let pcmProcessor: ScriptProcessorNode | null = null;
+let pcmSilentGain: GainNode | null = null;
 let recordingMimeType = "audio/webm";
 let isRecording = false;
 let pressToTalkHeld = false;
@@ -47,14 +66,9 @@ let micDevices: MicDevice[] = [];
 let selectedMicId = "default";
 let menuOpen = false;
 
-const COLLAPSED_WIDTH = 38;
-const COLLAPSED_HEIGHT = 14;
-const EXPANDED_WIDTH = 100;
-const EXPANDED_HEIGHT = 28;
 const TRANSCRIBE_TIMEOUT_MS = 20_000;
-const MENU_GAP = 12;
-const API_KEY_BUBBLE_WIDTH = 188;
-const API_KEY_BUBBLE_STACK_HEIGHT = 44;
+const HOVER_EXPAND_DELAY_MS = 40;
+const HOVER_COLLAPSE_GRACE_MS = 90;
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -131,6 +145,14 @@ app.innerHTML = `
       <div class="menu-section">Microphone</div>
       <div id="mic-list"></div>
       <div class="menu-divider"></div>
+      <div class="menu-section">Transcription model</div>
+      <select id="menu-model-select" class="menu-select" aria-label="Transcription model">
+        <option value="gpt-4o-mini-transcribe">Fast — GPT-4o mini ($1.25/$5 per 1M tokens)</option>
+        <option value="gpt-4o-transcribe">Accurate — GPT-4o ($2.50/$10 per 1M tokens)</option>
+        <option value="gpt-realtime-transcribe">Realtime — GPT-Realtime-Whisper ($0.017/min)</option>
+      </select>
+      <div id="menu-model-hint" class="menu-prompt-hint"></div>
+      <div class="menu-divider"></div>
       <div class="menu-section">OpenAI API Key</div>
       <div class="menu-item" id="menu-key-status">Not configured</div>
       <input id="menu-key-input" class="menu-key-input" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
@@ -170,6 +192,8 @@ const btnMic = document.getElementById("btn-mic") as HTMLButtonElement;
 const btnDropdown = document.getElementById("btn-dropdown") as HTMLButtonElement;
 const micMenu = document.getElementById("mic-menu")!;
 const micList = document.getElementById("mic-list")!;
+const menuModelSelect = document.getElementById("menu-model-select") as HTMLSelectElement;
+const menuModelHint = document.getElementById("menu-model-hint")!;
 const toast = document.getElementById("toast")!;
 const menuKeyStatus = document.getElementById("menu-key-status")!;
 const menuKeyInput = document.getElementById("menu-key-input") as HTMLInputElement;
@@ -180,6 +204,7 @@ const menuRefinePromptInput = document.getElementById("menu-refine-prompt-input"
 const menuTargetAppName = document.getElementById("menu-target-app-name")!;
 
 let hasOpenaiApiKey = false;
+let settingsLoaded = false;
 let storedKeyPreview = "";
 let showingStoredKeyPreview = false;
 let keyInputDirty = false;
@@ -187,12 +212,14 @@ let keySaveInFlight = false;
 let keyRevealInFlight = false;
 let promptDirty = false;
 let promptSaveInFlight = false;
+let modelSaveInFlight = false;
 let refineDirty = false;
 let refineSaveInFlight = false;
 let widgetHovered = false;
 let expandTimeoutId: number | null = null;
 let collapseTimeoutId: number | null = null;
-let lastAppliedLayout: { width: number; height: number } | null = null;
+let lastAppliedLayout: { width: number; height: number; anchorOffsetY: number } | null = null;
+let overlayLayoutQueue: Promise<void> = Promise.resolve();
 
 function logDebug(message: string) {
   const timestamp = new Date().toISOString();
@@ -223,7 +250,7 @@ function syncWidgetFrame() {
 }
 
 function syncApiKeyBubble() {
-  const show = !hasOpenaiApiKey && state === "idle";
+  const show = settingsLoaded && !hasOpenaiApiKey && state === "idle";
   if (show) {
     apiKeyBubble.classList.remove("hidden");
   } else {
@@ -239,24 +266,16 @@ function setWidgetHovered(next: boolean) {
 }
 
 function getWindowLayout() {
-  const widgetSize = getWidgetSize();
-  const bubbleVisible = !hasOpenaiApiKey && state === "idle";
-  const bubbleStackHeight = bubbleVisible ? API_KEY_BUBBLE_STACK_HEIGHT : 0;
-
-  if (!menuOpen || micMenu.classList.contains("hidden")) {
-    return {
-      width: Math.max(widgetSize.width, bubbleVisible ? API_KEY_BUBBLE_WIDTH : widgetSize.width),
-      height: widgetSize.height + bubbleStackHeight,
-    };
-  }
-
-  const menuRect = micMenu.getBoundingClientRect();
-  const menuStackHeight = MENU_GAP + Math.ceil(menuRect.height);
-  const totalExtraHeight = Math.max(bubbleStackHeight, menuStackHeight);
-  return {
-    width: Math.max(widgetSize.width, Math.ceil(menuRect.width), bubbleVisible ? API_KEY_BUBBLE_WIDTH : 0),
-    height: widgetSize.height + totalExtraHeight,
-  };
+  const menuVisible = menuOpen && !micMenu.classList.contains("hidden");
+  const menuRect = menuVisible ? micMenu.getBoundingClientRect() : undefined;
+  return getOverlayLayout({
+    expanded: isWidgetExpanded(),
+    settingsLoaded,
+    hasOpenaiApiKey: hasOpenaiApiKey || state !== "idle",
+    menuVisible,
+    menuWidth: menuRect?.width,
+    menuHeight: menuRect?.height,
+  });
 }
 
 async function applyOverlayLayout(force = false) {
@@ -265,13 +284,22 @@ async function applyOverlayLayout(force = false) {
   if (
     !force &&
     lastAppliedLayout?.width === layout.width &&
-    lastAppliedLayout?.height === layout.height
+    lastAppliedLayout?.height === layout.height &&
+    lastAppliedLayout?.anchorOffsetY === layout.anchorOffsetY
   ) {
     return;
   }
 
   lastAppliedLayout = layout;
-  await invoke("overlay_apply_layout", { width: layout.width, height: layout.height });
+  const apply = overlayLayoutQueue
+    .catch(() => {})
+    .then(() => invoke<void>("overlay_apply_layout", {
+      width: layout.width,
+      height: layout.height,
+      anchorOffsetY: layout.anchorOffsetY,
+    }));
+  overlayLayoutQueue = apply;
+  await apply;
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +446,11 @@ function handleWidgetPointerEnter() {
     clearTimeout(collapseTimeoutId);
     collapseTimeoutId = null;
   }
-  setWidgetHovered(true);
+  if (expandTimeoutId !== null || widgetHovered) return;
+  expandTimeoutId = window.setTimeout(() => {
+    expandTimeoutId = null;
+    setWidgetHovered(true);
+  }, HOVER_EXPAND_DELAY_MS);
 }
 
 function handleWidgetPointerLeave(event: PointerEvent) {
@@ -431,8 +463,13 @@ function handleWidgetPointerLeave(event: PointerEvent) {
   }
   if (collapseTimeoutId !== null) {
     clearTimeout(collapseTimeoutId);
+    collapseTimeoutId = null;
   }
-  setWidgetHovered(false);
+  if (!widgetHovered) return;
+  collapseTimeoutId = window.setTimeout(() => {
+    collapseTimeoutId = null;
+    setWidgetHovered(false);
+  }, HOVER_COLLAPSE_GRACE_MS);
 }
 
 widget.addEventListener("pointerenter", handleWidgetPointerEnter);
@@ -562,6 +599,62 @@ function stopVolumeMonitor() {
 // ---------------------------------------------------------------------------
 // Recording
 // ---------------------------------------------------------------------------
+function resampleToPcm16(input: Float32Array, sourceRate: number): ArrayBuffer {
+  const targetRate = 24_000;
+  const outputLength = Math.max(1, Math.round(input.length * targetRate / sourceRate));
+  const buffer = new ArrayBuffer(outputLength * 2);
+  const view = new DataView(buffer);
+  for (let i = 0; i < outputLength; i++) {
+    const sourceIndex = Math.min(input.length - 1, Math.floor(i * sourceRate / targetRate));
+    const sample = Math.max(-1, Math.min(1, input[sourceIndex]));
+    view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+  }
+  return buffer;
+}
+
+function queueAudioChunk(buffer: ArrayBuffer) {
+  if (!currentSessionId || buffer.byteLength === 0) return;
+  const sessionId = currentSessionId;
+  const upload = invoke<void>("worker_append_audio_chunk", {
+    sessionId,
+    chunkBase64: toBase64(buffer),
+  });
+  pendingChunkUploads.add(upload);
+  upload.finally(() => pendingChunkUploads.delete(upload));
+}
+
+async function startPcmCapture(stream: MediaStream) {
+  pcmAudioContext = new AudioContext();
+  await pcmAudioContext.resume();
+  pcmSource = pcmAudioContext.createMediaStreamSource(stream);
+  pcmProcessor = pcmAudioContext.createScriptProcessor(4096, 1, 1);
+  pcmSilentGain = pcmAudioContext.createGain();
+  pcmSilentGain.gain.value = 0;
+  const sourceRate = pcmAudioContext.sampleRate;
+  pcmProcessor.onaudioprocess = (event) => {
+    queueAudioChunk(resampleToPcm16(event.inputBuffer.getChannelData(0), sourceRate));
+  };
+  pcmSource.connect(pcmProcessor);
+  pcmProcessor.connect(pcmSilentGain);
+  pcmSilentGain.connect(pcmAudioContext.destination);
+  recordingMimeType = "audio/pcm;rate=24000";
+}
+
+async function stopPcmCapture() {
+  if (pcmProcessor) pcmProcessor.onaudioprocess = null;
+  pcmSource?.disconnect();
+  pcmProcessor?.disconnect();
+  pcmSilentGain?.disconnect();
+  pcmSource = null;
+  pcmProcessor = null;
+  pcmSilentGain = null;
+  const context = pcmAudioContext;
+  pcmAudioContext = null;
+  if (context) await context.close();
+  micStream?.getTracks().forEach((track) => track.stop());
+  isRecording = false;
+}
+
 async function startRecording() {
   logDebug(
     `startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
@@ -596,30 +689,29 @@ async function startRecording() {
     });
     currentSessionId = result.session_id;
     finalTranscript = "";
+    liveTranscript = "";
     startPolling();
 
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? "audio/webm;codecs=opus"
-      : "audio/webm";
-    recordingMimeType = "audio/webm";
-    mediaRecorder = new MediaRecorder(micStream, { mimeType });
+    if (settings.transcriptionModel === "gpt-realtime-transcribe") {
+      await startPcmCapture(micStream);
+    } else {
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm";
+      recordingMimeType = "audio/webm";
+      mediaRecorder = new MediaRecorder(micStream, { mimeType });
 
-    mediaRecorder.ondataavailable = async (e: BlobEvent) => {
-      if (!currentSessionId || e.data.size === 0) return;
-      const p = (async () => {
-        const chunkBase64 = toBase64(await e.data.arrayBuffer());
-        await invoke("worker_append_audio_chunk", { sessionId: currentSessionId, chunkBase64 });
-      })();
-      pendingChunkUploads.add(p);
-      p.finally(() => pendingChunkUploads.delete(p));
-    };
+      mediaRecorder.ondataavailable = async (e: BlobEvent) => {
+        if (e.data.size > 0) queueAudioChunk(await e.data.arrayBuffer());
+      };
 
-    mediaRecorder.onstop = () => {
-      micStream?.getTracks().forEach((t) => t.stop());
-      isRecording = false;
-    };
+      mediaRecorder.onstop = () => {
+        micStream?.getTracks().forEach((t) => t.stop());
+        isRecording = false;
+      };
 
-    mediaRecorder.start(800);
+      mediaRecorder.start(800);
+    }
     isRecording = true;
     logDebug(`startRecording ready session=${currentSessionId ?? "none"} held=${pressToTalkHeld}`);
   } catch (err) {
@@ -642,7 +734,9 @@ async function stopRecording() {
   stopVolumeMonitor();
   setWaveBarLevels(Array(VOLUME_BAR_COUNT).fill(0.5));
 
-  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+  if (pcmAudioContext) {
+    await stopPcmCapture();
+  } else if (mediaRecorder && mediaRecorder.state !== "inactive") {
     await new Promise<void>((resolve) => {
       mediaRecorder!.addEventListener("stop", () => resolve(), { once: true });
       mediaRecorder!.stop();
@@ -677,6 +771,7 @@ function cleanup() {
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
   }
+  if (pcmAudioContext) void stopPcmCapture();
   micStream?.getTracks().forEach((t) => t.stop());
   mediaRecorder = null;
   micStream = null;
@@ -707,6 +802,13 @@ async function pollOnce() {
     for (const ev of resp.events ?? []) {
       if (ev.type === "final") {
         finalTranscript = `${finalTranscript} ${ev.text}`.trim();
+        liveTranscript = ev.text;
+        widget.dataset.liveTranscript = liveTranscript;
+        widget.setAttribute("aria-label", `Transcription: ${liveTranscript}`);
+      } else if (ev.type === "partial" && ev.text !== "Listening..." && !ev.text.startsWith("Captured ")) {
+        liveTranscript += ev.text;
+        widget.dataset.liveTranscript = liveTranscript;
+        widget.setAttribute("aria-label", `Live transcription: ${liveTranscript}`);
       } else if (ev.type === "error") {
         showToast(ev.text || "Transcription failed", 3000);
       }
@@ -722,6 +824,8 @@ async function pollOnce() {
         showToast("Transcribed and pasted", 2000);
       }
       cleanup();
+      widget.removeAttribute("data-live-transcript");
+      widget.setAttribute("aria-label", "Click to start or stop transcription");
       setState("idle");
     }
   } catch {
@@ -811,12 +915,31 @@ function syncRefinePromptVisibility() {
   }
 }
 
+const MODEL_HINTS: Record<TranscriptionModel, string> = {
+  "gpt-4o-mini-transcribe":
+    "Lowest-cost everyday choice. Fast, accurate dictation. API input/output rates: $1.25/$5 per 1M tokens.",
+  "gpt-4o-transcribe":
+    "Best accuracy for accents, noise, and difficult audio. API input/output rates: $2.50/$10 per 1M tokens.",
+  "gpt-realtime-transcribe":
+    "Lowest-latency streaming model (official API model: GPT-Realtime-Whisper). $0.017 per audio minute.",
+};
+
+function syncModelHint() {
+  const model = menuModelSelect.value as TranscriptionModel;
+  menuModelHint.textContent = MODEL_HINTS[model] ?? "";
+}
+
 function applySettingsUi(settings: AppSettings, configuredLabel = "Key configured") {
+  const bubbleWasVisible = settingsLoaded && !hasOpenaiApiKey && state === "idle";
   hasOpenaiApiKey = settings.hasOpenaiApiKey;
+  settingsLoaded = true;
+  const bubbleVisibilityChanged = bubbleWasVisible !== (!hasOpenaiApiKey && state === "idle");
   syncApiKeyBubble();
   applyStoredKeyPreview(settings.openaiApiKeyPreview);
   menuKeyStatus.textContent = settings.hasOpenaiApiKey ? configuredLabel : "Not configured";
   menuKeyStatus.className = `menu-item ${settings.hasOpenaiApiKey ? "key-ok" : "key-missing"}`;
+  menuModelSelect.value = settings.transcriptionModel ?? "gpt-4o-mini-transcribe";
+  syncModelHint();
   if (!promptDirty) {
     menuPromptInput.value = settings.transcriptionPrompt ?? "";
   }
@@ -824,6 +947,9 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
     menuRefineToggle.checked = settings.refineEnabled ?? true;
     menuRefinePromptInput.value = settings.refinePrompt ?? "";
     syncRefinePromptVisibility();
+  }
+  if (bubbleVisibilityChanged) {
+    void applyOverlayLayout();
   }
 }
 
@@ -875,9 +1001,27 @@ async function loadSettings() {
     const settings = await invoke<AppSettings>("app_get_settings");
     applySettingsUi(settings);
   } catch {
-    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionPrompt: "", refineEnabled: true, refinePrompt: "" });
+    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: "gpt-4o-mini-transcribe", transcriptionPrompt: "", refineEnabled: true, refinePrompt: "" });
   }
 }
+
+menuModelSelect.addEventListener("change", async () => {
+  if (modelSaveInFlight) return;
+  syncModelHint();
+  modelSaveInFlight = true;
+  try {
+    const updated = await invoke<AppSettings>("app_save_settings", {
+      transcriptionModel: menuModelSelect.value,
+    });
+    applySettingsUi(updated);
+    showToast("Transcription model saved");
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : String(err));
+    await loadSettings();
+  } finally {
+    modelSaveInFlight = false;
+  }
+});
 
 async function ensureAutostartEnabled() {
   try {
@@ -1048,19 +1192,50 @@ void listen("press-to-talk-stop", () => {
   return void handlePressToTalkStop();
 });
 void listen("overlay-revealed", () => void collapseOverlay());
+void listen("overlay-lost-focus", () => void collapseOverlay());
+
+// ---------------------------------------------------------------------------
+// Auto-update
+// ---------------------------------------------------------------------------
+async function checkForUpdates() {
+  try {
+    const update = await check();
+    if (update) {
+      await update.downloadAndInstall();
+      await relaunch();
+    }
+  } catch {
+    // Ignore: no update, network error, or dev mode
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
+if (import.meta.env.DEV) {
+  Object.defineProperty(window, "__openWhisperTest", {
+    value: { openMenu, collapseOverlay },
+    configurable: true,
+  });
+}
+
 widget.dataset.state = state;
 syncWidgetFrame();
 syncApiKeyBubble();
 void applyOverlayLayout(true);
 void loadSettings();
-void ensureAutostartEnabled();
+if (import.meta.env.PROD) {
+  void ensureAutostartEnabled();
+}
 void refreshMicDevices();
 void invoke("worker_ping").catch(() => {});
 
 if (navigator.mediaDevices?.addEventListener) {
   navigator.mediaDevices.addEventListener("devicechange", () => void refreshMicDevices());
+}
+
+// Installed builds update automatically. Development and automated UI runs
+// must never replace or relaunch the executable under test.
+if (import.meta.env.PROD) {
+  setTimeout(() => void checkForUpdates(), 4000);
 }

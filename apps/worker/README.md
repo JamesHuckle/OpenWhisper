@@ -21,3 +21,15 @@ On Windows PowerShell:
 $env:OPENAI_API_KEY="..."
 ```
 
+## Compare transcription models
+
+Run both supported models against the same audio file. Supplying the known transcript adds a
+normalized word-accuracy score; multiple runs make the latency comparison less sensitive to
+network noise.
+
+```powershell
+uv run python scripts/benchmark_transcription_models.py sample.wav `
+  --reference "The exact words in sample.wav" `
+  --runs 5
+```
+

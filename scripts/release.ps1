@@ -7,6 +7,15 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path `
   -replace '^Microsoft\.PowerShell\.Core\\FileSystem::', ''
 
+# Load .env (all secrets in one place)
+. "$PSScriptRoot/load-env.ps1" -Path (Join-Path $RepoRoot ".env")
+
+# Skip update notification if OPENWHISPER_SKIP_UPDATE_NOTIFY=1 in .env
+$NotifyUpdate = $env:OPENWHISPER_SKIP_UPDATE_NOTIFY -ne "1"
+
+# GitHub repo (override with env OPENWHISPER_GITHUB_REPO)
+$GitHubRepo = if ($env:OPENWHISPER_GITHUB_REPO) { $env:OPENWHISPER_GITHUB_REPO } else { "JamesHuckle/OpenWhisper" }
+
 # ── Preflight ──────────────────────────────────────────────────────────────────
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
@@ -31,8 +40,24 @@ $tag = "v$version"
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════╗"
 Write-Host "║  Releasing $productName $tag"
+if (-not $NotifyUpdate) { Write-Host "║  (no update notification to users)" }
 Write-Host "╚══════════════════════════════════════════╝"
 Write-Host ""
+
+# ── Updater signing key ────────────────────────────────────────────────────────
+
+$KeyPath = Join-Path $env:USERPROFILE ".tauri\openwhisper.key"
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and (Test-Path $KeyPath)) {
+  $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $KeyPath -Raw
+}
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+  throw @"
+Updater signing key required. Run once:
+  .\scripts\setup-updater-keys.ps1
+
+Then add TAURI_SIGNING_PRIVATE_KEY to .env (or it will load from ~/.tauri/openwhisper.key)
+"@
+}
 
 # ── Push code to origin ───────────────────────────────────────────────────────
 
@@ -54,6 +79,7 @@ if ($LocalBuildRoot) {
 $CargoTargetDir = Join-Path $env:USERPROFILE "openwhisper-cargo-target"
 $InstallerDir = Join-Path $CargoTargetDir "release/bundle/nsis"
 $VersionedInstaller = Join-Path $InstallerDir "${productName}_${version}_x64-setup.exe"
+$SigPath = Join-Path $InstallerDir "${productName}_${version}_x64-setup.exe.sig"
 
 if (-not (Test-Path $VersionedInstaller)) {
   throw "Installer not found: $VersionedInstaller"
@@ -89,7 +115,32 @@ if (-not $releaseExists) {
   if ($LASTEXITCODE -ne 0) { throw "Failed to create release" }
 }
 
-gh release upload $tag $VersionedInstaller $StableInstaller --clobber
+$uploadAssets = @($VersionedInstaller, $StableInstaller)
+
+if ($NotifyUpdate -and (Test-Path $SigPath)) {
+  $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  $sigContent = (Get-Content $SigPath -Raw).Trim()
+  $installerUrl = "https://github.com/$GitHubRepo/releases/download/$tag/${productName}_${version}_x64-setup.exe"
+  $latestJson = @{
+    version    = $version
+    notes      = ""
+    pub_date   = $pubDate
+    platforms  = @{
+      "windows-x86_64" = @{
+        signature = $sigContent
+        url       = $installerUrl
+      }
+    }
+  } | ConvertTo-Json -Depth 5 -Compress
+  $latestJsonPath = Join-Path $env:TEMP "latest.json"
+  Set-Content -Path $latestJsonPath -Value $latestJson -NoNewline
+  $uploadAssets += $latestJsonPath
+  Write-Host "==> Including latest.json for auto-update"
+} elseif (-not $NotifyUpdate) {
+  Write-Host "==> Skipping latest.json (no update notification)"
+}
+
+gh release upload $tag $uploadAssets --clobber
 if ($LASTEXITCODE -ne 0) { throw "Failed to upload assets" }
 
 gh release edit $tag --latest
@@ -102,6 +153,6 @@ Write-Host "╔═════════════════════�
 Write-Host "║  Released $productName $tag"
 Write-Host "╚══════════════════════════════════════════╝"
 Write-Host ""
-Write-Host "  GitHub:   https://github.com/JamesHuckle/OpenWhisper/releases/tag/$tag"
-Write-Host "  Download: https://github.com/JamesHuckle/OpenWhisper/releases/latest/download/${productName}_x64-setup.exe"
+Write-Host "  GitHub:   https://github.com/$GitHubRepo/releases/tag/$tag"
+Write-Host "  Download: https://github.com/$GitHubRepo/releases/latest/download/${productName}_x64-setup.exe"
 Write-Host ""

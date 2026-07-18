@@ -97,6 +97,7 @@ Releases happen **automatically** when you push to `main`. A Git pre-push hook b
 - [GitHub CLI](https://cli.github.com) (`winget install --id GitHub.cli`, then `gh auth login`)
 - [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org)
 - Hook path configured: `git config core.hooksPath scripts/hooks`
+- **Updater signing keys** (one-time): `.\scripts\setup-updater-keys.ps1`
 
 **Release workflow:**
 ```powershell
@@ -107,22 +108,24 @@ git push origin main
 
 When you push to `main`, the pre-push hook will:
 1. Build the standalone Python worker executable
-2. Build the Tauri Windows NSIS installer
+2. Build the Tauri Windows NSIS installer (with signed updater artifacts)
 3. Tag the commit with the version (e.g. `v0.1.0`)
 4. Create/update a GitHub Release marked as **latest**
-5. Upload both a versioned installer and a stable-named `OpenWhisper_x64-setup.exe`
+5. Upload installer, stable-named asset, and `latest.json` (for auto-update)
 6. Then the push completes normally
 
-The website download button always points to the stable-named asset via GitHub's `/releases/latest/download/` redirect, so it automatically serves the newest release with **zero website redeployment**.
+**Auto-update:** Installed apps check for updates on startup. If a newer version exists, they download and install it, then relaunch.
 
-To skip the release build for a quick push:
-```powershell
-$env:SKIP_RELEASE = "1"; git push origin main; $env:SKIP_RELEASE = $null
-```
+**Skip update notification** (release without notifying existing users): set `OPENWHISPER_SKIP_UPDATE_NOTIFY=1` in `.env`, then push or run the release script.
 
 **Manual release** (alternative to the hook):
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1
+```
+
+To skip the release build for a quick push:
+```powershell
+$env:SKIP_RELEASE = "1"; git push origin main; $env:SKIP_RELEASE = $null
 ```
 
 Detailed commands and production roadmap are in `docs/architecture.md`.

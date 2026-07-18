@@ -1,12 +1,14 @@
 .DS_Store
 Thumbs.db
 .env
+*.key
 .venv/
 __pycache__/
 *.pyc
 node_modules/
 dist/
 target/
+target*/
 .idea/
 .vscode/
 .next/

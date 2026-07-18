@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from openwhisper_worker.openai_client import OpenWhisperOpenAI
+from openwhisper_worker.openai_client import OpenWhisperOpenAI, RealtimeTranscriptionStream
 from openwhisper_worker.protocol import WorkerError, WorkerRequest, WorkerResponse
 
 
@@ -19,6 +19,7 @@ class Session:
     refine_prompt: str
     audio_bytes: bytearray
     events: list[dict[str, Any]]
+    realtime_stream: RealtimeTranscriptionStream | None = None
     cursor: int = 0
     finalized: bool = False
 
@@ -62,7 +63,7 @@ class WorkerServer:
         )
         sys.stderr.flush()
         session_id = str(uuid.uuid4())
-        self._sessions[session_id] = Session(
+        session = Session(
             session_id=session_id,
             profile_id=profile_id,
             prompt=prompt,
@@ -71,6 +72,15 @@ class WorkerServer:
             audio_bytes=bytearray(),
             events=[{"type": "partial", "text": "Listening..."}],
         )
+        self._sessions[session_id] = session
+        if self._openai.model == "gpt-realtime-transcribe":
+            try:
+                session.realtime_stream = self._openai.start_realtime_transcription(
+                    lambda delta: session.events.append({"type": "partial", "text": delta})
+                )
+            except Exception:
+                self._sessions.pop(session_id, None)
+                raise
         return self._ok(request.id, {"session_id": session_id, "profile_id": profile_id})
 
     def _handle_stop_session(self, request: WorkerRequest) -> WorkerResponse:
@@ -78,6 +88,8 @@ class WorkerServer:
         if not session_id or session_id not in self._sessions:
             return self._err(request.id, "bad_request", "Unknown session_id")
         session = self._sessions.pop(session_id)
+        if session.realtime_stream:
+            session.realtime_stream.close()
         return self._ok(
             request.id,
             {
@@ -97,13 +109,13 @@ class WorkerServer:
         if session.cursor >= len(session.events):
             return self._ok(request.id, {"events": []})
 
-        event = session.events[session.cursor]
-        session.cursor += 1
+        events = session.events[session.cursor :]
+        session.cursor = len(session.events)
         done = session.finalized and session.cursor >= len(session.events)
         return self._ok(
             request.id,
             {
-                "events": [event],
+                "events": events,
                 "done": done,
             },
         )
@@ -123,8 +135,11 @@ class WorkerServer:
 
         session = self._sessions[session_id]
         session.audio_bytes.extend(chunk)
-        kb = len(session.audio_bytes) // 1024
-        session.events.append({"type": "partial", "text": f"Captured {kb} KB of audio..."})
+        if session.realtime_stream:
+            session.realtime_stream.append(chunk)
+        else:
+            kb = len(session.audio_bytes) // 1024
+            session.events.append({"type": "partial", "text": f"Captured {kb} KB of audio..."})
         return self._ok(request.id, {"buffered_bytes": len(session.audio_bytes)})
 
     def _handle_finalize_session_audio(self, request: WorkerRequest) -> WorkerResponse:
@@ -140,11 +155,15 @@ class WorkerServer:
             return self._ok(request.id, {"final_text": ""})
 
         try:
-            text = self._openai.transcribe_bytes(
-                bytes(session.audio_bytes),
-                mime_type=mime_type,
-                prompt=session.prompt,
-            )
+            if session.realtime_stream:
+                text = session.realtime_stream.finalize()
+                session.realtime_stream = None
+            else:
+                text = self._openai.transcribe_bytes(
+                    bytes(session.audio_bytes),
+                    mime_type=mime_type,
+                    prompt=session.prompt,
+                )
         except Exception as exc:  # noqa: BLE001
             msg = "Transcription timed out" if "timeout" in str(exc).lower() else str(exc)
             session.events.append({"type": "error", "text": msg})

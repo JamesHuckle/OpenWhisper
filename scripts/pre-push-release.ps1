@@ -3,6 +3,12 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path `
   -replace '^Microsoft\.PowerShell\.Core\\FileSystem::', ''
 
+# Load .env (all secrets in one place)
+. "$PSScriptRoot/load-env.ps1" -Path (Join-Path $RepoRoot ".env")
+
+# Skip update notification if OPENWHISPER_SKIP_UPDATE_NOTIFY=1 in .env
+$NotifyUpdate = $env:OPENWHISPER_SKIP_UPDATE_NOTIFY -ne "1"
+
 function Resolve-RequiredCommand {
   param(
     [Parameter(Mandatory = $true)]
@@ -84,8 +90,18 @@ $tag = "v$version"
 Write-Host ""
 Write-Host "=========================================="
 Write-Host "Building release: $productName $tag"
+if (-not $NotifyUpdate) { Write-Host "(no update notification)" }
 Write-Host "=========================================="
 Write-Host ""
+
+# Updater signing key (from .env or ~/.tauri/openwhisper.key)
+$KeyPath = Join-Path $env:USERPROFILE ".tauri\openwhisper.key"
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and (Test-Path $KeyPath)) {
+  $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $KeyPath -Raw
+}
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+  throw "Updater signing key required. Run: .\scripts\setup-updater-keys.ps1"
+}
 
 # Build the Windows installer
 & "$PSScriptRoot/build-windows-installer.ps1"
@@ -163,7 +179,30 @@ if (-not $releaseExists) {
   }
 }
 
-& $ghPath release upload $tag $VersionedInstaller $StableInstaller --clobber
+$uploadAssets = @($VersionedInstaller, $StableInstaller)
+$SigPath = Join-Path $InstallerDir "${productName}_${version}_x64-setup.exe.sig"
+
+if ($NotifyUpdate -and (Test-Path $SigPath)) {
+  $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  $sigContent = (Get-Content $SigPath -Raw).Trim()
+  $installerUrl = "https://github.com/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/download/$tag/${productName}_${version}_x64-setup.exe"
+  $latestJson = @{
+    version   = $version
+    notes     = ""
+    pub_date  = $pubDate
+    platforms = @{
+      "windows-x86_64" = @{
+        signature = $sigContent
+        url       = $installerUrl
+      }
+    }
+  } | ConvertTo-Json -Depth 5 -Compress
+  $latestJsonPath = Join-Path $env:TEMP "latest.json"
+  Set-Content -Path $latestJsonPath -Value $latestJson -NoNewline
+  $uploadAssets += $latestJsonPath
+}
+
+& $ghPath release upload $tag $uploadAssets --clobber
 if ($LASTEXITCODE -ne 0) {
   throw "Failed to upload assets"
 }
@@ -179,6 +218,6 @@ Write-Host "=========================================="
 Write-Host "Released $productName $tag"
 Write-Host "=========================================="
 Write-Host ""
-Write-Host "GitHub:   https://github.com/JamesHuckle/OpenWhisper/releases/tag/$tag"
-Write-Host ("Download: https://github.com/JamesHuckle/OpenWhisper/releases/latest/download/{0}_x64-setup.exe" -f $productName)
+Write-Host "GitHub:   https://github.com/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/tag/$tag"
+Write-Host ("Download: https://github.com/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/latest/download/{0}_x64-setup.exe" -f $productName)
 Write-Host ""

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import io
 import os
 import re
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from typing import Any
 
 from httpx import Timeout
@@ -17,6 +20,10 @@ _BLOCKING_TIMEOUT = Timeout(connect=10.0, read=15.0, write=30.0, pool=10.0)
 _POLISH_TIMEOUT = Timeout(connect=10.0, read=15.0, write=10.0, pool=10.0)
 _MIN_SENTENCES_PER_POLISH_CHUNK = 4
 _MAX_PARALLEL_POLISH_CHUNKS = 5
+_REALTIME_TRANSCRIBE_ALIAS = "gpt-realtime-transcribe"
+_REALTIME_TRANSCRIBE_MODEL = "gpt-realtime-whisper"
+_REALTIME_SESSION_MODEL = "gpt-realtime-2.1"
+_REALTIME_FINAL_TIMEOUT_SECONDS = 20.0
 
 _STREAMING_MODELS = frozenset({
     "gpt-4o-transcribe",
@@ -31,6 +38,111 @@ _PROMPT_SUPPORTED_MODELS = frozenset({
     "gpt-4o-mini-transcribe",
     "gpt-4o-mini-transcribe-2025-12-15",
 })
+
+_TRANSCRIPTION_MODELS = (
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-transcribe",
+    _REALTIME_TRANSCRIBE_ALIAS,
+)
+
+
+class RealtimeTranscriptionStream:
+    """A persistent Realtime connection that accepts PCM while recording."""
+
+    def __init__(
+        self,
+        client: OpenAI,
+        on_delta: Callable[[str], None],
+    ) -> None:
+        self._on_delta = on_delta
+        self._manager = client.realtime.connect(
+            model=os.getenv("OPENWHISPER_REALTIME_SESSION_MODEL", _REALTIME_SESSION_MODEL),
+            websocket_connection_options={"open_timeout": 10, "close_timeout": 5},
+        )
+        self._connection = self._manager.__enter__()
+        self._completed = threading.Event()
+        self._deltas: list[str] = []
+        self._transcript = ""
+        self._error: str | None = None
+        self._closed = False
+
+        # gpt-realtime-whisper is the input transcription model. It cannot be
+        # used as the WebSocket session model; the API rejects that combination.
+        self._connection.session.update(
+            session={
+                "type": "realtime",
+                "output_modalities": ["text"],
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "transcription": {
+                            "model": _REALTIME_TRANSCRIBE_MODEL,
+                            "delay": "minimal",
+                        },
+                        "turn_detection": None,
+                    }
+                },
+            }
+        )
+        self._reader = threading.Thread(target=self._read_events, daemon=True)
+        self._reader.start()
+
+    def append(self, audio_bytes: bytes) -> None:
+        if self._closed:
+            raise RuntimeError("Realtime transcription session is closed")
+        if audio_bytes:
+            self._connection.input_audio_buffer.append(
+                audio=base64.b64encode(audio_bytes).decode("ascii")
+            )
+
+    def finalize(self, timeout: float = _REALTIME_FINAL_TIMEOUT_SECONDS) -> str:
+        if self._closed:
+            raise RuntimeError("Realtime transcription session is closed")
+        self._connection.input_audio_buffer.commit()
+        if not self._completed.wait(timeout):
+            self.close()
+            raise RuntimeError("Realtime transcription timed out")
+        try:
+            if self._error:
+                raise RuntimeError(self._error)
+            return self._transcript or "".join(self._deltas)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._manager.__exit__(None, None, None)
+
+    def _read_events(self) -> None:
+        try:
+            for event in self._connection:
+                if event.type == "conversation.item.input_audio_transcription.delta":
+                    delta = getattr(event, "delta", None)
+                    if delta:
+                        self._deltas.append(delta)
+                        self._on_delta(delta)
+                elif event.type == "conversation.item.input_audio_transcription.completed":
+                    self._transcript = getattr(event, "transcript", "") or ""
+                    self._completed.set()
+                    return
+                elif event.type == "conversation.item.input_audio_transcription.failed":
+                    error = getattr(event, "error", None)
+                    self._error = (
+                        getattr(error, "message", None) or "Realtime transcription failed"
+                    )
+                    self._completed.set()
+                    return
+                elif event.type == "error":
+                    error = getattr(event, "error", None)
+                    self._error = getattr(error, "message", None) or "Realtime API error"
+                    self._completed.set()
+                    return
+        except Exception as exc:  # noqa: BLE001
+            if not self._closed:
+                self._error = str(exc)
+                self._completed.set()
 
 _POLISH_SYSTEM = """\
 You are a master transcriber and transcript editor.
@@ -58,6 +170,8 @@ kind of, basically, literally, right (at sentence ends), so (as a standalone sen
 class OpenWhisperOpenAI:
     def __init__(self) -> None:
         self._model = os.getenv("OPENWHISPER_MODEL", "gpt-4o-mini-transcribe").strip()
+        if self._model not in _TRANSCRIPTION_MODELS:
+            raise ValueError(f"Unsupported transcription model: {self._model}")
         self._polish_model = os.getenv("OPENWHISPER_POLISH_MODEL", "gpt-5.4").strip()
         self._client: OpenAI | None = None
 
@@ -74,16 +188,17 @@ class OpenWhisperOpenAI:
         return self._client
 
     def available_models(self) -> list[str]:
-        return [
-            "gpt-4o-mini-transcribe",
-            "gpt-4o-transcribe",
-            "gpt-5.4",
-            "gpt-4o-mini",
-            "gpt-4.1-mini",
-        ]
+        return list(_TRANSCRIPTION_MODELS)
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "model": self._model, "polish_model": self._polish_model}
+
+    def start_realtime_transcription(
+        self, on_delta: Callable[[str], None]
+    ) -> RealtimeTranscriptionStream:
+        if self._model != _REALTIME_TRANSCRIBE_ALIAS:
+            raise RuntimeError("The selected model is not a realtime transcription model")
+        return RealtimeTranscriptionStream(self._get_client(), on_delta)
 
     def polish(self, text: str, custom_prompt: str = "") -> str:
         """Run a fast LLM pass to strip filler words, fix sentence structure, and add
@@ -217,6 +332,17 @@ class OpenWhisperOpenAI:
     def transcribe_bytes(self, audio_bytes: bytes, mime_type: str, prompt: str = "") -> str:
         if not audio_bytes:
             raise RuntimeError("No audio bytes provided")
+
+        if self._model == _REALTIME_TRANSCRIBE_ALIAS:
+            if not mime_type.startswith("audio/pcm"):
+                raise RuntimeError("Realtime Transcribe requires 24 kHz PCM audio")
+            stream = self.start_realtime_transcription(lambda _delta: None)
+            try:
+                stream.append(audio_bytes)
+                return stream.finalize()
+            except Exception:
+                stream.close()
+                raise
 
         client = self._get_client()
         audio_file = self._make_audio_file(audio_bytes, mime_type)

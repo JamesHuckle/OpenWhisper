@@ -11,12 +11,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size,
-    State, Window, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size, State, Window,
+    WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 use worker_client::WorkerClient;
+
+const SECONDARY_MONITOR_VERTICAL_OFFSET_LOGICAL: f64 = 2.0;
+
+fn overlay_bottom_anchor(monitor_bottom: i32, work_bottom: i32, is_primary: bool, dpi: u32) -> i32 {
+    const BOTTOM_MARGIN: i32 = 10;
+    let vertical_offset = if is_primary {
+        0
+    } else {
+        (SECONDARY_MONITOR_VERTICAL_OFFSET_LOGICAL * dpi as f64 / 96.0).round() as i32
+    };
+    work_bottom
+        .saturating_sub(BOTTOM_MARGIN)
+        .saturating_add(vertical_offset)
+        .min(monitor_bottom.saturating_sub(BOTTOM_MARGIN))
+}
 
 // ---------------------------------------------------------------------------
 // Platform: text insertion via clipboard + simulated Ctrl+V
@@ -26,6 +41,7 @@ mod text_inserter {
     use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
     static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
+    static TARGET_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
     static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
     static CTRL_HELD: AtomicBool = AtomicBool::new(false);
     static PRESS_TO_TALK_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -61,6 +77,27 @@ mod text_inserter {
     const DBG_STOP_BY_SPACE: u32 = 1 << 7;
 
     #[repr(C)]
+    struct Rect {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[repr(C)]
+    struct GuiThreadInfo {
+        cb_size: u32,
+        flags: u32,
+        hwnd_active: isize,
+        hwnd_focus: isize,
+        hwnd_capture: isize,
+        hwnd_menu_owner: isize,
+        hwnd_move_size: isize,
+        hwnd_caret: isize,
+        rc_caret: Rect,
+    }
+
+    #[repr(C)]
     struct KbdInput {
         input_type: u32,
         _pad0: u32,
@@ -87,6 +124,10 @@ mod text_inserter {
         fn SendInput(c_inputs: u32, p_inputs: *const KbdInput, cb_size: i32) -> u32;
         fn GetForegroundWindow() -> isize;
         fn SetForegroundWindow(h_wnd: isize) -> i32;
+        fn SetFocus(h_wnd: isize) -> isize;
+        fn IsWindow(h_wnd: isize) -> i32;
+        fn GetGUIThreadInfo(id_thread: u32, pgui: *mut GuiThreadInfo) -> i32;
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
         fn GetWindowThreadProcessId(h_wnd: isize, lp_process_id: *mut u32) -> u32;
         fn SetWindowsHookExW(
             id_hook: i32,
@@ -106,6 +147,7 @@ mod text_inserter {
 
     #[link(name = "kernel32")]
     extern "system" {
+        fn GetCurrentThreadId() -> u32;
         fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> isize;
         fn CloseHandle(h_object: isize) -> i32;
         fn QueryFullProcessImageNameW(
@@ -127,6 +169,26 @@ mod text_inserter {
         let hwnd = unsafe { GetForegroundWindow() };
         if hwnd != 0 && !is_own_process(hwnd) {
             TARGET_HWND.store(hwnd, Ordering::Relaxed);
+            let thread_id = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
+            let mut info = GuiThreadInfo {
+                cb_size: std::mem::size_of::<GuiThreadInfo>() as u32,
+                flags: 0,
+                hwnd_active: 0,
+                hwnd_focus: 0,
+                hwnd_capture: 0,
+                hwnd_menu_owner: 0,
+                hwnd_move_size: 0,
+                hwnd_caret: 0,
+                rc_caret: Rect {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+            };
+            if thread_id != 0 && unsafe { GetGUIThreadInfo(thread_id, &mut info) } != 0 {
+                TARGET_FOCUS_HWND.store(info.hwnd_focus, Ordering::Relaxed);
+            }
         }
     }
 
@@ -147,8 +209,7 @@ mod text_inserter {
         }
         let mut buf = [0u16; MAX_PATH];
         let mut size = MAX_PATH as u32;
-        let ok =
-            unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
+        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
         unsafe { CloseHandle(handle) };
         if ok == 0 || size == 0 {
             return None;
@@ -206,7 +267,19 @@ mod text_inserter {
         let hwnd = TARGET_HWND.load(Ordering::Relaxed);
         if hwnd != 0 {
             unsafe { SetForegroundWindow(hwnd) };
-            std::thread::sleep(std::time::Duration::from_millis(120));
+            let focus_hwnd = TARGET_FOCUS_HWND.load(Ordering::Relaxed);
+            if focus_hwnd != 0 && unsafe { IsWindow(focus_hwnd) } != 0 {
+                let target_thread = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
+                let current_thread = unsafe { GetCurrentThreadId() };
+                let attached = target_thread != 0
+                    && target_thread != current_thread
+                    && unsafe { AttachThreadInput(current_thread, target_thread, 1) } != 0;
+                unsafe { SetFocus(focus_hwnd) };
+                if attached {
+                    unsafe { AttachThreadInput(current_thread, target_thread, 0) };
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(80));
         }
         unsafe {
             let size = std::mem::size_of::<KbdInput>() as i32;
@@ -326,7 +399,7 @@ mod overlay_positioner {
     use std::mem::size_of;
 
     const MONITOR_DEFAULTTOPRIMARY: u32 = 1;
-    const OVERLAY_BOTTOM_MARGIN: i32 = 10;
+    const MDT_EFFECTIVE_DPI: u32 = 0;
 
     #[repr(C)]
     struct Point {
@@ -357,19 +430,18 @@ mod overlay_positioner {
         fn GetCursorPos(lp_point: *mut Point) -> i32;
     }
 
-    /// Returns the overlay anchor for the monitor under the cursor (bottom center).
-    pub fn cursor_monitor_anchor() -> Option<(i32, i32)> {
-        let mut cursor = Point { x: 0, y: 0 };
-        if unsafe { GetCursorPos(&mut cursor) } == 0 {
-            return None;
-        }
+    #[link(name = "shcore")]
+    extern "system" {
+        fn GetDpiForMonitor(
+            h_monitor: isize,
+            dpi_type: u32,
+            dpi_x: *mut u32,
+            dpi_y: *mut u32,
+        ) -> i32;
+    }
 
-        let monitor = unsafe {
-            MonitorFromPoint(
-                Point { x: cursor.x, y: cursor.y },
-                MONITOR_DEFAULTTOPRIMARY,
-            )
-        };
+    fn monitor_anchor_at(point: Point) -> Option<(i32, i32, u32)> {
+        let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTOPRIMARY) };
         if monitor == 0 {
             return None;
         }
@@ -395,21 +467,68 @@ mod overlay_positioner {
             return None;
         }
 
+        let mut dpi_x = 96;
+        let mut dpi_y = 96;
+        if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) } != 0 {
+            dpi_x = 96;
+        }
+
         Some((
             (info.rc_work.left + info.rc_work.right) / 2,
-            info.rc_work.bottom - OVERLAY_BOTTOM_MARGIN,
+            super::overlay_bottom_anchor(
+                info.rc_monitor.bottom,
+                info.rc_work.bottom,
+                info.dw_flags & 1 != 0,
+                dpi_x,
+            ),
+            dpi_x,
         ))
+    }
+
+    pub fn primary_monitor_anchor() -> Option<(i32, i32, u32)> {
+        monitor_anchor_at(Point { x: 0, y: 0 })
+    }
+
+    pub fn cursor_monitor_anchor() -> Option<(i32, i32, u32)> {
+        let mut cursor = Point { x: 0, y: 0 };
+        if unsafe { GetCursorPos(&mut cursor) } == 0 {
+            return None;
+        }
+        monitor_anchor_at(cursor)
     }
 }
 
 #[cfg(target_os = "windows")]
+fn primary_overlay_anchor() -> Option<OverlayAnchor> {
+    overlay_positioner::primary_monitor_anchor().map(|(center_x, bottom_y, dpi)| OverlayAnchor {
+        center_x,
+        bottom_y,
+        dpi,
+    })
+}
+
+#[cfg(target_os = "windows")]
 fn cursor_overlay_anchor() -> Option<OverlayAnchor> {
-    overlay_positioner::cursor_monitor_anchor()
-        .map(|(center_x, bottom_y)| OverlayAnchor { center_x, bottom_y })
+    overlay_positioner::cursor_monitor_anchor().map(|(center_x, bottom_y, dpi)| OverlayAnchor {
+        center_x,
+        bottom_y,
+        dpi,
+    })
 }
 
 fn default_transcription_prompt() -> String {
     "I was editing @README.md and checking @package.json in my IDE. Let me also look at @tsconfig.json and the @src directory.".to_string()
+}
+
+fn default_transcription_model() -> String {
+    "gpt-4o-mini-transcribe".to_string()
+}
+
+fn is_supported_transcription_model(model: &str) -> bool {
+    matches!(
+        model,
+        "gpt-4o-mini-transcribe" | "gpt-4o-transcribe" | "gpt-realtime-transcribe"
+    )
 }
 
 fn default_refine_enabled() -> bool {
@@ -421,6 +540,8 @@ fn default_refine_enabled() -> bool {
 struct AppSettings {
     #[serde(default)]
     openai_api_key: String,
+    #[serde(default = "default_transcription_model")]
+    transcription_model: String,
     #[serde(default = "default_transcription_prompt")]
     transcription_prompt: String,
     #[serde(default = "default_refine_enabled")]
@@ -433,6 +554,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             openai_api_key: String::new(),
+            transcription_model: default_transcription_model(),
             transcription_prompt: default_transcription_prompt(),
             refine_enabled: true,
             refine_prompt: String::new(),
@@ -445,6 +567,7 @@ impl Default for AppSettings {
 struct FrontendSettings {
     has_openai_api_key: bool,
     openai_api_key_preview: Option<String>,
+    transcription_model: String,
     transcription_prompt: String,
     refine_enabled: bool,
     refine_prompt: String,
@@ -454,23 +577,31 @@ struct FrontendSettings {
 struct OverlayAnchor {
     center_x: i32,
     bottom_y: i32,
+    dpi: u32,
 }
 
 struct AppState {
     worker: Mutex<Option<WorkerClient>>,
     settings: std::sync::Mutex<AppSettings>,
     overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
+    overlay_anchor_offset_logical: std::sync::Mutex<f64>,
     overlay_layout_locked: AtomicBool,
 }
 
-#[cfg(target_os = "windows")]
-fn cache_overlay_anchor(state: &Arc<AppState>, anchor: OverlayAnchor) -> Result<(), String> {
-    let mut guard = state
-        .overlay_anchor
-        .lock()
-        .map_err(|_| "Failed to lock overlay anchor".to_string())?;
-    *guard = Some(anchor);
-    Ok(())
+struct OverlayLayoutGuard<'a>(&'a AtomicBool);
+
+impl<'a> OverlayLayoutGuard<'a> {
+    fn try_acquire(flag: &'a AtomicBool) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Self(flag))
+    }
+}
+
+impl Drop for OverlayLayoutGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 fn resolve_overlay_anchor(state: &Arc<AppState>) -> Result<Option<OverlayAnchor>, String> {
@@ -481,7 +612,7 @@ fn resolve_overlay_anchor(state: &Arc<AppState>) -> Result<Option<OverlayAnchor>
 
     #[cfg(target_os = "windows")]
     if guard.is_none() {
-        if let Some(anchor) = cursor_overlay_anchor() {
+        if let Some(anchor) = cursor_overlay_anchor().or_else(primary_overlay_anchor) {
             *guard = Some(anchor);
         }
     }
@@ -490,48 +621,93 @@ fn resolve_overlay_anchor(state: &Arc<AppState>) -> Result<Option<OverlayAnchor>
 }
 
 fn overlay_window_position_for_anchor(
-    _state: &Arc<AppState>,
     anchor: OverlayAnchor,
     physical_width: i32,
     physical_height: i32,
-) -> Result<PhysicalPosition<i32>, String> {
-    let x = anchor.center_x - physical_width / 2;
-    let y = anchor.bottom_y - physical_height;
+) -> PhysicalPosition<i32> {
+    let x = anchor.center_x.saturating_sub(physical_width / 2);
+    let y = anchor.bottom_y.saturating_sub(physical_height);
 
-    Ok(PhysicalPosition::new(x, y))
+    PhysicalPosition::new(x, y)
+}
+
+fn overlay_window_position_for_anchor_offset(
+    anchor: OverlayAnchor,
+    physical_width: i32,
+    physical_height: i32,
+    physical_bottom_offset: i32,
+) -> PhysicalPosition<i32> {
+    let mut position = overlay_window_position_for_anchor(anchor, physical_width, physical_height);
+    position.y = position.y.saturating_add(physical_bottom_offset);
+    position
+}
+
+fn scale_physical_dimension_for_monitor(current: u32, current_scale: f64, target_dpi: u32) -> i32 {
+    let target_scale = target_dpi as f64 / 96.0;
+    (current as f64 * target_scale / current_scale).round() as i32
 }
 
 #[cfg(target_os = "windows")]
-fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Result<(), String> {
+fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Result<bool, String> {
     let state = app.state::<Arc<AppState>>().inner().clone();
-    cache_overlay_anchor(&state, anchor)?;
-
-    if state.overlay_layout_locked.load(Ordering::SeqCst) {
-        return Ok(());
-    }
-
-    let Some(window) = app.get_webview_window("main") else {
-        return Ok(());
+    let Some(_layout_guard) = OverlayLayoutGuard::try_acquire(&state.overlay_layout_locked) else {
+        return Ok(false);
     };
 
-    if !window.is_visible().map_err(|e| e.to_string())? {
-        return Ok(());
+    {
+        let current = state
+            .overlay_anchor
+            .lock()
+            .map_err(|_| "Failed to lock overlay anchor".to_string())?;
+        if *current == Some(anchor) {
+            return Ok(true);
+        }
     }
 
-    let size = window.outer_size().map_err(|e| e.to_string())?;
-    let position = overlay_window_position_for_anchor(
-        &state,
-        anchor,
-        size.width as i32,
-        size.height as i32,
-    )?;
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().map_err(|e| e.to_string())? {
+            let size = window.outer_size().map_err(|e| e.to_string())?;
+            let current_scale = window.scale_factor().map_err(|e| e.to_string())?;
+            let target_width =
+                scale_physical_dimension_for_monitor(size.width, current_scale, anchor.dpi);
+            let target_height =
+                scale_physical_dimension_for_monitor(size.height, current_scale, anchor.dpi);
+            let anchor_offset_logical = *state
+                .overlay_anchor_offset_logical
+                .lock()
+                .map_err(|_| "Failed to lock overlay anchor offset".to_string())?;
+            let target_offset = (anchor_offset_logical * anchor.dpi as f64 / 96.0).round() as i32;
+            let position = overlay_window_position_for_anchor_offset(
+                anchor,
+                target_width,
+                target_height,
+                target_offset,
+            );
+            window
+                .set_position(Position::Physical(position))
+                .map_err(|e| e.to_string())?;
+            debug_log_line(
+                "window",
+                &format!(
+                    "monitor switch anchor=({}, {}) dpi={} position=({}, {}) predicted_size={}x{}",
+                    anchor.center_x,
+                    anchor.bottom_y,
+                    anchor.dpi,
+                    position.x,
+                    position.y,
+                    target_width,
+                    target_height
+                ),
+            );
+        }
+    }
 
-    state.overlay_layout_locked.store(true, Ordering::SeqCst);
-    let position_result = window
-        .set_position(Position::Physical(position))
-        .map_err(|e| e.to_string());
-    state.overlay_layout_locked.store(false, Ordering::SeqCst);
-    position_result
+    let mut current = state
+        .overlay_anchor
+        .lock()
+        .map_err(|_| "Failed to lock overlay anchor".to_string())?;
+    *current = Some(anchor);
+    Ok(true)
 }
 
 #[cfg(target_os = "windows")]
@@ -545,19 +721,21 @@ fn position_main_window_before_reveal(app: &AppHandle) -> Result<(), String> {
     };
 
     let size = window.outer_size().map_err(|e| e.to_string())?;
-    let position = overlay_window_position_for_anchor(
-        &state,
+    let anchor_offset_logical = *state
+        .overlay_anchor_offset_logical
+        .lock()
+        .map_err(|_| "Failed to lock overlay anchor offset".to_string())?;
+    let physical_anchor_offset = (anchor_offset_logical * anchor.dpi as f64 / 96.0).round() as i32;
+    let position = overlay_window_position_for_anchor_offset(
         anchor,
         size.width as i32,
         size.height as i32,
-    )?;
+        physical_anchor_offset,
+    );
 
-    state.overlay_layout_locked.store(true, Ordering::SeqCst);
-    let position_result = window
+    window
         .set_position(Position::Physical(position))
-        .map_err(|e| e.to_string());
-    state.overlay_layout_locked.store(false, Ordering::SeqCst);
-    position_result
+        .map_err(|e| e.to_string())
 }
 
 fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
@@ -565,6 +743,7 @@ fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
     FrontendSettings {
         has_openai_api_key: openai_api_key_preview.is_some(),
         openai_api_key_preview,
+        transcription_model: settings.transcription_model.clone(),
         transcription_prompt: settings.transcription_prompt.clone(),
         refine_enabled: settings.refine_enabled,
         refine_prompt: settings.refine_prompt.clone(),
@@ -607,18 +786,19 @@ async fn with_worker_request(
 ) -> Result<serde_json::Value, String> {
     let mut guard = state.worker.lock().await;
     if guard.is_none() {
-        let openai_api_key = {
+        let (openai_api_key, transcription_model) = {
             let settings = state
                 .settings
                 .lock()
                 .map_err(|_| "Failed to lock settings".to_string())?;
-            if settings.openai_api_key.trim().is_empty() {
+            let key = if settings.openai_api_key.trim().is_empty() {
                 None
             } else {
                 Some(settings.openai_api_key.clone())
-            }
+            };
+            (key, settings.transcription_model.clone())
         };
-        let worker = WorkerClient::spawn(app_handle, openai_api_key)
+        let worker = WorkerClient::spawn(app_handle, openai_api_key, transcription_model)
             .await
             .map_err(|e| e.to_string())?;
         *guard = Some(worker);
@@ -659,6 +839,7 @@ async fn app_save_settings(
     app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
     openai_api_key: Option<String>,
+    transcription_model: Option<String>,
     transcription_prompt: Option<String>,
     refine_enabled: Option<bool>,
     refine_prompt: Option<String>,
@@ -671,6 +852,12 @@ async fn app_save_settings(
             .clone();
         if let Some(key) = openai_api_key {
             current.openai_api_key = key.trim().to_string();
+        }
+        if let Some(model) = transcription_model {
+            if !is_supported_transcription_model(&model) {
+                return Err(format!("Unsupported transcription model: {model}"));
+            }
+            current.transcription_model = model;
         }
         if let Some(prompt) = transcription_prompt {
             current.transcription_prompt = prompt;
@@ -727,7 +914,11 @@ async fn worker_start_session(
             .settings
             .lock()
             .map_err(|_| "Failed to lock settings".to_string())?;
-        (s.transcription_prompt.clone(), s.refine_enabled, s.refine_prompt.clone())
+        (
+            s.transcription_prompt.clone(),
+            s.refine_enabled,
+            s.refine_prompt.clone(),
+        )
     };
 
     let response = with_worker_request(
@@ -859,23 +1050,45 @@ async fn paste_to_target(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn overlay_apply_layout(
+async fn overlay_apply_layout(
     window: Window,
     state: State<'_, Arc<AppState>>,
     width: f64,
     height: f64,
+    anchor_offset_y: f64,
 ) -> Result<(), String> {
     let app_state = state.inner().clone();
 
     #[cfg(target_os = "windows")]
     {
+        let _layout_guard = loop {
+            if let Some(guard) = OverlayLayoutGuard::try_acquire(&app_state.overlay_layout_locked) {
+                break guard;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        };
         let anchor = resolve_overlay_anchor(&app_state)?;
+        *app_state
+            .overlay_anchor_offset_logical
+            .lock()
+            .map_err(|_| "Failed to lock overlay anchor offset".to_string())? = anchor_offset_y;
 
         if let Some(anchor) = anchor {
+            let before_size = window.outer_size().map_err(|e| e.to_string())?;
             let scale = window.scale_factor().map_err(|e| e.to_string())?;
-            let physical_width = (width * scale).round() as i32;
-            let physical_height = (height * scale).round() as i32;
-
+            debug_log_line(
+                "layout",
+                &format!(
+                    "request logical={}x{} anchor=({}, {}) before={}x{} scale={}",
+                    width,
+                    height,
+                    anchor.center_x,
+                    anchor.bottom_y,
+                    before_size.width,
+                    before_size.height,
+                    scale
+                ),
+            );
             let size_result = window
                 .set_size(Size::Logical(LogicalSize::new(width, height)))
                 .map_err(|e| e.to_string());
@@ -884,19 +1097,45 @@ fn overlay_apply_layout(
                 return Err(err);
             }
 
-            let position = overlay_window_position_for_anchor(
-                &app_state,
-                anchor,
-                physical_width,
-                physical_height,
-            )?;
+            // WebView2 applies native resizes asynchronously. Poll until the
+            // outer frame changes and stabilizes instead of imposing a fixed
+            // 50 ms pause on every hover transition. The bounded fallback still
+            // protects mixed-DPI layouts where the resize takes longer.
+            let mut physical_size = before_size;
+            let mut changed = false;
+            let mut waited_ms = 0;
+            for _ in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                waited_ms += 5;
+                let observed = window.outer_size().map_err(|e| e.to_string())?;
+                if observed != before_size {
+                    if changed && observed == physical_size {
+                        physical_size = observed;
+                        break;
+                    }
+                    changed = true;
+                }
+                physical_size = observed;
+            }
 
-            app_state.overlay_layout_locked.store(true, Ordering::SeqCst);
-            let position_result = window
+            let physical_anchor_offset = (anchor_offset_y * scale).round() as i32;
+            let position = overlay_window_position_for_anchor_offset(
+                anchor,
+                physical_size.width as i32,
+                physical_size.height as i32,
+                physical_anchor_offset,
+            );
+            debug_log_line(
+                "layout",
+                &format!(
+                    "settled={}x{} position=({}, {}) wait_ms={}",
+                    physical_size.width, physical_size.height, position.x, position.y, waited_ms
+                ),
+            );
+
+            window
                 .set_position(Position::Physical(position))
-                .map_err(|e| e.to_string());
-            app_state.overlay_layout_locked.store(false, Ordering::SeqCst);
-            position_result?;
+                .map_err(|e| e.to_string())?;
             return Ok(());
         }
     }
@@ -944,33 +1183,44 @@ fn make_tray_icon() -> tauri::image::Image<'static> {
         .to_owned()
 }
 
-fn reveal_main_window(app: &AppHandle) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OverlayRevealIntent {
+    Passive,
+    Interactive,
+}
+
+impl OverlayRevealIntent {
+    fn should_focus(self) -> bool {
+        matches!(self, Self::Interactive)
+    }
+}
+
+fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(target_os = "windows")]
         if let Err(err) = position_main_window_before_reveal(app) {
-            debug_log_line("window", &format!("position_main_window_before_reveal failed: {err}"));
+            debug_log_line(
+                "window",
+                &format!("position_main_window_before_reveal failed: {err}"),
+            );
         }
 
-        debug_log_line("window", "reveal_main_window");
+        debug_log_line("window", "reveal_window");
         let _ = window.show();
         let _ = window.unminimize();
-        let _ = window.set_focus();
+        if intent.should_focus() {
+            let _ = window.set_focus();
+        }
         let _ = window.emit("overlay-revealed", ());
     }
 }
 
-fn reveal_overlay_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        #[cfg(target_os = "windows")]
-        if let Err(err) = position_main_window_before_reveal(app) {
-            debug_log_line("window", &format!("position_main_window_before_reveal failed: {err}"));
-        }
+fn reveal_main_window(app: &AppHandle) {
+    reveal_window(app, OverlayRevealIntent::Interactive);
+}
 
-        debug_log_line("window", "reveal_overlay_window");
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.emit("overlay-revealed", ());
-    }
+fn reveal_overlay_window(app: &AppHandle) {
+    reveal_window(app, OverlayRevealIntent::Passive);
 }
 
 fn hide_main_window(app: &AppHandle) {
@@ -1048,10 +1298,13 @@ pub fn run() {
         worker: Mutex::new(None),
         settings: std::sync::Mutex::new(AppSettings::default()),
         overlay_anchor: std::sync::Mutex::new(None),
+        overlay_anchor_offset_logical: std::sync::Mutex::new(0.0),
         overlay_layout_locked: AtomicBool::new(false),
     });
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state)
         .plugin(
             tauri_plugin_autostart::Builder::new()
@@ -1068,6 +1321,11 @@ pub fn run() {
                 WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
                     hide_main_window(&window.app_handle());
+                }
+                WindowEvent::Focused(false) => {
+                    if std::env::var_os("OPENWHISPER_UI_TEST").is_none() {
+                        let _ = window.emit("overlay-lost-focus", ());
+                    }
                 }
                 _ => {}
             }
@@ -1086,7 +1344,9 @@ pub fn run() {
             }
 
             if !launched_from_autostart() {
-                reveal_main_window(app.handle());
+                // The passive overlay must never steal focus from the field the
+                // user is typing into during app startup or a dev relaunch.
+                reveal_overlay_window(app.handle());
             }
 
             #[cfg(target_os = "windows")]
@@ -1097,19 +1357,47 @@ pub fn run() {
                 std::thread::spawn(move || {
                     let mut last_hook_log = std::time::Instant::now();
                     let mut last_hook_event = String::new();
-                    let mut last_cursor_anchor: Option<OverlayAnchor> = None;
+                    let mut monitor_candidate: Option<OverlayAnchor> = None;
+                    let mut monitor_candidate_samples = 0u8;
                     loop {
                         text_inserter::save_foreground();
-                        if let Some(anchor) = cursor_overlay_anchor() {
-                            if last_cursor_anchor != Some(anchor) {
-                                if let Err(err) = sync_overlay_window_to_anchor(&poll_handle, anchor)
-                                {
-                                    debug_log_line(
-                                        "window",
-                                        &format!("sync_overlay_window_to_anchor failed: {err}"),
-                                    );
+                        if let Some(cursor_anchor) = cursor_overlay_anchor() {
+                            let current_anchor = poll_handle
+                                .state::<Arc<AppState>>()
+                                .overlay_anchor
+                                .lock()
+                                .ok()
+                                .and_then(|guard| *guard);
+
+                            if current_anchor == Some(cursor_anchor) {
+                                monitor_candidate = None;
+                                monitor_candidate_samples = 0;
+                            } else {
+                                if monitor_candidate == Some(cursor_anchor) {
+                                    monitor_candidate_samples =
+                                        monitor_candidate_samples.saturating_add(1);
                                 } else {
-                                    last_cursor_anchor = Some(anchor);
+                                    monitor_candidate = Some(cursor_anchor);
+                                    monitor_candidate_samples = 1;
+                                }
+
+                                // Require five consecutive 20 ms observations
+                                // before switching. This filters pointer noise at
+                                // a shared monitor edge while keeping transitions
+                                // responsive once the cursor is truly on a screen.
+                                if monitor_candidate_samples >= 5 {
+                                    match sync_overlay_window_to_anchor(&poll_handle, cursor_anchor)
+                                    {
+                                        Ok(true) => {
+                                            monitor_candidate = None;
+                                            monitor_candidate_samples = 0;
+                                        }
+                                        Ok(false) => {}
+                                        Err(err) => debug_log_line(
+                                            "window",
+                                            &format!("monitor switch failed: {err}"),
+                                        ),
+                                    }
                                 }
                             }
                         }
@@ -1126,9 +1414,7 @@ pub fn run() {
                                     "hook",
                                     &format!(
                                         "events={} start_pending={} stop_pending={}",
-                                        desc,
-                                        should_start,
-                                        should_stop
+                                        desc, should_start, should_stop
                                     ),
                                 );
                                 last_hook_log = now;
@@ -1171,4 +1457,84 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_geometry_keeps_bottom_center_anchor_on_negative_monitor() {
+        let anchor = OverlayAnchor {
+            center_x: -1280,
+            bottom_y: 1430,
+            dpi: 96,
+        };
+
+        let collapsed = overlay_window_position_for_anchor(anchor, 100, 28);
+        let expanded = overlay_window_position_for_anchor(anchor, 360, 520);
+
+        assert_eq!(collapsed, PhysicalPosition::new(-1330, 1402));
+        assert_eq!(expanded, PhysicalPosition::new(-1460, 910));
+        assert_eq!(collapsed.x + 50, anchor.center_x);
+        assert_eq!(expanded.x + 180, anchor.center_x);
+        assert_eq!(collapsed.y + 28, anchor.bottom_y);
+        assert_eq!(expanded.y + 520, anchor.bottom_y);
+    }
+
+    #[test]
+    fn overlay_geometry_handles_monitor_above_primary() {
+        let anchor = OverlayAnchor {
+            center_x: 960,
+            bottom_y: -10,
+            dpi: 96,
+        };
+        assert_eq!(
+            overlay_window_position_for_anchor(anchor, 188, 72),
+            PhysicalPosition::new(866, -82)
+        );
+    }
+
+    #[test]
+    fn transcription_model_allowlist_matches_settings_ui() {
+        assert!(is_supported_transcription_model("gpt-4o-mini-transcribe"));
+        assert!(is_supported_transcription_model("gpt-4o-transcribe"));
+        assert!(is_supported_transcription_model("gpt-realtime-transcribe"));
+        assert!(!is_supported_transcription_model("gpt-5.4"));
+    }
+
+    #[test]
+    fn monitor_switch_predicts_mixed_dpi_outer_size() {
+        assert_eq!(scale_physical_dimension_for_monitor(161, 1.25, 192), 258);
+        assert_eq!(scale_physical_dimension_for_monitor(44, 1.25, 192), 70);
+        assert_eq!(scale_physical_dimension_for_monitor(258, 2.0, 120), 161);
+        assert_eq!(scale_physical_dimension_for_monitor(70, 2.0, 120), 44);
+    }
+
+    #[test]
+    fn expanded_layout_grows_around_compact_anchor() {
+        let anchor = OverlayAnchor {
+            center_x: 960,
+            bottom_y: 1070,
+            dpi: 96,
+        };
+        let compact = overlay_window_position_for_anchor(anchor, 38, 14);
+        let expanded = overlay_window_position_for_anchor_offset(anchor, 92, 26, 6);
+
+        assert_eq!(compact.x + 19, expanded.x + 46);
+        assert_eq!(compact.y + 7, expanded.y + 13);
+    }
+
+    #[test]
+    fn secondary_monitor_anchor_applies_configured_offset() {
+        assert_eq!(overlay_bottom_anchor(1800, 1704, true, 192), 1694);
+        assert_eq!(overlay_bottom_anchor(0, -60, false, 120), -67);
+        assert_eq!(overlay_bottom_anchor(1080, 1080, false, 144), 1070);
+    }
+
+    #[test]
+    fn passive_overlay_reveals_never_take_keyboard_focus() {
+        assert!(!OverlayRevealIntent::Passive.should_focus());
+        assert!(OverlayRevealIntent::Interactive.should_focus());
+    }
 }

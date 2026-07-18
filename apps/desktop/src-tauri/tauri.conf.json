@@ -20,6 +20,7 @@
         "visible": false,
         "resizable": false,
         "decorations": false,
+        "shadow": false,
         "transparent": true,
         "alwaysOnTop": true,
         "dragDropEnabled": false
@@ -29,8 +30,17 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": ["icons/icon.ico", "icons/icon.png"],
     "resources": ["binaries/*"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE0MjFGNjI4QjZBODYyODkKUldTSllxaTJLUFloRktiNHRpRnQ5UTN2TjlxaG9Gd2ZMaEFGcTBPa3lOYksrdWJSYy84c1AwYnIK",
+      "endpoints": [
+        "https://github.com/JamesHuckle/OpenWhisper/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
 
