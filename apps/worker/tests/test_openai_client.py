@@ -37,11 +37,12 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         self.assertEqual(stream.finalize(), "hello world")
 
         client.realtime.connect.assert_called_once_with(
-            model="gpt-realtime-2.1",
+            extra_query={"intent": "transcription"},
             websocket_connection_options={"open_timeout": 10, "close_timeout": 5},
         )
         session = connection.session.update.call_args.kwargs["session"]
-        self.assertEqual(session["type"], "realtime")
+        self.assertEqual(session["type"], "transcription")
+        self.assertNotIn("output_modalities", session)
         self.assertEqual(
             session["audio"]["input"]["transcription"]["model"],
             "gpt-realtime-whisper",

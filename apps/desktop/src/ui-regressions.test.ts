@@ -25,4 +25,16 @@ describe("desktop regression contracts", () => {
     expect(collapsedRule).toContain("rgba(20, 24, 32, 0.58)");
     expect(collapsedRule).not.toContain("rgba(20, 24, 32, 0.82)");
   });
+
+  it("streams realtime transcript deltas into the previously focused field", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
+
+    expect(main).not.toContain('id="live-transcript"');
+    expect(main).toContain('invoke("paste_to_target", { text: delta })');
+    expect(main).toContain('invoke("replace_streamed_target"');
+    expect(main).toContain("import.meta.env.DEV");
+    expect(main).toContain("__openwhisperRealtimeSmoke");
+    expect(css).not.toMatch(/\.live-transcript\s*\{/);
+  });
 });

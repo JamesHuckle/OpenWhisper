@@ -33,3 +33,14 @@ uv run python scripts/benchmark_transcription_models.py sample.wav `
   --runs 5
 ```
 
+## Realtime streaming smoke test
+
+Use a 24 kHz mono PCM16 WAV to verify that transcript deltas arrive before the
+audio upload finishes:
+
+```powershell
+uv run python scripts/smoke_realtime_transcription.py sample.wav
+```
+
+The command exits non-zero unless at least one delta arrives before finalization.
+

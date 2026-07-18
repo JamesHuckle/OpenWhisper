@@ -52,6 +52,7 @@ mod text_inserter {
 
     const INPUT_KEYBOARD: u32 = 1;
     const KEYEVENTF_KEYUP: u32 = 0x0002;
+    const VK_BACK: u16 = 0x08;
     const VK_CONTROL: u16 = 0x11;
     const VK_V: u16 = 0x56;
 
@@ -263,7 +264,7 @@ mod text_inserter {
         events.join(",")
     }
 
-    pub fn restore_and_paste() {
+    fn restore_target_focus() {
         let hwnd = TARGET_HWND.load(Ordering::Relaxed);
         if hwnd != 0 {
             unsafe { SetForegroundWindow(hwnd) };
@@ -281,6 +282,9 @@ mod text_inserter {
             }
             std::thread::sleep(std::time::Duration::from_millis(80));
         }
+    }
+
+    fn paste_shortcut() {
         unsafe {
             let size = std::mem::size_of::<KbdInput>() as i32;
             let inputs = [
@@ -291,6 +295,36 @@ mod text_inserter {
             ];
             SendInput(4, inputs.as_ptr(), size);
         }
+    }
+
+    pub fn restore_and_paste() {
+        restore_target_focus();
+        paste_shortcut();
+    }
+
+    pub fn restore_and_replace(streamed_chars: usize) {
+        restore_target_focus();
+
+        // The caret remains immediately after the chunks pasted during this
+        // recording. Remove that exact draft before inserting a refined final.
+        let mut remaining = streamed_chars;
+        while remaining > 0 {
+            let chunk_size = remaining.min(128);
+            let mut inputs = Vec::with_capacity(chunk_size * 2);
+            for _ in 0..chunk_size {
+                inputs.push(kbd(VK_BACK, 0));
+                inputs.push(kbd(VK_BACK, KEYEVENTF_KEYUP));
+            }
+            unsafe {
+                SendInput(
+                    inputs.len() as u32,
+                    inputs.as_ptr(),
+                    std::mem::size_of::<KbdInput>() as i32,
+                );
+            }
+            remaining -= chunk_size;
+        }
+        paste_shortcut();
     }
 
     // ----- Low-level keyboard hook (Ctrl+Space hold-to-talk) -----
@@ -1050,6 +1084,24 @@ async fn paste_to_target(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn capture_paste_target() {
+    #[cfg(target_os = "windows")]
+    text_inserter::save_foreground();
+}
+
+#[tauri::command]
+async fn replace_streamed_target(streamed_text: String, final_text: String) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.set_text(&final_text))
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    text_inserter::restore_and_replace(streamed_text.chars().count());
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn overlay_apply_layout(
     window: Window,
     state: State<'_, Arc<AppState>>,
@@ -1452,7 +1504,9 @@ pub fn run() {
             debug_log,
             get_foreground_app,
             open_api_keys_page,
+            capture_paste_target,
             paste_to_target,
+            replace_streamed_target,
             overlay_apply_layout
         ])
         .run(tauri::generate_context!())

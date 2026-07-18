@@ -14,6 +14,7 @@ import {
   EXPANDED_WIDTH,
   getOverlayLayout,
 } from "./overlay-layout";
+import { captureBeforeSession, SessionAudioQueue } from "./recording-pipeline";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,9 @@ let currentSessionId: string | null = null;
 let pollTimer: number | null = null;
 let finalTranscript = "";
 let liveTranscript = "";
+let streamTextToTarget = false;
+let pastedTranscript = "";
+let targetWriteQueue: Promise<void> = Promise.resolve();
 let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
 let mediaRecorder: MediaRecorder | null = null;
 let pcmAudioContext: AudioContext | null = null;
@@ -54,7 +58,12 @@ let recordingMimeType = "audio/webm";
 let isRecording = false;
 let pressToTalkHeld = false;
 let pressToTalkStarting = false;
-const pendingChunkUploads = new Set<Promise<void>>();
+const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
+  invoke<void>("worker_append_audio_chunk", {
+    sessionId,
+    chunkBase64: toBase64(buffer),
+  }),
+);
 
 let micStream: MediaStream | null = null;
 let soundVisualizer: { start: () => void; stop: () => void; reset: () => void } | null = null;
@@ -613,14 +622,7 @@ function resampleToPcm16(input: Float32Array, sourceRate: number): ArrayBuffer {
 }
 
 function queueAudioChunk(buffer: ArrayBuffer) {
-  if (!currentSessionId || buffer.byteLength === 0) return;
-  const sessionId = currentSessionId;
-  const upload = invoke<void>("worker_append_audio_chunk", {
-    sessionId,
-    chunkBase64: toBase64(buffer),
-  });
-  pendingChunkUploads.add(upload);
-  upload.finally(() => pendingChunkUploads.delete(upload));
+  audioQueue.append(buffer);
 }
 
 async function startPcmCapture(stream: MediaStream) {
@@ -656,14 +658,14 @@ async function stopPcmCapture() {
 }
 
 async function startRecording() {
+  const startupStartedAt = performance.now();
   logDebug(
     `startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
   );
   if (state !== "idle") return;
-  setState("recording");
-  widget.dataset.silent = "true";
 
   try {
+    await invoke("capture_paste_target");
     const settings = await invoke<AppSettings>("app_get_settings");
     if (!settings.hasOpenaiApiKey) {
       showToast("Set your OpenAI API key first (click arrow)");
@@ -676,43 +678,63 @@ async function startRecording() {
     };
     micStream = await navigator.mediaDevices.getUserMedia(constraints);
 
-    soundVisualizer = continuousVisualizer(micStream, meterCanvas, {
-      strokeColor: "#9ef0c9",
-      rectWidth: 3,
-      slices: 20,
-    });
-    soundVisualizer.start();
-    startVolumeMonitor(micStream);
+    const result = await captureBeforeSession({
+      // Capture is deliberately attached before any worker or network startup.
+      // The queue retains these opening chunks until a session id is available.
+      startCapture: async () => {
+        if (settings.transcriptionModel === "gpt-realtime-transcribe") {
+          await startPcmCapture(micStream!);
+        } else {
+          const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+            ? "audio/webm;codecs=opus"
+            : "audio/webm";
+          recordingMimeType = "audio/webm";
+          mediaRecorder = new MediaRecorder(micStream!, { mimeType });
+          mediaRecorder.ondataavailable = (event: BlobEvent) => {
+            if (event.data.size > 0) audioQueue.appendAsync(event.data.arrayBuffer());
+          };
+          mediaRecorder.onstop = () => {
+            micStream?.getTracks().forEach((track) => track.stop());
+            isRecording = false;
+          };
+          mediaRecorder.start(250);
+        }
+        isRecording = true;
+        return micStream!;
+      },
+      onCaptureStarted: async (stream) => {
+        setState("recording");
+        widget.dataset.silent = "true";
+        soundVisualizer = continuousVisualizer(stream, meterCanvas, {
+          strokeColor: "#9ef0c9",
+          rectWidth: 3,
+          slices: 20,
+        });
+        soundVisualizer.start();
+        startVolumeMonitor(stream);
+        logDebug(`capture ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
-    const result = await invoke<{ session_id: string }>("worker_start_session", {
-      profileId: "default",
+        // A shortcut may be released while microphone permission/capture starts.
+        if (pressToTalkStarting && !pressToTalkHeld) await stopRecording();
+      },
+      startSession: () => invoke<{ session_id: string }>("worker_start_session", {
+        profileId: "default",
+      }),
     });
     currentSessionId = result.session_id;
+    audioQueue.attachSession(currentSessionId);
     finalTranscript = "";
     liveTranscript = "";
+    streamTextToTarget = settings.transcriptionModel === "gpt-realtime-transcribe";
+    pastedTranscript = "";
+    targetWriteQueue = Promise.resolve();
     startPolling();
+    logDebug(`session ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
-    if (settings.transcriptionModel === "gpt-realtime-transcribe") {
-      await startPcmCapture(micStream);
-    } else {
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm";
-      recordingMimeType = "audio/webm";
-      mediaRecorder = new MediaRecorder(micStream, { mimeType });
-
-      mediaRecorder.ondataavailable = async (e: BlobEvent) => {
-        if (e.data.size > 0) queueAudioChunk(await e.data.arrayBuffer());
-      };
-
-      mediaRecorder.onstop = () => {
-        micStream?.getTracks().forEach((t) => t.stop());
-        isRecording = false;
-      };
-
-      mediaRecorder.start(800);
+    if (state === "transcribing") {
+      await finalizeRecording();
+      return;
     }
-    isRecording = true;
     logDebug(`startRecording ready session=${currentSessionId ?? "none"} held=${pressToTalkHeld}`);
   } catch (err) {
     logDebug(`startRecording error=${err instanceof Error ? err.message : String(err)}`);
@@ -724,7 +746,7 @@ async function startRecording() {
 
 async function stopRecording() {
   logDebug(`stopRecording enter state=${state} session=${currentSessionId ?? "none"}`);
-  if (state !== "recording" || !currentSessionId) return;
+  if (state !== "recording") return;
   setState("transcribing");
   startTranscribeTimeout();
   if (soundVisualizer) {
@@ -743,9 +765,13 @@ async function stopRecording() {
     });
   }
 
-  await Promise.all(Array.from(pendingChunkUploads));
+  if (currentSessionId) await finalizeRecording();
+}
 
+async function finalizeRecording() {
+  if (!currentSessionId) return;
   try {
+    await audioQueue.drain();
     await invoke("worker_finalize_session_audio", {
       sessionId: currentSessionId,
       mimeType: recordingMimeType,
@@ -776,6 +802,9 @@ function cleanup() {
   mediaRecorder = null;
   micStream = null;
   currentSessionId = null;
+  audioQueue.reset();
+  liveTranscript = "";
+  streamTextToTarget = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -805,10 +834,24 @@ async function pollOnce() {
         liveTranscript = ev.text;
         widget.dataset.liveTranscript = liveTranscript;
         widget.setAttribute("aria-label", `Transcription: ${liveTranscript}`);
-      } else if (ev.type === "partial" && ev.text !== "Listening..." && !ev.text.startsWith("Captured ")) {
+      } else if (
+        ev.type === "partial" &&
+        ev.text !== "Listening..." &&
+        ev.text !== "Refining transcript..." &&
+        !ev.text.startsWith("Captured ")
+      ) {
         liveTranscript += ev.text;
         widget.dataset.liveTranscript = liveTranscript;
         widget.setAttribute("aria-label", `Live transcription: ${liveTranscript}`);
+        if (streamTextToTarget) {
+          const delta = ev.text;
+          targetWriteQueue = targetWriteQueue.then(async () => {
+            await invoke("paste_to_target", { text: delta });
+            pastedTranscript += delta;
+          }).catch((err) => {
+            logDebug(`live target write failed=${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
       } else if (ev.type === "error") {
         showToast(ev.text || "Transcription failed", 3000);
       }
@@ -820,8 +863,19 @@ async function pollOnce() {
         lastTranscript = finalTranscript;
         localStorage.setItem("ow_last_transcript", lastTranscript);
         syncWidgetFrame();
-        await invoke("paste_to_target", { text: finalTranscript });
-        showToast("Transcribed and pasted", 2000);
+        await targetWriteQueue;
+        if (pastedTranscript) {
+          if (pastedTranscript.trim() !== finalTranscript.trim()) {
+            await invoke("replace_streamed_target", {
+              streamedText: pastedTranscript,
+              finalText: finalTranscript,
+            });
+          }
+          showToast("Transcribed live", 2000);
+        } else {
+          await invoke("paste_to_target", { text: finalTranscript });
+          showToast("Transcribed and pasted", 2000);
+        }
       }
       cleanup();
       widget.removeAttribute("data-live-transcript");
@@ -831,6 +885,41 @@ async function pollOnce() {
   } catch {
     // transient poll errors are non-fatal
   }
+}
+
+// Native end-to-end smoke hook for development builds. This deliberately uses
+// the same Tauri commands, polling loop, and target-field streaming as a
+// microphone recording; only the PCM source is deterministic test audio.
+if (import.meta.env.DEV) {
+  (window as typeof window & {
+    __openwhisperRealtimeSmoke?: (chunks: string[], intervalMs?: number) => Promise<void>;
+  }).__openwhisperRealtimeSmoke = async (chunks, intervalMs = 100) => {
+    if (state !== "idle") throw new Error(`Cannot start smoke test while state=${state}`);
+    await invoke("capture_paste_target");
+    const result = await invoke<{ session_id: string }>("worker_start_session", {
+      profileId: "realtime-smoke",
+    });
+    currentSessionId = result.session_id;
+    finalTranscript = "";
+    liveTranscript = "";
+    streamTextToTarget = true;
+    pastedTranscript = "";
+    targetWriteQueue = Promise.resolve();
+    setState("recording");
+    startPolling();
+    for (const chunkBase64 of chunks) {
+      await invoke("worker_append_audio_chunk", {
+        sessionId: currentSessionId,
+        chunkBase64,
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+    }
+    setState("transcribing");
+    await invoke("worker_finalize_session_audio", {
+      sessionId: currentSessionId,
+      mimeType: "audio/pcm;rate=24000",
+    });
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -871,7 +960,6 @@ async function handlePressToTalkStop() {
     `pressToTalkStop event state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
   );
   pressToTalkHeld = false;
-  if (pressToTalkStarting) return;
   if (state === "recording") {
     await stopRecording();
   }

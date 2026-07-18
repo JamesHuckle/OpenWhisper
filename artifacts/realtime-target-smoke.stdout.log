@@ -1,0 +1,6 @@
+APP_STATE t=0.235s state=idle
+APP_STATE t=0.437s state=idle
+APP_STATE t=0.638s state=idle
+APP_STATE t=0.840s state=idle
+APP_STATE t=1.041s state=idle
+PASS total=1.042s

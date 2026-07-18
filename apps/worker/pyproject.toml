@@ -5,7 +5,7 @@ description = "OpenWhisper Python worker for speech model orchestration"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "openai[realtime]>=2.24.0",
+  "openai[realtime]>=2.46.0",
   "pydantic>=2.10.0"
 ]
 

@@ -1,0 +1,487 @@
+    Running BeforeDevCommand (`npm run dev`)
+    Info Watching C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri for changes...
+[1m[92m   Compiling[0m openwhisper_desktop v0.1.0 (C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri)
+[1m[96m    Building[0m [=======================> ] 469/471: openwhi…[1m[96m    Building[0m [=======================> ] 470/471: openwhi…                                                            [1m[92m    Finished[0m ]8;;https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles\`dev` profile [unoptimized + debuginfo]]8;;\ target(s) in 21.89s
+[openwhisper][1784396340772][window] reveal_window
+[openwhisper][1784396345281][layout] request logical=38x14 anchor=(1440, 1694) before=258x71 scale=2
+[openwhisper][worker] spawned python worker 'C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\.venv\Scripts\python.exe' with PYTHONPATH='C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\src'
+[openwhisper][1784396345321][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784396345422][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784396345558][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784396347712][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784396347877][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784396364442][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784396377430][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784396377467][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784396377491][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1348, 1653) predicted_size=184x53
+[openwhisper][1784396380230][window] monitor switch anchor=(1371, -67) dpi=120 position=(1314, -92) predicted_size=115x33
+[openwhisper][1784396412466][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1348, 1653) predicted_size=184x53
+[openwhisper][1784396431708][window] monitor switch anchor=(1371, -67) dpi=120 position=(1314, -92) predicted_size=115x33
+[openwhisper][1784396436440][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1348, 1653) predicted_size=184x53
+[openwhisper][1784396436942][window] monitor switch anchor=(1371, -67) dpi=120 position=(1314, -92) predicted_size=115x33
+[openwhisper][1784396437668][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1348, 1653) predicted_size=184x53
+[openwhisper][1784396453402][window] monitor switch anchor=(1371, -67) dpi=120 position=(1314, -92) predicted_size=115x33
+[openwhisper][1784396455406][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1348, 1653) predicted_size=184x53
+[openwhisper][1784396602973][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784396603097][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784396603220][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784396603282][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784396603386][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784396603428][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784396609676][window] monitor switch anchor=(1371, -67) dpi=120 position=(1314, -92) predicted_size=115x33
+[openwhisper][1784396627824][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1348, 1653) predicted_size=184x53
+[openwhisper][1784396629602][window] monitor switch anchor=(1371, -67) dpi=120 position=(1314, -92) predicted_size=115x33
+[openwhisper][1784396633050][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1348, 1653) predicted_size=184x53
+[openwhisper][1784396633360][window] monitor switch anchor=(1371, -67) dpi=120 position=(1314, -92) predicted_size=115x33
+[openwhisper][1784396635396][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784396635427][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784396635449][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784396647869][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784396671158][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784396671589][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784396766562][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784396830671][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784396830816][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784396831663][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784396831809][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784396885118][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[worker] start_session profile_id='realtime-smoke' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784396936181][frontend] 2026-07-18T17:48:56.177Z setState idle -> recording
+[openwhisper][1784396936186][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784396936222][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784396937250][layout] request logical=360x100 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784396937277][layout] settled=450x125 position=(1146, -184) wait_ms=10
+[openwhisper][1784396942317][frontend] 2026-07-18T17:49:02.315Z setState recording -> transcribing
+[worker] refine skipped session_id='8fe24441-4bae-4824-a3b5-4617474adbc0'
+[openwhisper][1784396945204][frontend] 2026-07-18T17:49:05.202Z cleanup state=transcribing session=8fe24441-4bae-4824-a3b5-4617474adbc0
+[openwhisper][1784396945206][frontend] 2026-07-18T17:49:05.203Z setState transcribing -> idle
+[openwhisper][1784396945209][layout] request logical=92x26 anchor=(1371, -67) before=450x125 scale=1.25
+[openwhisper][1784396945243][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784396945249][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784396945274][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397041722][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397058213][layout] request logical=92x26 anchor=(1440, 1694) before=77x29 scale=2
+[openwhisper][1784397058242][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397058901][layout] request logical=312x428 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397058925][layout] settled=624x856 position=(1128, 850) wait_ms=10
+[openwhisper][1784397060144][layout] request logical=38x14 anchor=(1440, 1694) before=624x856 scale=2
+[openwhisper][1784397060184][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397061105][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397061189][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397061191][shortcut] emit press-to-talk-start
+[openwhisper][1784397061191][window] reveal_window
+[openwhisper][1784397061194][frontend] 2026-07-18T17:51:01.193Z event press-to-talk-start
+[openwhisper][1784397061196][frontend] 2026-07-18T17:51:01.193Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397061197][frontend] 2026-07-18T17:51:01.193Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397061393][frontend] 2026-07-18T17:51:01.392Z setState idle -> recording
+[openwhisper][1784397061396][frontend] 2026-07-18T17:51:01.394Z capture ready startup_ms=200
+[openwhisper][1784397061398][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397061427][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397061683][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397062089][frontend] 2026-07-18T17:51:02.088Z session ready startup_ms=894
+[openwhisper][1784397062091][frontend] 2026-07-18T17:51:02.088Z startRecording ready session=1ec02089-f565-4983-9d1e-cdd7c811cd2a held=true
+[openwhisper][1784397062796][layout] request logical=360x100 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397062823][layout] settled=720x200 position=(1080, 1506) wait_ms=10
+[openwhisper][1784397064715][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397067717][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397070721][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397073762][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397076800][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397079802][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397082803][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397085599][hook] events=ctrl_up,space_repeat,space_up,stop_flag_ctrl_up start_pending=false stop_pending=true
+[openwhisper][1784397085601][shortcut] emit press-to-talk-stop
+[openwhisper][1784397085605][frontend] 2026-07-18T17:51:25.602Z event press-to-talk-stop
+[openwhisper][1784397085607][frontend] 2026-07-18T17:51:25.603Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397085608][frontend] 2026-07-18T17:51:25.603Z stopRecording enter state=recording session=1ec02089-f565-4983-9d1e-cdd7c811cd2a
+[openwhisper][1784397085610][frontend] 2026-07-18T17:51:25.603Z setState recording -> transcribing
+[worker] refine skipped session_id='1ec02089-f565-4983-9d1e-cdd7c811cd2a'
+[openwhisper][1784397088348][frontend] 2026-07-18T17:51:28.346Z stopRecording finalized session=1ec02089-f565-4983-9d1e-cdd7c811cd2a
+[openwhisper][1784397088437][frontend] 2026-07-18T17:51:28.436Z cleanup state=transcribing session=1ec02089-f565-4983-9d1e-cdd7c811cd2a
+[openwhisper][1784397088439][frontend] 2026-07-18T17:51:28.437Z setState transcribing -> idle
+[openwhisper][1784397088442][layout] request logical=92x26 anchor=(1440, 1694) before=720x200 scale=2
+[openwhisper][1784397088477][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397088485][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397088510][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397090779][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397091046][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784397117887][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397117916][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397121529][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397121557][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397121707][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397132582][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397144673][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397147860][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397147891][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397148310][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397148338][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397150757][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397150790][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397151289][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397151318][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397162876][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397162959][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784397163452][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397202208][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397221470][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397221876][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+    Info File src-tauri\src\lib.rs changed. Rebuilding application...
+[1m[92m   Compiling[0m openwhisper_desktop v0.1.0 (C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri)
+[1m[96m    Building[0m [=======================> ] 469/471: openwhi…    Info File src-tauri\src\lib.rs changed. Rebuilding application...
+[1m[92m   Compiling[0m openwhisper_desktop v0.1.0 (C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri)
+[1m[96m    Building[0m [=======================> ] 469/471: openwhi…[1m[96m    Building[0m [=======================> ] 470/471: openwhi…                                                            [1m[92m    Finished[0m ]8;;https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles\`dev` profile [unoptimized + debuginfo]]8;;\ target(s) in 17.14s
+[openwhisper][1784397252503][window] reveal_window
+[openwhisper][1784397272299][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1311, 1624) predicted_size=258x70
+[openwhisper][1784397288207][window] monitor switch anchor=(1371, -67) dpi=120 position=(1291, -111) predicted_size=161x44
+[openwhisper][1784397322004][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1311, 1624) predicted_size=258x70
+[openwhisper][1784397323898][window] monitor switch anchor=(1371, -67) dpi=120 position=(1291, -111) predicted_size=161x44
+[openwhisper][1784397331703][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1311, 1624) predicted_size=258x70
+[openwhisper][1784397333152][window] monitor switch anchor=(1371, -67) dpi=120 position=(1291, -111) predicted_size=161x44
+[openwhisper][1784397336972][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397337116][hook] events=ctrl_up start_pending=false stop_pending=false
+[openwhisper][1784397340368][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1311, 1624) predicted_size=258x70
+[openwhisper][1784397392540][layout] request logical=38x14 anchor=(1440, 1694) before=258x70 scale=2
+[openwhisper][worker] spawned python worker 'C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\.venv\Scripts\python.exe' with PYTHONPATH='C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\src'
+[openwhisper][1784397392577][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397414232][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397414259][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397414527][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397414557][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397414708][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397414745][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397415706][layout] request logical=312x428 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397415742][layout] settled=624x856 position=(1128, 850) wait_ms=10
+[openwhisper][1784397423924][layout] request logical=38x14 anchor=(1440, 1694) before=624x856 scale=2
+[openwhisper][1784397423948][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[worker] start_session profile_id='realtime-smoke' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397429798][frontend] 2026-07-18T17:57:09.793Z setState idle -> recording
+[openwhisper][1784397429802][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397429838][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397435992][frontend] 2026-07-18T17:57:15.989Z setState recording -> transcribing
+[worker] refine skipped session_id='7275c63e-1b68-4950-92b4-6fb3c7098939'
+[openwhisper][1784397438633][frontend] 2026-07-18T17:57:18.631Z cleanup state=transcribing session=7275c63e-1b68-4950-92b4-6fb3c7098939
+[openwhisper][1784397438635][frontend] 2026-07-18T17:57:18.631Z setState transcribing -> idle
+[openwhisper][1784397438639][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397438671][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397464237][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397464274][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397465642][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397465672][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397467533][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397467635][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397467636][shortcut] emit press-to-talk-start
+[openwhisper][1784397467638][window] reveal_window
+[openwhisper][1784397467643][frontend] 2026-07-18T17:57:47.640Z event press-to-talk-start
+[openwhisper][1784397467644][frontend] 2026-07-18T17:57:47.641Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397467647][frontend] 2026-07-18T17:57:47.640Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397467834][frontend] 2026-07-18T17:57:47.832Z setState idle -> recording
+[openwhisper][1784397467836][frontend] 2026-07-18T17:57:47.834Z capture ready startup_ms=193
+[openwhisper][1784397467839][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397467877][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397468148][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397468514][frontend] 2026-07-18T17:57:48.512Z session ready startup_ms=872
+[openwhisper][1784397468516][frontend] 2026-07-18T17:57:48.513Z startRecording ready session=59521bf4-f088-4e04-8c9c-99878c5b6221 held=true
+[openwhisper][1784397470334][hook] events=ctrl_up,space_up,stop_flag_ctrl_up start_pending=false stop_pending=true
+[openwhisper][1784397470336][shortcut] emit press-to-talk-stop
+[openwhisper][1784397470339][frontend] 2026-07-18T17:57:50.338Z event press-to-talk-stop
+[openwhisper][1784397470342][frontend] 2026-07-18T17:57:50.339Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397470344][frontend] 2026-07-18T17:57:50.340Z stopRecording enter state=recording session=59521bf4-f088-4e04-8c9c-99878c5b6221
+[openwhisper][1784397470347][frontend] 2026-07-18T17:57:50.340Z setState recording -> transcribing
+[worker] refine skipped session_id='59521bf4-f088-4e04-8c9c-99878c5b6221'
+[openwhisper][1784397473153][frontend] 2026-07-18T17:57:53.150Z stopRecording finalized session=59521bf4-f088-4e04-8c9c-99878c5b6221
+[openwhisper][1784397473155][frontend] 2026-07-18T17:57:53.152Z setState transcribing -> idle
+[openwhisper][1784397473158][frontend] 2026-07-18T17:57:53.151Z cleanup state=transcribing session=59521bf4-f088-4e04-8c9c-99878c5b6221
+[openwhisper][1784397473160][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397473194][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397476413][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397476455][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397476457][shortcut] emit press-to-talk-start
+[openwhisper][1784397476458][window] reveal_window
+[openwhisper][1784397476460][frontend] 2026-07-18T17:57:56.459Z event press-to-talk-start
+[openwhisper][1784397476462][frontend] 2026-07-18T17:57:56.460Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397476464][frontend] 2026-07-18T17:57:56.460Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397476619][frontend] 2026-07-18T17:57:56.618Z setState idle -> recording
+[openwhisper][1784397476622][frontend] 2026-07-18T17:57:56.619Z capture ready startup_ms=160
+[openwhisper][1784397476625][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397476658][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397476969][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397477158][frontend] 2026-07-18T17:57:57.157Z session ready startup_ms=697
+[openwhisper][1784397477160][frontend] 2026-07-18T17:57:57.157Z startRecording ready session=67177643-bffb-4e29-9116-f6221bcc5a2d held=true
+[openwhisper][1784397479975][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397482987][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397486002][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397488230][hook] events=ctrl_up,space_up,stop_flag_ctrl_up start_pending=false stop_pending=true
+[openwhisper][1784397488232][shortcut] emit press-to-talk-stop
+[openwhisper][1784397488237][frontend] 2026-07-18T17:58:08.233Z event press-to-talk-stop
+[openwhisper][1784397488238][frontend] 2026-07-18T17:58:08.234Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397488241][frontend] 2026-07-18T17:58:08.234Z stopRecording enter state=recording session=67177643-bffb-4e29-9116-f6221bcc5a2d
+[openwhisper][1784397488242][frontend] 2026-07-18T17:58:08.234Z setState recording -> transcribing
+[worker] refine skipped session_id='67177643-bffb-4e29-9116-f6221bcc5a2d'
+[openwhisper][1784397490890][frontend] 2026-07-18T17:58:10.888Z stopRecording finalized session=67177643-bffb-4e29-9116-f6221bcc5a2d
+[openwhisper][1784397490893][frontend] 2026-07-18T17:58:10.889Z cleanup state=transcribing session=67177643-bffb-4e29-9116-f6221bcc5a2d
+[openwhisper][1784397490894][frontend] 2026-07-18T17:58:10.889Z setState transcribing -> idle
+[openwhisper][1784397490899][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397490929][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397494003][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397494045][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397494046][shortcut] emit press-to-talk-start
+[openwhisper][1784397494047][window] reveal_window
+[openwhisper][1784397494050][frontend] 2026-07-18T17:58:14.048Z event press-to-talk-start
+[openwhisper][1784397494051][frontend] 2026-07-18T17:58:14.048Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397494052][frontend] 2026-07-18T17:58:14.048Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397494198][frontend] 2026-07-18T17:58:14.196Z setState idle -> recording
+[openwhisper][1784397494200][frontend] 2026-07-18T17:58:14.197Z capture ready startup_ms=149
+[openwhisper][1784397494203][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397494239][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397494576][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397495099][frontend] 2026-07-18T17:58:15.097Z session ready startup_ms=1049
+[openwhisper][1784397495101][frontend] 2026-07-18T17:58:15.098Z startRecording ready session=e788866c-a947-4f6c-89ce-81f1622ab5e3 held=true
+[openwhisper][1784397497605][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397498830][hook] events=space_up,stop_flag_space_up start_pending=false stop_pending=true
+[openwhisper][1784397498833][shortcut] emit press-to-talk-stop
+[openwhisper][1784397498835][frontend] 2026-07-18T17:58:18.834Z event press-to-talk-stop
+[openwhisper][1784397498837][frontend] 2026-07-18T17:58:18.834Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397498839][frontend] 2026-07-18T17:58:18.834Z stopRecording enter state=recording session=e788866c-a947-4f6c-89ce-81f1622ab5e3
+[openwhisper][1784397498841][frontend] 2026-07-18T17:58:18.834Z setState recording -> transcribing
+[openwhisper][1784397498854][hook] events=ctrl_up start_pending=false stop_pending=false
+[worker] refine skipped session_id='e788866c-a947-4f6c-89ce-81f1622ab5e3'
+[openwhisper][1784397501524][frontend] 2026-07-18T17:58:21.521Z stopRecording finalized session=e788866c-a947-4f6c-89ce-81f1622ab5e3
+[openwhisper][1784397501525][frontend] 2026-07-18T17:58:21.522Z setState transcribing -> idle
+[openwhisper][1784397501526][frontend] 2026-07-18T17:58:21.521Z cleanup state=transcribing session=e788866c-a947-4f6c-89ce-81f1622ab5e3
+[openwhisper][1784397501531][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397501565][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397503503][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397503545][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397503546][shortcut] emit press-to-talk-start
+[openwhisper][1784397503547][window] reveal_window
+[openwhisper][1784397503550][frontend] 2026-07-18T17:58:23.548Z event press-to-talk-start
+[openwhisper][1784397503552][frontend] 2026-07-18T17:58:23.549Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397503554][frontend] 2026-07-18T17:58:23.549Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397503669][frontend] 2026-07-18T17:58:23.668Z setState idle -> recording
+[openwhisper][1784397503671][frontend] 2026-07-18T17:58:23.670Z capture ready startup_ms=121
+[openwhisper][1784397503675][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397503705][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397504058][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397504351][frontend] 2026-07-18T17:58:24.350Z session ready startup_ms=801
+[openwhisper][1784397504353][frontend] 2026-07-18T17:58:24.350Z startRecording ready session=e6fe17f4-69a4-40de-bd5f-23147c09f8a9 held=true
+[openwhisper][1784397506244][hook] events=space_repeat,space_up,stop_flag_space_up start_pending=false stop_pending=true
+[openwhisper][1784397506246][shortcut] emit press-to-talk-stop
+[openwhisper][1784397506249][frontend] 2026-07-18T17:58:26.248Z event press-to-talk-stop
+[openwhisper][1784397506251][frontend] 2026-07-18T17:58:26.248Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397506253][frontend] 2026-07-18T17:58:26.249Z stopRecording enter state=recording session=e6fe17f4-69a4-40de-bd5f-23147c09f8a9
+[openwhisper][1784397506255][frontend] 2026-07-18T17:58:26.250Z setState recording -> transcribing
+[openwhisper][1784397506288][hook] events=ctrl_up start_pending=false stop_pending=false
+[worker] refine skipped session_id='e6fe17f4-69a4-40de-bd5f-23147c09f8a9'
+[openwhisper][1784397508992][frontend] 2026-07-18T17:58:28.990Z stopRecording finalized session=e6fe17f4-69a4-40de-bd5f-23147c09f8a9
+[openwhisper][1784397509084][frontend] 2026-07-18T17:58:29.083Z cleanup state=transcribing session=e6fe17f4-69a4-40de-bd5f-23147c09f8a9
+[openwhisper][1784397509087][frontend] 2026-07-18T17:58:29.083Z setState transcribing -> idle
+[openwhisper][1784397509091][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397509127][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397512181][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397512224][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397512225][shortcut] emit press-to-talk-start
+[openwhisper][1784397512227][window] reveal_window
+[openwhisper][1784397512229][frontend] 2026-07-18T17:58:32.228Z event press-to-talk-start
+[openwhisper][1784397512230][frontend] 2026-07-18T17:58:32.228Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397512231][frontend] 2026-07-18T17:58:32.228Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397512382][frontend] 2026-07-18T17:58:32.381Z setState idle -> recording
+[openwhisper][1784397512384][frontend] 2026-07-18T17:58:32.382Z capture ready startup_ms=154
+[openwhisper][1784397512386][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397512409][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397512717][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397513306][frontend] 2026-07-18T17:58:33.306Z session ready startup_ms=1078
+[openwhisper][1784397513309][frontend] 2026-07-18T17:58:33.306Z startRecording ready session=72c852ce-6d6c-49b0-aa10-88b2f9202e64 held=true
+[openwhisper][1784397515168][hook] events=ctrl_up,space_up,stop_flag_ctrl_up start_pending=false stop_pending=true
+[openwhisper][1784397515170][shortcut] emit press-to-talk-stop
+[openwhisper][1784397515173][frontend] 2026-07-18T17:58:35.171Z event press-to-talk-stop
+[openwhisper][1784397515176][frontend] 2026-07-18T17:58:35.171Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397515178][frontend] 2026-07-18T17:58:35.171Z stopRecording enter state=recording session=72c852ce-6d6c-49b0-aa10-88b2f9202e64
+[openwhisper][1784397515180][frontend] 2026-07-18T17:58:35.172Z setState recording -> transcribing
+[worker] refine skipped session_id='72c852ce-6d6c-49b0-aa10-88b2f9202e64'
+[openwhisper][1784397518056][frontend] 2026-07-18T17:58:38.053Z stopRecording finalized session=72c852ce-6d6c-49b0-aa10-88b2f9202e64
+[openwhisper][1784397518323][frontend] 2026-07-18T17:58:38.322Z cleanup state=transcribing session=72c852ce-6d6c-49b0-aa10-88b2f9202e64
+[openwhisper][1784397518325][frontend] 2026-07-18T17:58:38.322Z setState transcribing -> idle
+[openwhisper][1784397518328][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397518353][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397523081][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397523111][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397523660][layout] request logical=312x428 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397523687][layout] settled=624x856 position=(1128, 850) wait_ms=10
+[openwhisper][1784397526220][layout] request logical=38x14 anchor=(1440, 1694) before=624x856 scale=2
+[openwhisper][1784397526266][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397526897][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397526939][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397526940][shortcut] emit press-to-talk-start
+[openwhisper][1784397526941][window] reveal_window
+[openwhisper][1784397526946][frontend] 2026-07-18T17:58:46.943Z event press-to-talk-start
+[openwhisper][1784397526947][frontend] 2026-07-18T17:58:46.943Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397526948][frontend] 2026-07-18T17:58:46.943Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397527111][frontend] 2026-07-18T17:58:47.109Z setState idle -> recording
+[openwhisper][1784397527160][frontend] 2026-07-18T17:58:47.159Z capture ready startup_ms=215
+[openwhisper][1784397527165][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][worker] spawned python worker 'C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\.venv\Scripts\python.exe' with PYTHONPATH='C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\src'
+[openwhisper][1784397527197][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397527454][hook] events=space_repeat start_pending=false stop_pending=false
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397528042][frontend] 2026-07-18T17:58:48.041Z session ready startup_ms=1098
+[openwhisper][1784397528044][frontend] 2026-07-18T17:58:48.041Z startRecording ready session=53956bf9-ac5c-4b54-a9fb-ad6e5cbcb1bf held=true
+[openwhisper][1784397529717][hook] events=ctrl_up,space_up,stop_flag_ctrl_up start_pending=false stop_pending=true
+[openwhisper][1784397529719][shortcut] emit press-to-talk-stop
+[openwhisper][1784397529721][frontend] 2026-07-18T17:58:49.720Z event press-to-talk-stop
+[openwhisper][1784397529723][frontend] 2026-07-18T17:58:49.720Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397529726][frontend] 2026-07-18T17:58:49.720Z stopRecording enter state=recording session=53956bf9-ac5c-4b54-a9fb-ad6e5cbcb1bf
+[openwhisper][1784397529728][frontend] 2026-07-18T17:58:49.720Z setState recording -> transcribing
+[worker] refine skipped session_id='53956bf9-ac5c-4b54-a9fb-ad6e5cbcb1bf'
+[openwhisper][1784397531586][frontend] 2026-07-18T17:58:51.584Z stopRecording finalized session=53956bf9-ac5c-4b54-a9fb-ad6e5cbcb1bf
+[openwhisper][1784397531675][frontend] 2026-07-18T17:58:51.674Z cleanup state=transcribing session=53956bf9-ac5c-4b54-a9fb-ad6e5cbcb1bf
+[openwhisper][1784397531678][frontend] 2026-07-18T17:58:51.674Z setState transcribing -> idle
+[openwhisper][1784397531683][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397531714][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397533171][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397533204][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397533883][layout] request logical=312x428 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397533915][layout] settled=624x856 position=(1128, 850) wait_ms=10
+[openwhisper][1784397536047][layout] request logical=38x14 anchor=(1440, 1694) before=624x856 scale=2
+[openwhisper][1784397536098][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397536922][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397536964][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397536966][shortcut] emit press-to-talk-start
+[openwhisper][1784397536968][window] reveal_window
+[openwhisper][1784397536972][frontend] 2026-07-18T17:58:56.970Z event press-to-talk-start
+[openwhisper][1784397536973][frontend] 2026-07-18T17:58:56.970Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397536974][frontend] 2026-07-18T17:58:56.970Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397537114][frontend] 2026-07-18T17:58:57.113Z setState idle -> recording
+[openwhisper][1784397537151][frontend] 2026-07-18T17:58:57.150Z capture ready startup_ms=180
+[openwhisper][1784397537157][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][worker] spawned python worker 'C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\.venv\Scripts\python.exe' with PYTHONPATH='C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\src'
+[openwhisper][1784397537182][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397537460][hook] events=space_repeat start_pending=false stop_pending=false
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397538083][frontend] 2026-07-18T17:58:58.082Z session ready startup_ms=1112
+[openwhisper][1784397538085][frontend] 2026-07-18T17:58:58.082Z startRecording ready session=cb40a46e-4fbe-46ea-9a42-e57884839b87 held=true
+[openwhisper][1784397539370][hook] events=ctrl_up,space_up,stop_flag_ctrl_up start_pending=false stop_pending=true
+[openwhisper][1784397539371][shortcut] emit press-to-talk-stop
+[openwhisper][1784397539374][frontend] 2026-07-18T17:58:59.372Z event press-to-talk-stop
+[openwhisper][1784397539376][frontend] 2026-07-18T17:58:59.373Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397539379][frontend] 2026-07-18T17:58:59.373Z stopRecording enter state=recording session=cb40a46e-4fbe-46ea-9a42-e57884839b87
+[openwhisper][1784397539381][frontend] 2026-07-18T17:58:59.374Z setState recording -> transcribing
+[worker] refine skipped session_id='cb40a46e-4fbe-46ea-9a42-e57884839b87'
+[openwhisper][1784397540879][frontend] 2026-07-18T17:59:00.877Z stopRecording finalized session=cb40a46e-4fbe-46ea-9a42-e57884839b87
+[openwhisper][1784397540972][frontend] 2026-07-18T17:59:00.971Z cleanup state=transcribing session=cb40a46e-4fbe-46ea-9a42-e57884839b87
+[openwhisper][1784397540973][frontend] 2026-07-18T17:59:00.971Z setState transcribing -> idle
+[openwhisper][1784397540975][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397541010][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397546957][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397547000][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397547001][shortcut] emit press-to-talk-start
+[openwhisper][1784397547002][window] reveal_window
+[openwhisper][1784397547007][frontend] 2026-07-18T17:59:07.004Z event press-to-talk-start
+[openwhisper][1784397547009][frontend] 2026-07-18T17:59:07.005Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397547010][frontend] 2026-07-18T17:59:07.005Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397547493][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397547652][frontend] 2026-07-18T17:59:07.651Z setState idle -> recording
+[openwhisper][1784397547689][frontend] 2026-07-18T17:59:07.688Z capture ready startup_ms=683
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397547696][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397547703][frontend] 2026-07-18T17:59:07.697Z session ready startup_ms=692
+[openwhisper][1784397547706][frontend] 2026-07-18T17:59:07.698Z startRecording ready session=76dcb092-3efe-4dd3-8f2f-a186c824eecf held=true
+[openwhisper][1784397547723][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397550495][hook] events=space_repeat start_pending=false stop_pending=false
+[openwhisper][1784397550641][hook] events=ctrl_up,space_repeat,space_up,stop_flag_ctrl_up start_pending=false stop_pending=true
+[openwhisper][1784397550643][shortcut] emit press-to-talk-stop
+[openwhisper][1784397550646][frontend] 2026-07-18T17:59:10.644Z event press-to-talk-stop
+[openwhisper][1784397550648][frontend] 2026-07-18T17:59:10.645Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397550651][frontend] 2026-07-18T17:59:10.646Z stopRecording enter state=recording session=76dcb092-3efe-4dd3-8f2f-a186c824eecf
+[openwhisper][1784397550653][frontend] 2026-07-18T17:59:10.646Z setState recording -> transcribing
+[worker] refine skipped session_id='76dcb092-3efe-4dd3-8f2f-a186c824eecf'
+[openwhisper][1784397551592][frontend] 2026-07-18T17:59:11.591Z stopRecording finalized session=76dcb092-3efe-4dd3-8f2f-a186c824eecf
+[openwhisper][1784397551684][frontend] 2026-07-18T17:59:11.683Z cleanup state=transcribing session=76dcb092-3efe-4dd3-8f2f-a186c824eecf
+[openwhisper][1784397551687][frontend] 2026-07-18T17:59:11.684Z setState transcribing -> idle
+[openwhisper][1784397551688][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397551718][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397556616][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397556643][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397557200][layout] request logical=312x428 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397557233][layout] settled=624x856 position=(1128, 850) wait_ms=10
+[openwhisper][1784397559491][layout] request logical=38x14 anchor=(1440, 1694) before=624x856 scale=2
+[openwhisper][1784397559540][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397559838][hook] events=ctrl_down start_pending=false stop_pending=false
+[openwhisper][1784397559880][hook] events=space_down,start_flag start_pending=true stop_pending=false
+[openwhisper][1784397559881][shortcut] emit press-to-talk-start
+[openwhisper][1784397559882][window] reveal_window
+[openwhisper][1784397559885][frontend] 2026-07-18T17:59:19.883Z event press-to-talk-start
+[openwhisper][1784397559887][frontend] 2026-07-18T17:59:19.883Z pressToTalkStart event state=idle held=false starting=false
+[openwhisper][1784397559888][frontend] 2026-07-18T17:59:19.884Z startRecording enter state=idle held=true starting=true
+[openwhisper][1784397560042][frontend] 2026-07-18T17:59:20.041Z setState idle -> recording
+[openwhisper][1784397560092][frontend] 2026-07-18T17:59:20.091Z capture ready startup_ms=207
+[openwhisper][1784397560097][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][worker] spawned python worker 'C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\.venv\Scripts\python.exe' with PYTHONPATH='C:\Users\james\OneDrive\Documents\code\OpenWhisper\apps\desktop\src-tauri\../../worker\src'
+[openwhisper][1784397560126][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397560397][hook] events=space_repeat start_pending=false stop_pending=false
+[worker] start_session profile_id='default' transcription_prompt_chars=0 refine_enabled=False refine_prompt_chars=342
+[openwhisper][1784397560958][frontend] 2026-07-18T17:59:20.957Z session ready startup_ms=1073
+[openwhisper][1784397560960][frontend] 2026-07-18T17:59:20.957Z startRecording ready session=c5c77c61-e2d4-4034-8a1a-d57d05c0b9ae held=true
+[openwhisper][1784397563416][hook] events=ctrl_up,space_repeat,stop_flag_ctrl_up start_pending=false stop_pending=true
+[openwhisper][1784397563417][shortcut] emit press-to-talk-stop
+[openwhisper][1784397563419][frontend] 2026-07-18T17:59:23.418Z event press-to-talk-stop
+[openwhisper][1784397563420][frontend] 2026-07-18T17:59:23.418Z pressToTalkStop event state=recording held=true starting=false
+[openwhisper][1784397563422][frontend] 2026-07-18T17:59:23.418Z stopRecording enter state=recording session=c5c77c61-e2d4-4034-8a1a-d57d05c0b9ae
+[openwhisper][1784397563423][frontend] 2026-07-18T17:59:23.419Z setState recording -> transcribing
+[openwhisper][1784397563438][hook] events=space_up start_pending=false stop_pending=false
+[worker] refine skipped session_id='c5c77c61-e2d4-4034-8a1a-d57d05c0b9ae'
+[openwhisper][1784397565000][frontend] 2026-07-18T17:59:24.996Z stopRecording finalized session=c5c77c61-e2d4-4034-8a1a-d57d05c0b9ae
+[openwhisper][1784397565090][frontend] 2026-07-18T17:59:25.089Z cleanup state=transcribing session=c5c77c61-e2d4-4034-8a1a-d57d05c0b9ae
+[openwhisper][1784397565093][frontend] 2026-07-18T17:59:25.089Z setState transcribing -> idle
+[openwhisper][1784397565097][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397565134][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397568297][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397568328][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397568925][layout] request logical=312x428 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397568959][layout] settled=624x856 position=(1128, 850) wait_ms=10
+[openwhisper][1784397571286][layout] request logical=38x14 anchor=(1440, 1694) before=624x856 scale=2
+[openwhisper][1784397571317][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397576531][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397576557][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397577200][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397577226][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397577615][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397577787][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397577817][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397578593][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397578622][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397578680][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397578985][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397579302][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397579332][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397579768][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397579796][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397582146][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397582174][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397582654][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397582684][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397583131][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397583164][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397583538][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397583567][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397584163][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397584191][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397584642][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397584671][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397584683][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397585174][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397585629][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397585658][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397586065][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397586094][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397586115][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397586484][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397586953][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397587221][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397589589][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29

@@ -22,7 +22,6 @@ _MIN_SENTENCES_PER_POLISH_CHUNK = 4
 _MAX_PARALLEL_POLISH_CHUNKS = 5
 _REALTIME_TRANSCRIBE_ALIAS = "gpt-realtime-transcribe"
 _REALTIME_TRANSCRIBE_MODEL = "gpt-realtime-whisper"
-_REALTIME_SESSION_MODEL = "gpt-realtime-2.1"
 _REALTIME_FINAL_TIMEOUT_SECONDS = 20.0
 
 _STREAMING_MODELS = frozenset({
@@ -56,7 +55,10 @@ class RealtimeTranscriptionStream:
     ) -> None:
         self._on_delta = on_delta
         self._manager = client.realtime.connect(
-            model=os.getenv("OPENWHISPER_REALTIME_SESSION_MODEL", _REALTIME_SESSION_MODEL),
+            # The dedicated transcription transport is selected by intent. It
+            # rejects both a conversational session model and a model query;
+            # the transcription model belongs in session.audio.input below.
+            extra_query={"intent": "transcription"},
             websocket_connection_options={"open_timeout": 10, "close_timeout": 5},
         )
         self._connection = self._manager.__enter__()
@@ -66,12 +68,9 @@ class RealtimeTranscriptionStream:
         self._error: str | None = None
         self._closed = False
 
-        # gpt-realtime-whisper is the input transcription model. It cannot be
-        # used as the WebSocket session model; the API rejects that combination.
         self._connection.session.update(
             session={
-                "type": "realtime",
-                "output_modalities": ["text"],
+                "type": "transcription",
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm", "rate": 24000},
