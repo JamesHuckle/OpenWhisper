@@ -24,18 +24,29 @@ export type OverlayLayout = {
 };
 
 export function getOverlayLayout(input: OverlayLayoutInput): OverlayLayout {
-  const widgetWidth = input.expanded ? EXPANDED_WIDTH : COLLAPSED_WIDTH;
-  const widgetHeight = input.expanded ? EXPANDED_HEIGHT : COLLAPSED_HEIGHT;
-  // Keep the rendered widget at the same anchor while leaving enough native
-  // window space for its anti-aliased bottom border on mixed-DPI monitors.
-  const anchorOffsetY = (widgetHeight - COLLAPSED_HEIGHT) / 2 + WINDOW_BOTTOM_PADDING;
+  // The native OS window always reserves the *expanded* pill footprint. Hover
+  // expand/collapse and recording/transcribing state changes then only alter
+  // the CSS-rendered pill *inside* this fixed footprint — they never resize or
+  // reposition the OS window. This is what makes the pill deterministic: it is
+  // pinned to a single on-screen location and rendered once, with no
+  // per-transition resize+reposition jitter (and no pointer-enter/leave
+  // feedback loop, since the window never moves out from under the cursor).
+  //
+  // Only three things ever change the native window: the mic menu opening, the
+  // onboarding bubble appearing, or the cursor moving to another monitor.
+  const frameWidth = EXPANDED_WIDTH;
+  const frameHeight = EXPANDED_HEIGHT;
+  // A constant anchor offset keeps the window's pinned bottom edge fixed across
+  // every state. Combined with the CSS pill being bottom-anchored, the pill's
+  // bottom edge never drifts; expansion grows upward from that fixed edge.
+  const anchorOffsetY = WINDOW_BOTTOM_PADDING;
   const bubbleVisible = input.settingsLoaded && !input.hasOpenaiApiKey;
   const bubbleStackHeight = bubbleVisible ? API_KEY_BUBBLE_STACK_HEIGHT : 0;
 
   if (!input.menuVisible) {
     return {
-      width: Math.max(widgetWidth, bubbleVisible ? API_KEY_BUBBLE_WIDTH : widgetWidth),
-      height: widgetHeight + bubbleStackHeight + WINDOW_BOTTOM_PADDING,
+      width: Math.max(frameWidth, bubbleVisible ? API_KEY_BUBBLE_WIDTH : frameWidth),
+      height: frameHeight + bubbleStackHeight + WINDOW_BOTTOM_PADDING,
       anchorOffsetY,
       bubbleVisible,
     };
@@ -44,11 +55,11 @@ export function getOverlayLayout(input: OverlayLayoutInput): OverlayLayout {
   const menuStackHeight = MENU_GAP + Math.ceil(input.menuHeight ?? 0);
   return {
     width: Math.max(
-      widgetWidth,
+      frameWidth,
       Math.ceil(input.menuWidth ?? 0),
       bubbleVisible ? API_KEY_BUBBLE_WIDTH : 0,
     ),
-    height: widgetHeight + Math.max(bubbleStackHeight, menuStackHeight) + WINDOW_BOTTOM_PADDING,
+    height: frameHeight + Math.max(bubbleStackHeight, menuStackHeight) + WINDOW_BOTTOM_PADDING,
     anchorOffsetY,
     bubbleVisible,
   };

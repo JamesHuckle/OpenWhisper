@@ -20,27 +20,6 @@ use worker_client::WorkerClient;
 
 const SECONDARY_MONITOR_VERTICAL_OFFSET_LOGICAL: f64 = 2.0;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ScreenBounds {
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
-}
-
-fn bounds_match_monitor(window: ScreenBounds, monitor: ScreenBounds, tolerance: i32) -> bool {
-    let edge_matches = |actual: i32, expected: i32| {
-        (i64::from(actual) - i64::from(expected)).abs() <= i64::from(tolerance)
-    };
-
-    window.right > window.left
-        && window.bottom > window.top
-        && edge_matches(window.left, monitor.left)
-        && edge_matches(window.top, monitor.top)
-        && edge_matches(window.right, monitor.right)
-        && edge_matches(window.bottom, monitor.bottom)
-}
-
 fn overlay_bottom_anchor(monitor_bottom: i32, work_bottom: i32, is_primary: bool, dpi: u32) -> i32 {
     const BOTTOM_MARGIN: i32 = 10;
     let vertical_offset = if is_primary {
@@ -554,244 +533,6 @@ mod overlay_positioner {
 }
 
 #[cfg(target_os = "windows")]
-mod fullscreen_guard {
-    use super::{bounds_match_monitor, ScreenBounds};
-    use std::ffi::c_void;
-    use std::mem::size_of;
-
-    const MONITOR_DEFAULTTONEAREST: u32 = 2;
-    const GWL_STYLE: i32 = -16;
-    const WS_CAPTION: u32 = 0x00C0_0000;
-    const SW_SHOWMAXIMIZED: u32 = 3;
-    const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
-    const DWMWA_CLOAKED: u32 = 14;
-    const FULLSCREEN_EDGE_TOLERANCE: i32 = 2;
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct Point {
-        x: i32,
-        y: i32,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct Rect {
-        left: i32,
-        top: i32,
-        right: i32,
-        bottom: i32,
-    }
-
-    impl From<Rect> for ScreenBounds {
-        fn from(value: Rect) -> Self {
-            Self {
-                left: value.left,
-                top: value.top,
-                right: value.right,
-                bottom: value.bottom,
-            }
-        }
-    }
-
-    #[repr(C)]
-    struct MonitorInfo {
-        cb_size: u32,
-        rc_monitor: Rect,
-        rc_work: Rect,
-        dw_flags: u32,
-    }
-
-    #[repr(C)]
-    struct WindowPlacement {
-        length: u32,
-        flags: u32,
-        show_cmd: u32,
-        min_position: Point,
-        max_position: Point,
-        normal_position: Rect,
-    }
-
-    struct EnumContext {
-        target_monitor: isize,
-        monitor_bounds: ScreenBounds,
-        own_process_id: u32,
-        found: bool,
-    }
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn EnumWindows(
-            callback: Option<unsafe extern "system" fn(isize, isize) -> i32>,
-            l_param: isize,
-        ) -> i32;
-        fn GetClassNameW(h_wnd: isize, class_name: *mut u16, max_count: i32) -> i32;
-        fn GetCursorPos(point: *mut Point) -> i32;
-        fn GetMonitorInfoW(h_monitor: isize, monitor_info: *mut MonitorInfo) -> i32;
-        fn GetWindowLongW(h_wnd: isize, index: i32) -> i32;
-        fn GetWindowPlacement(h_wnd: isize, placement: *mut WindowPlacement) -> i32;
-        fn GetWindowRect(h_wnd: isize, rect: *mut Rect) -> i32;
-        fn GetWindowThreadProcessId(h_wnd: isize, process_id: *mut u32) -> u32;
-        fn IsIconic(h_wnd: isize) -> i32;
-        fn IsWindowVisible(h_wnd: isize) -> i32;
-        fn MonitorFromPoint(point: Point, flags: u32) -> isize;
-        fn MonitorFromWindow(h_wnd: isize, flags: u32) -> isize;
-    }
-
-    #[link(name = "dwmapi")]
-    extern "system" {
-        fn DwmGetWindowAttribute(
-            h_wnd: isize,
-            attribute: u32,
-            value: *mut c_void,
-            value_size: u32,
-        ) -> i32;
-    }
-
-    fn is_shell_surface(h_wnd: isize) -> bool {
-        let mut name = [0u16; 64];
-        let length = unsafe { GetClassNameW(h_wnd, name.as_mut_ptr(), name.len() as i32) };
-        if length <= 0 {
-            return false;
-        }
-
-        matches!(
-            String::from_utf16_lossy(&name[..length as usize]).as_str(),
-            "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
-        )
-    }
-
-    fn visible_window_bounds(h_wnd: isize) -> Option<ScreenBounds> {
-        let mut cloaked = 0u32;
-        let cloak_result = unsafe {
-            DwmGetWindowAttribute(
-                h_wnd,
-                DWMWA_CLOAKED,
-                (&mut cloaked as *mut u32).cast(),
-                size_of::<u32>() as u32,
-            )
-        };
-        if cloak_result == 0 && cloaked != 0 {
-            return None;
-        }
-
-        let mut rect = Rect {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-        let dwm_result = unsafe {
-            DwmGetWindowAttribute(
-                h_wnd,
-                DWMWA_EXTENDED_FRAME_BOUNDS,
-                (&mut rect as *mut Rect).cast(),
-                size_of::<Rect>() as u32,
-            )
-        };
-        if dwm_result != 0 && unsafe { GetWindowRect(h_wnd, &mut rect) } == 0 {
-            return None;
-        }
-
-        Some(rect.into())
-    }
-
-    fn is_regular_maximized_window(h_wnd: isize) -> bool {
-        let mut placement = WindowPlacement {
-            length: size_of::<WindowPlacement>() as u32,
-            flags: 0,
-            show_cmd: 0,
-            min_position: Point { x: 0, y: 0 },
-            max_position: Point { x: 0, y: 0 },
-            normal_position: Rect {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            },
-        };
-        let has_placement = unsafe { GetWindowPlacement(h_wnd, &mut placement) } != 0;
-        let style = unsafe { GetWindowLongW(h_wnd, GWL_STYLE) } as u32;
-
-        has_placement && placement.show_cmd == SW_SHOWMAXIMIZED && style & WS_CAPTION != 0
-    }
-
-    unsafe extern "system" fn inspect_window(h_wnd: isize, l_param: isize) -> i32 {
-        let context = &mut *(l_param as *mut EnumContext);
-        if IsWindowVisible(h_wnd) == 0 || IsIconic(h_wnd) != 0 || is_shell_surface(h_wnd) {
-            return 1;
-        }
-
-        let mut process_id = 0u32;
-        GetWindowThreadProcessId(h_wnd, &mut process_id);
-        if process_id == 0 || process_id == context.own_process_id {
-            return 1;
-        }
-
-        if MonitorFromWindow(h_wnd, MONITOR_DEFAULTTONEAREST) != context.target_monitor
-            || is_regular_maximized_window(h_wnd)
-        {
-            return 1;
-        }
-
-        if visible_window_bounds(h_wnd).is_some_and(|bounds| {
-            bounds_match_monitor(bounds, context.monitor_bounds, FULLSCREEN_EDGE_TOLERANCE)
-        }) {
-            context.found = true;
-            return 0;
-        }
-
-        1
-    }
-
-    pub fn cursor_monitor_has_fullscreen_window() -> bool {
-        let mut cursor = Point { x: 0, y: 0 };
-        if unsafe { GetCursorPos(&mut cursor) } == 0 {
-            return false;
-        }
-
-        let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
-        if monitor == 0 {
-            return false;
-        }
-
-        let mut info = MonitorInfo {
-            cb_size: size_of::<MonitorInfo>() as u32,
-            rc_monitor: Rect {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            },
-            rc_work: Rect {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            },
-            dw_flags: 0,
-        };
-        if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
-            return false;
-        }
-
-        let mut context = EnumContext {
-            target_monitor: monitor,
-            monitor_bounds: info.rc_monitor.into(),
-            own_process_id: std::process::id(),
-            found: false,
-        };
-        unsafe {
-            EnumWindows(
-                Some(inspect_window),
-                (&mut context as *mut EnumContext) as isize,
-            )
-        };
-        context.found
-    }
-}
-
-#[cfg(target_os = "windows")]
 fn primary_overlay_anchor() -> Option<OverlayAnchor> {
     overlay_positioner::primary_monitor_anchor().map(|(center_x, bottom_y, dpi)| OverlayAnchor {
         center_x,
@@ -879,8 +620,6 @@ struct AppState {
     overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
     overlay_anchor_offset_logical: std::sync::Mutex<f64>,
     overlay_layout_locked: AtomicBool,
-    overlay_visibility_requested: AtomicBool,
-    overlay_fullscreen_suppressed: AtomicBool,
 }
 
 struct OverlayLayoutGuard<'a>(&'a AtomicBool);
@@ -1508,7 +1247,7 @@ impl OverlayRevealIntent {
     }
 }
 
-fn show_window_now(app: &AppHandle, intent: OverlayRevealIntent) {
+fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(target_os = "windows")]
         if let Err(err) = position_main_window_before_reveal(app) {
@@ -1528,22 +1267,6 @@ fn show_window_now(app: &AppHandle, intent: OverlayRevealIntent) {
     }
 }
 
-fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
-    let state = app.state::<Arc<AppState>>();
-    state
-        .overlay_visibility_requested
-        .store(true, Ordering::SeqCst);
-    if state.overlay_fullscreen_suppressed.load(Ordering::SeqCst) {
-        debug_log_line(
-            "window",
-            "reveal deferred while fullscreen content is present",
-        );
-        return;
-    }
-
-    show_window_now(app, intent);
-}
-
 fn reveal_main_window(app: &AppHandle) {
     reveal_window(app, OverlayRevealIntent::Interactive);
 }
@@ -1552,49 +1275,8 @@ fn reveal_overlay_window(app: &AppHandle) {
     reveal_window(app, OverlayRevealIntent::Passive);
 }
 
-fn hide_main_window(app: &AppHandle) {
-    app.state::<Arc<AppState>>()
-        .overlay_visibility_requested
-        .store(false, Ordering::SeqCst);
-    if let Some(window) = app.get_webview_window("main") {
-        debug_log_line("window", "hide_main_window");
-        let _ = window.hide();
-    }
-}
-
-fn overlay_visibility_requested(app: &AppHandle) -> bool {
-    app.state::<Arc<AppState>>()
-        .overlay_visibility_requested
-        .load(Ordering::SeqCst)
-}
-
-#[cfg(target_os = "windows")]
-fn set_fullscreen_suppressed(app: &AppHandle, suppressed: bool) {
-    let state = app.state::<Arc<AppState>>();
-    let was_suppressed = state
-        .overlay_fullscreen_suppressed
-        .swap(suppressed, Ordering::SeqCst);
-    if was_suppressed == suppressed {
-        return;
-    }
-
-    if suppressed {
-        debug_log_line("window", "hide over fullscreen content");
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.hide();
-        }
-    } else if state.overlay_visibility_requested.load(Ordering::SeqCst) {
-        debug_log_line("window", "restore after fullscreen content");
-        show_window_now(app, OverlayRevealIntent::Passive);
-    }
-}
-
-fn launched_from_autostart() -> bool {
-    std::env::args_os().any(|arg| arg == "--autostart")
-}
-
 fn setup_tray(app: &tauri::App) -> Result<()> {
-    let show_i = MenuItem::with_id(app, "show", "Show / Hide", true, None::<&str>)
+    let show_i = MenuItem::with_id(app, "show", "Show Pill", true, None::<&str>)
         .map_err(|e| anyhow!("{e}"))?;
     let record_i = MenuItem::with_id(app, "record", "Toggle Recording", true, None::<&str>)
         .map_err(|e| anyhow!("{e}"))?;
@@ -1611,13 +1293,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => {
-                if overlay_visibility_requested(app) {
-                    hide_main_window(app);
-                } else {
-                    reveal_main_window(app);
-                }
-            }
+            "show" => reveal_main_window(app),
             "record" => {
                 #[cfg(target_os = "windows")]
                 text_inserter::save_foreground();
@@ -1635,11 +1311,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
             } = event
             {
                 let app = tray.app_handle();
-                if overlay_visibility_requested(&app) {
-                    hide_main_window(&app);
-                } else {
-                    reveal_main_window(&app);
-                }
+                reveal_main_window(&app);
             }
         })
         .build(app)
@@ -1655,8 +1327,6 @@ pub fn run() {
         overlay_anchor: std::sync::Mutex::new(None),
         overlay_anchor_offset_logical: std::sync::Mutex::new(0.0),
         overlay_layout_locked: AtomicBool::new(false),
-        overlay_visibility_requested: AtomicBool::new(false),
-        overlay_fullscreen_suppressed: AtomicBool::new(false),
     });
 
     tauri::Builder::default()
@@ -1677,7 +1347,7 @@ pub fn run() {
             match event {
                 WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
-                    hide_main_window(&window.app_handle());
+                    reveal_overlay_window(&window.app_handle());
                 }
                 WindowEvent::Focused(false) => {
                     if std::env::var_os("OPENWHISPER_UI_TEST").is_none() {
@@ -1700,11 +1370,9 @@ pub fn run() {
                 eprintln!("Failed to create tray icon: {e}");
             }
 
-            if !launched_from_autostart() {
-                // The passive overlay must never steal focus from the field the
-                // user is typing into during app startup or a dev relaunch.
-                reveal_overlay_window(app.handle());
-            }
+            // Autostart must behave exactly like a manual launch: the pill is
+            // always visible, but showing it passively preserves typing focus.
+            reveal_overlay_window(app.handle());
 
             #[cfg(target_os = "windows")]
             {
@@ -1716,7 +1384,6 @@ pub fn run() {
                     let mut last_hook_event = String::new();
                     let mut monitor_candidate: Option<OverlayAnchor> = None;
                     let mut monitor_candidate_samples = 0u8;
-                    let mut next_fullscreen_check = std::time::Instant::now();
                     loop {
                         text_inserter::save_foreground();
                         if let Some(cursor_anchor) = cursor_overlay_anchor() {
@@ -1790,14 +1457,6 @@ pub fn run() {
                             let _ = poll_handle.emit("press-to-talk-stop", ());
                         }
 
-                        let now = std::time::Instant::now();
-                        if now >= next_fullscreen_check {
-                            set_fullscreen_suppressed(
-                                &poll_handle,
-                                fullscreen_guard::cursor_monitor_has_fullscreen_window(),
-                            );
-                            next_fullscreen_check = now + std::time::Duration::from_millis(200);
-                        }
                         std::thread::sleep(std::time::Duration::from_millis(20));
                     }
                 });
@@ -1905,47 +1564,5 @@ mod tests {
     fn passive_overlay_reveals_never_take_keyboard_focus() {
         assert!(!OverlayRevealIntent::Passive.should_focus());
         assert!(OverlayRevealIntent::Interactive.should_focus());
-    }
-
-    #[test]
-    fn fullscreen_bounds_must_match_all_monitor_edges() {
-        let monitor = ScreenBounds {
-            left: 0,
-            top: 0,
-            right: 1920,
-            bottom: 1080,
-        };
-
-        assert!(bounds_match_monitor(monitor, monitor, 2));
-        assert!(bounds_match_monitor(
-            ScreenBounds {
-                left: -1,
-                top: 1,
-                right: 1921,
-                bottom: 1079,
-            },
-            monitor,
-            2,
-        ));
-        assert!(!bounds_match_monitor(
-            ScreenBounds {
-                left: 0,
-                top: 0,
-                right: 1920,
-                bottom: 1040,
-            },
-            monitor,
-            2,
-        ));
-        assert!(!bounds_match_monitor(
-            ScreenBounds {
-                left: -1920,
-                top: 0,
-                right: 1920,
-                bottom: 1080,
-            },
-            monitor,
-            2,
-        ));
     }
 }
