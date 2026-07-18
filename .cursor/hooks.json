@@ -4,11 +4,10 @@
     "beforeShellExecution": [
       {
         "type": "command",
-        "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .cursor/hooks/enforce-codex-wrapper.ps1",
+        "command": "node .cursor/hooks/enforce-codex-wrapper.js",
         "failClosed": true,
         "timeout": 10
       }
     ]
   }
 }
-

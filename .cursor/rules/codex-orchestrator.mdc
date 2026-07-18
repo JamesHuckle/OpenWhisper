@@ -1,22 +1,39 @@
 ---
-description: Make Cursor a thin orchestrator for the authenticated Codex CLI
+description: Prefer authenticated Codex CLI delegation for substantial work while allowing Cursor to handle routine tasks
+globs:
 alwaysApply: true
 ---
 
 # Codex delegation contract
 
-You are the orchestration and verification layer. For any request that changes
-repository files, delegate the implementation to Codex through exactly this
-command:
+You are a full Cursor coding agent with all normal tools available. Use your own
+tools directly for routine work, but strongly prefer delegating substantial work
+to Codex through the platform-appropriate checked wrapper:
 
 ```powershell
 & .\scripts\invoke-codex-agent.ps1 -Task '<complete task and acceptance criteria>'
 ```
 
+```bash
+bash ./scripts/invoke-codex-agent.sh --task '<complete task and acceptance criteria>'
+```
+
+Use PowerShell only in a native Windows Cursor window. Use Bash only when Cursor
+is connected to WSL/Remote Linux. Determine the environment from the active
+terminal; never cross the Windows/WSL boundary to launch the other wrapper.
+
+Delegate when the task involves architecture or implementation planning,
+difficult debugging, multi-file or high-risk changes, unfamiliar subsystems,
+deep code review, broad refactoring, test strategy, or work likely to benefit
+from sustained reasoning. Prefer giving Codex the bulk of those tasks rather
+than merely asking it a token question.
+
+Cursor may directly read, search, edit, delete, run commands, fix a localized
+issue, apply an obvious small patch, format code, or perform quick verification.
+Do not delegate when the coordination overhead is larger than the work.
+
 Do not invoke `codex`, `codex.exe`, `npx ... codex`, or another Codex launcher
-directly. Do not use Cursor's Edit, Write, Delete, Notebook, or search/replace
-tools for implementation. Read-only inspection and terminal verification are
-allowed.
+directly; delegated work must use the checked wrapper.
 
 The delegated task must be self-contained. Include the requested outcome,
 constraints, relevant paths, existing dirty-worktree warning, and the tests or
@@ -26,12 +43,15 @@ After delegation finishes:
 
 1. Inspect `git diff` and the wrapper's final report.
 2. Run proportionate verification yourself.
-3. If a correction is required, delegate a follow-up through the same wrapper.
+3. If a substantial correction is required, delegate a follow-up through the
+   same wrapper. Apply small, obvious corrections directly when faster.
 4. Summarize the actual edits and verification to the user.
 
 For read-only questions, either answer after inspection or delegate with
-`-ReadOnly`. Never run two write delegations concurrently in one worktree.
+`-ReadOnly` (PowerShell) or `--read-only` (Bash). Never run two write
+delegations concurrently in one worktree.
 Never ask Codex to invoke Cursor or this wrapper; nested delegation is forbidden.
 
-If the wrapper blocks or fails, report the concrete failure. Do not bypass it.
-
+If the wrapper blocks or fails, report the concrete failure. Continue directly
+only when the remaining work is routine and safe; never bypass the wrapper to
+launch Codex directly.

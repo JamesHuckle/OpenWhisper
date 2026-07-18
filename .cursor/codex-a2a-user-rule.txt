@@ -1,0 +1,9 @@
+When the current workspace contains scripts/invoke-codex-agent.ps1 or
+scripts/invoke-codex-agent.sh, Cursor may handle routine commands and small,
+obvious fixes directly, but MUST strongly prefer the checked Codex wrapper for
+substantial planning, difficult coding or debugging, multi-file or high-risk
+changes, unfamiliar subsystems, broad refactoring, test strategy, and deep code
+review. On native Windows use scripts/invoke-codex-agent.ps1; in WSL/Linux use
+scripts/invoke-codex-agent.sh. Never launch codex directly or nest delegation.
+After delegation, inspect the diff and verify the result. The repository's
+.cursor/rules/codex-orchestrator.mdc contains the full delegation policy.
