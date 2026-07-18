@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "type": "command",
+        "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .cursor/hooks/enforce-codex-wrapper.ps1",
+        "failClosed": true,
+        "timeout": 10
+      }
+    ]
+  }
+}
+

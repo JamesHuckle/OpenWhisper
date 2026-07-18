@@ -1,0 +1,37 @@
+---
+description: Make Cursor a thin orchestrator for the authenticated Codex CLI
+alwaysApply: true
+---
+
+# Codex delegation contract
+
+You are the orchestration and verification layer. For any request that changes
+repository files, delegate the implementation to Codex through exactly this
+command:
+
+```powershell
+& .\scripts\invoke-codex-agent.ps1 -Task '<complete task and acceptance criteria>'
+```
+
+Do not invoke `codex`, `codex.exe`, `npx ... codex`, or another Codex launcher
+directly. Do not use Cursor's Edit, Write, Delete, Notebook, or search/replace
+tools for implementation. Read-only inspection and terminal verification are
+allowed.
+
+The delegated task must be self-contained. Include the requested outcome,
+constraints, relevant paths, existing dirty-worktree warning, and the tests or
+checks that establish completion. Tell Codex to preserve unrelated user changes.
+
+After delegation finishes:
+
+1. Inspect `git diff` and the wrapper's final report.
+2. Run proportionate verification yourself.
+3. If a correction is required, delegate a follow-up through the same wrapper.
+4. Summarize the actual edits and verification to the user.
+
+For read-only questions, either answer after inspection or delegate with
+`-ReadOnly`. Never run two write delegations concurrently in one worktree.
+Never ask Codex to invoke Cursor or this wrapper; nested delegation is forbidden.
+
+If the wrapper blocks or fails, report the concrete failure. Do not bypass it.
+

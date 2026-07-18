@@ -485,3 +485,55 @@
 [openwhisper][1784397586953][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
 [openwhisper][1784397587221][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
 [openwhisper][1784397589589][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397788600][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397788727][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397808436][layout] request logical=92x26 anchor=(1440, 1694) before=77x29 scale=2
+[openwhisper][1784397808471][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397809115][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397809144][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397827432][window] hide_main_window
+[openwhisper][1784397829938][window] reveal_window
+[openwhisper][1784397839567][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397839596][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397840482][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397840512][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397843404][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397844168][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397844198][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397844960][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397844989][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397847606][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397847633][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397848739][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397848767][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397848859][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
+[openwhisper][1784397849286][layout] request logical=92x26 anchor=(1440, 1694) before=77x29 scale=2
+[openwhisper][1784397849497][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397849505][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397849530][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397849909][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397849948][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397850773][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397850806][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397851304][layout] request logical=92x26 anchor=(1440, 1694) before=76x28 scale=2
+[openwhisper][1784397851336][layout] settled=184x52 position=(1348, 1654) wait_ms=10
+[openwhisper][1784397853831][layout] request logical=38x14 anchor=(1440, 1694) before=184x52 scale=2
+[openwhisper][1784397853863][layout] settled=76x28 position=(1402, 1666) wait_ms=10
+[openwhisper][1784397854817][window] monitor switch anchor=(1371, -67) dpi=120 position=(1347, -85) predicted_size=48x18
+[openwhisper][1784397854987][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397855013][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397856581][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397856617][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397857620][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397857649][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397860216][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397860251][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397860892][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397860917][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397863709][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397863746][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397865808][layout] request logical=92x26 anchor=(1371, -67) before=48x18 scale=1.25
+[openwhisper][1784397865836][layout] settled=115x33 position=(1314, -92) wait_ms=10
+[openwhisper][1784397867505][layout] request logical=38x14 anchor=(1371, -67) before=115x33 scale=1.25
+[openwhisper][1784397867534][layout] settled=48x18 position=(1347, -85) wait_ms=10
+[openwhisper][1784397869086][window] monitor switch anchor=(1440, 1694) dpi=192 position=(1402, 1665) predicted_size=77x29
