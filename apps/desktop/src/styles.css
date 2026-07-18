@@ -1,5 +1,6 @@
 /* ===== Reset & Transparent Canvas ===== */
 :root {
+  --window-bottom-padding: 2px;
   color-scheme: dark;
   --accent: #38d996;
   --accent-strong: #7ef0bf;
@@ -52,7 +53,7 @@ body {
 .api-key-bubble {
   position: absolute;
   left: 50%;
-  bottom: calc(var(--widget-height, 14px) + 10px);
+  bottom: calc(var(--widget-height, 14px) + var(--window-bottom-padding) + 10px);
   transform: translateX(-50%);
   display: flex;
   align-items: center;
@@ -161,7 +162,7 @@ body {
 #widget {
   position: absolute;
   left: 50%;
-  bottom: 0;
+  bottom: var(--window-bottom-padding);
   width: var(--widget-width, 38px);
   height: var(--widget-height, 14px);
   transform: translateX(-50%);
@@ -176,18 +177,12 @@ body {
   z-index: 0;
 }
 
-/* Collapsed: small pill - visible on all backgrounds */
+/* Collapsed: outline-only pill with a fully transparent interior */
 #widget[data-expanded="false"] .widget-surface {
   inset: 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01)),
-    rgba(20, 24, 32, 0.58);
-  box-shadow:
-    inset 0 0 0 2px rgba(255, 255, 255, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 6px 20px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(12px);
+  border: 1px solid rgba(120, 126, 136, 0.9);
+  background: transparent;
+  box-shadow: none;
 }
 
 /* Expanded: full bar */
@@ -579,7 +574,7 @@ body {
 .mic-menu {
   position: absolute;
   left: 50%;
-  bottom: calc(var(--widget-height, 28px) + 12px);
+  bottom: calc(var(--widget-height, 28px) + var(--window-bottom-padding) + 12px);
   width: 312px;
   max-height: 390px;
   padding: 10px 0;

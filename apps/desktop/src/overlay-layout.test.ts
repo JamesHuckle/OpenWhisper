@@ -4,6 +4,7 @@ import {
   API_KEY_BUBBLE_WIDTH,
   COLLAPSED_HEIGHT,
   COLLAPSED_WIDTH,
+  WINDOW_BOTTOM_PADDING,
   getOverlayLayout,
 } from "./overlay-layout";
 
@@ -18,7 +19,8 @@ describe("overlay startup layout", () => {
 
     expect(pending).toMatchObject({
       width: COLLAPSED_WIDTH,
-      height: COLLAPSED_HEIGHT,
+      height: COLLAPSED_HEIGHT + WINDOW_BOTTOM_PADDING,
+      anchorOffsetY: WINDOW_BOTTOM_PADDING,
       bubbleVisible: false,
     });
   });
@@ -50,7 +52,7 @@ describe("overlay startup layout", () => {
       }),
     ).toMatchObject({
       width: API_KEY_BUBBLE_WIDTH,
-      height: COLLAPSED_HEIGHT + API_KEY_BUBBLE_STACK_HEIGHT,
+      height: COLLAPSED_HEIGHT + API_KEY_BUBBLE_STACK_HEIGHT + WINDOW_BOTTOM_PADDING,
       bubbleVisible: true,
     });
   });

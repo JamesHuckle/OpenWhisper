@@ -15,15 +15,18 @@ describe("desktop regression contracts", () => {
     expect(runLocal).not.toContain('"apps\\desktop\\src-tauri\\target');
   });
 
-  it("keeps the collapsed pill translucent instead of nearly opaque black", () => {
+  it("keeps the collapsed pill interior fully transparent", () => {
     const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
     const collapsedRule = css.match(
       /#widget\[data-expanded="false"\] \.widget-surface \{([\s\S]*?)\n\}/,
     )?.[1];
 
     expect(collapsedRule).toBeDefined();
-    expect(collapsedRule).toContain("rgba(20, 24, 32, 0.58)");
-    expect(collapsedRule).not.toContain("rgba(20, 24, 32, 0.82)");
+    expect(collapsedRule).toContain("border: 1px solid rgba(120, 126, 136, 0.9)");
+    expect(collapsedRule).toContain("background: transparent");
+    expect(collapsedRule).toContain("box-shadow: none");
+    expect(collapsedRule).not.toContain("backdrop-filter");
+    expect(collapsedRule).not.toMatch(/box-shadow:[^;]*inset/);
   });
 
   it("streams realtime transcript deltas into the previously focused field", () => {
