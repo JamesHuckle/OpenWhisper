@@ -29,6 +29,30 @@ describe("desktop regression contracts", () => {
     expect(collapsedRule).not.toMatch(/box-shadow:[^;]*inset/);
   });
 
+  it("keeps the transparent canvas around the expanded pill clear", () => {
+    const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
+    const expandedRule = css.match(
+      /#widget\[data-expanded="true"\] \.widget-surface \{([\s\S]*?)\n\}/,
+    )?.[1];
+    const hoveredRule = css.match(
+      /#widget\[data-expanded="true"\]\[data-hovered="true"\] \.widget-surface,([\s\S]*?)\n\}/,
+    )?.[1];
+    const recordingRule = css.match(
+      /\[data-state="recording"\] \.widget-surface \{([\s\S]*?)\n\}/,
+    )?.[1];
+
+    expect(expandedRule).toBeDefined();
+    expect(hoveredRule).toBeDefined();
+    expect(recordingRule).toBeDefined();
+    expect(expandedRule).toContain("box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06)");
+    expect(hoveredRule).toContain("box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08)");
+    expect(recordingRule).toContain("box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08)");
+    expect(expandedRule).not.toContain("backdrop-filter");
+    expect(expandedRule?.match(/box-shadow:/g)).toHaveLength(1);
+    expect(hoveredRule?.match(/box-shadow:/g)).toHaveLength(1);
+    expect(recordingRule?.match(/box-shadow:/g)).toHaveLength(1);
+  });
+
   it("streams realtime transcript deltas into the previously focused field", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");

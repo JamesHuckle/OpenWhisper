@@ -192,18 +192,13 @@ body {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.01)),
     var(--surface);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 10px 24px rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(20px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 #widget[data-expanded="true"][data-hovered="true"] .widget-surface,
 #widget[data-expanded="true"][data-menu-open="true"] .widget-surface {
   border-color: rgba(255, 255, 255, 0.12);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 16px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .stop-btn {
@@ -384,10 +379,7 @@ body {
 
 [data-state="recording"] .widget-surface {
   border-color: rgba(126, 240, 191, 0.22);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 0 0 1px rgba(56, 217, 150, 0.08),
-    0 12px 30px rgba(0, 0, 0, 0.42);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 [data-state="recording"] .meter,
