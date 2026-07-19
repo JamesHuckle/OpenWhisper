@@ -201,9 +201,15 @@ try {
   Assert-LastExitCode "Failed to push release tag."
 } finally { $env:OPENWHISPER_RELEASING = $null }
 
-$releaseExists = $true
-& $ghPath release view $tag *> $null
-if ($LASTEXITCODE -ne 0) { $releaseExists = $false }
+$releaseLookupUri = "https://api.github.com/repos/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/tags/$tag"
+$releaseExists = $false
+try {
+  Invoke-RestMethod -Uri $releaseLookupUri -Headers @{ "User-Agent" = "OpenWhisper release hook" } | Out-Null
+  $releaseExists = $true
+} catch {
+  $statusCode = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { $null }
+  if ($statusCode -ne 404) { throw }
+}
 if (-not $releaseExists) {
   & $ghPath release create $tag --title "$productName $tag" --generate-notes --latest
   Assert-LastExitCode "Failed to create GitHub release."

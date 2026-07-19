@@ -232,7 +232,7 @@ Pop-Location
 
 $InstallerDir = Join-Path $CargoTargetDir "release/bundle/nsis"
 
-if ($NeedsLocalMirror) {
+if ($IsUncRepo) {
   $OutDir = Join-Path $OriginalRepoRoot "artifacts/windows-installer"
   if (-not (Test-Path $InstallerDir)) {
     throw "Installer directory not found: $InstallerDir"

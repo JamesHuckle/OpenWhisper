@@ -33,3 +33,4 @@ xref-*.html
 # Built executables
 binaries/
 *.exe
+*.sig
