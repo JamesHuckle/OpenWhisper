@@ -62,15 +62,17 @@ $OriginalRepoRoot = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path `
   -replace '^Microsoft\.PowerShell\.Core\\FileSystem::', ''
 $RepoRoot = $OriginalRepoRoot
 $IsUncRepo = $RepoRoot.StartsWith("\\") -or $RepoRoot.ToLowerInvariant().Contains("\\wsl$\")
+$IsOneDriveRepo = $RepoRoot.ToLowerInvariant().Contains("\onedrive\")
+$NeedsLocalMirror = $IsUncRepo -or $IsOneDriveRepo
 $BuildRoot = $RepoRoot
 
-if ($IsUncRepo) {
+if ($NeedsLocalMirror) {
   if ([string]::IsNullOrWhiteSpace($LocalBuildRoot)) {
     $BuildRoot = Join-Path $env:USERPROFILE "openwhisper-win-build"
   } else {
     $BuildRoot = $LocalBuildRoot
   }
-  Write-Host "==> UNC/WSL path detected. Mirroring repo to local Windows path:"
+  Write-Host "==> Cloud or UNC workspace detected. Mirroring repo to local Windows path:"
   Write-Host "    $BuildRoot"
 
   if (-not (Test-Path $BuildRoot)) {
@@ -81,7 +83,8 @@ if ($IsUncRepo) {
   # /MIR with /XD preserves excluded dirs (target, node_modules) across runs for
   # incremental Rust builds and to avoid Application Control blocking re-compiled binaries.
   robocopy $RepoRoot $BuildRoot /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP `
-    /XD ".git" "node_modules" ".venv" "target" "dist" "build" ".mypy_cache" ".pytest_cache" | Out-Null
+    /XD ".git" "node_modules" ".venv" "target" "dist" "build" ".mypy_cache" ".pytest_cache" `
+    /XF ".env" | Out-Null
 
   if ($LASTEXITCODE -gt 7) {
     throw "robocopy failed with exit code $LASTEXITCODE"
@@ -229,7 +232,7 @@ Pop-Location
 
 $InstallerDir = Join-Path $CargoTargetDir "release/bundle/nsis"
 
-if ($IsUncRepo) {
+if ($NeedsLocalMirror) {
   $OutDir = Join-Path $OriginalRepoRoot "artifacts/windows-installer"
   if (-not (Test-Path $InstallerDir)) {
     throw "Installer directory not found: $InstallerDir"

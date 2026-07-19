@@ -143,13 +143,28 @@ try {
 }
 
 Write-Host "==> Testing worker"
+$workerEnvironment = Join-Path $env:USERPROFILE "openwhisper-worker-env-$([guid]::NewGuid().ToString('N'))"
+$previousWorkerEnvironment = $env:UV_PROJECT_ENVIRONMENT
 Push-Location (Join-Path $RepoRoot "apps/worker")
 try {
+  $env:UV_PROJECT_ENVIRONMENT = $workerEnvironment
   & uv.exe sync --link-mode copy --reinstall
   Assert-LastExitCode "Worker dependency synchronization failed."
   & uv.exe run python -m unittest discover -s tests
   Assert-LastExitCode "Worker tests failed."
-} finally { Pop-Location }
+} finally {
+  Pop-Location
+  $env:UV_PROJECT_ENVIRONMENT = $previousWorkerEnvironment
+  $resolvedWorkerEnvironment = [IO.Path]::GetFullPath($workerEnvironment)
+  $resolvedUserProfile = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\'
+  if (
+    $resolvedWorkerEnvironment.StartsWith($resolvedUserProfile, [StringComparison]::OrdinalIgnoreCase) -and
+    (Split-Path -Leaf $resolvedWorkerEnvironment) -like "openwhisper-worker-env-*" -and
+    (Test-Path -LiteralPath $resolvedWorkerEnvironment)
+  ) {
+    Remove-Item -LiteralPath $resolvedWorkerEnvironment -Recurse -Force
+  }
+}
 
 Write-Host "==> Testing and building signed Android release"
 & "$PSScriptRoot/android.ps1" testDebugUnitTest
