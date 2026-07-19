@@ -39,6 +39,14 @@ describe("desktop regression contracts", () => {
     expect(native).toContain('MenuItem::with_id(app, "show", "Show Pill"');
   });
 
+  it("builds signed releases without waiting for an interactive key prompt", () => {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(desktopRoot, "package.json"), "utf8"),
+    );
+
+    expect(packageJson.scripts["tauri:build:signed"]).toContain("--ci");
+  });
+
   it("keeps the transparent canvas around the expanded pill clear", () => {
     const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
     const expandedRule = css.match(

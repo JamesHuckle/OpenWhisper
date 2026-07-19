@@ -1,7 +1,7 @@
 {
   "name": "openwhisper-desktop",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build --config src-tauri/tauri.local.conf.json",
-    "tauri:build:signed": "tauri build",
+    "tauri:build:signed": "tauri build --ci",
     "icon": "tauri icon src-tauri/icons/icon.svg && node scripts/clean-icons.cjs"
   },
   "dependencies": {
