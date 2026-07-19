@@ -82,8 +82,8 @@ if ($NeedsLocalMirror) {
   # Build from local NTFS path to avoid UNC/cmd issues and Linux node_modules artifacts.
   # /MIR with /XD preserves excluded dirs (target, node_modules) across runs for
   # incremental Rust builds and to avoid Application Control blocking re-compiled binaries.
-  robocopy $RepoRoot $BuildRoot /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP `
-    /XD ".git" "node_modules" ".venv" "target" "dist" "build" ".mypy_cache" ".pytest_cache" `
+  robocopy $RepoRoot $BuildRoot /MIR /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP `
+    /XD ".git" ".tools" "artifacts" "node_modules" ".next" ".venv*" "target" "dist" "build" ".mypy_cache" ".pytest_cache" `
     /XF ".env" | Out-Null
 
   if ($LASTEXITCODE -gt 7) {
