@@ -89,6 +89,7 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
             contentDescription = getString(R.string.api_key_label)
+            setText(secretStore.load().orEmpty())
         }
         content.addView(apiKey)
         content.addView(LinearLayout(this).apply {
@@ -108,7 +109,8 @@ class MainActivity : Activity() {
                 isAllCaps = false
                 setOnClickListener {
                     secretStore.save(apiKey.text.toString())
-                    apiKey.text.clear()
+                    apiKey.setText(secretStore.load().orEmpty())
+                    apiKey.setSelection(apiKey.text.length)
                     refreshStatus()
                 }
             })
