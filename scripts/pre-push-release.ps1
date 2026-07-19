@@ -151,15 +151,6 @@ try {
   Assert-LastExitCode "Worker tests failed."
 } finally { Pop-Location }
 
-Write-Host "==> Testing desktop"
-Push-Location (Join-Path $RepoRoot "apps/desktop")
-try {
-  & npm.cmd ci
-  Assert-LastExitCode "Desktop dependency installation failed."
-  & npm.cmd test
-  Assert-LastExitCode "Desktop tests failed."
-} finally { Pop-Location }
-
 Write-Host "==> Testing and building signed Android release"
 & "$PSScriptRoot/android.ps1" testDebugUnitTest
 Assert-LastExitCode "Android unit tests failed."
@@ -167,8 +158,15 @@ Assert-LastExitCode "Android unit tests failed."
 Assert-LastExitCode "Android release build failed."
 
 Write-Host "==> Building signed Windows release"
-& "$PSScriptRoot/build-windows-installer.ps1" -SkipNpmInstall
+& "$PSScriptRoot/build-windows-installer.ps1"
 Assert-LastExitCode "Windows release build failed."
+
+Write-Host "==> Testing desktop"
+Push-Location (Join-Path $RepoRoot "apps/desktop")
+try {
+  & npm.cmd test
+  Assert-LastExitCode "Desktop tests failed."
+} finally { Pop-Location }
 
 $cargoTargetDir = Join-Path $env:USERPROFILE "openwhisper-cargo-target"
 $installerDir = Join-Path $cargoTargetDir "release/bundle/nsis"
