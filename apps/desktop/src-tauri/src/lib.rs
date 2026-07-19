@@ -569,6 +569,10 @@ fn default_refine_enabled() -> bool {
     true
 }
 
+fn default_show_idle_pill() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
@@ -582,6 +586,8 @@ struct AppSettings {
     refine_enabled: bool,
     #[serde(default)]
     refine_prompt: String,
+    #[serde(default = "default_show_idle_pill")]
+    show_idle_pill: bool,
 }
 
 impl Default for AppSettings {
@@ -592,6 +598,7 @@ impl Default for AppSettings {
             transcription_prompt: default_transcription_prompt(),
             refine_enabled: true,
             refine_prompt: String::new(),
+            show_idle_pill: true,
         }
     }
 }
@@ -605,6 +612,7 @@ struct FrontendSettings {
     transcription_prompt: String,
     refine_enabled: bool,
     refine_prompt: String,
+    show_idle_pill: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -781,6 +789,7 @@ fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
         transcription_prompt: settings.transcription_prompt.clone(),
         refine_enabled: settings.refine_enabled,
         refine_prompt: settings.refine_prompt.clone(),
+        show_idle_pill: settings.show_idle_pill,
     }
 }
 
@@ -877,6 +886,7 @@ async fn app_save_settings(
     transcription_prompt: Option<String>,
     refine_enabled: Option<bool>,
     refine_prompt: Option<String>,
+    show_idle_pill: Option<bool>,
 ) -> Result<FrontendSettings, String> {
     let updated = {
         let mut current = state
@@ -901,6 +911,9 @@ async fn app_save_settings(
         }
         if let Some(prompt) = refine_prompt {
             current.refine_prompt = prompt;
+        }
+        if let Some(show) = show_idle_pill {
+            current.show_idle_pill = show;
         }
         current
     };
@@ -1108,6 +1121,7 @@ async fn overlay_apply_layout(
     width: f64,
     height: f64,
     anchor_offset_y: f64,
+    visible: bool,
 ) -> Result<(), String> {
     let app_state = state.inner().clone();
 
@@ -1188,6 +1202,11 @@ async fn overlay_apply_layout(
             window
                 .set_position(Position::Physical(position))
                 .map_err(|e| e.to_string())?;
+            if visible {
+                window.show().map_err(|e| e.to_string())?;
+            } else {
+                window.hide().map_err(|e| e.to_string())?;
+            }
             return Ok(());
         }
     }
@@ -1195,6 +1214,11 @@ async fn overlay_apply_layout(
     window
         .set_size(Size::Logical(LogicalSize::new(width, height)))
         .map_err(|e| e.to_string())?;
+    if visible {
+        window.show().map_err(|e| e.to_string())?;
+    } else {
+        window.hide().map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
@@ -1248,6 +1272,18 @@ impl OverlayRevealIntent {
 }
 
 fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
+    if matches!(intent, OverlayRevealIntent::Passive) {
+        let show_idle_pill = app
+            .state::<Arc<AppState>>()
+            .settings
+            .lock()
+            .map(|settings| settings.show_idle_pill)
+            .unwrap_or(true);
+        if !show_idle_pill {
+            debug_log_line("window", "passive reveal skipped while idle pill is hidden");
+            return;
+        }
+    }
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(target_os = "windows")]
         if let Err(err) = position_main_window_before_reveal(app) {
@@ -1263,7 +1299,7 @@ fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
         if intent.should_focus() {
             let _ = window.set_focus();
         }
-        let _ = window.emit("overlay-revealed", ());
+        let _ = window.emit("overlay-revealed", intent.should_focus());
     }
 }
 
@@ -1529,6 +1565,14 @@ mod tests {
         assert!(is_supported_transcription_model("gpt-4o-transcribe"));
         assert!(is_supported_transcription_model("gpt-realtime-transcribe"));
         assert!(!is_supported_transcription_model("gpt-5.4"));
+    }
+
+    #[test]
+    fn settings_without_idle_pill_preference_keep_showing_it() {
+        let settings: AppSettings = serde_json::from_value(json!({})).unwrap();
+
+        assert!(settings.show_idle_pill);
+        assert!(frontend_settings_from(&settings).show_idle_pill);
     }
 
     #[test]

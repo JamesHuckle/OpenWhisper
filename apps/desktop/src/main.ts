@@ -33,6 +33,7 @@ type AppSettings = {
   transcriptionPrompt: string;
   refineEnabled: boolean;
   refinePrompt: string;
+  showIdlePill: boolean;
 };
 type WidgetState = "idle" | "recording" | "transcribing" | "error";
 type MicDevice = { id: string; label: string };
@@ -169,6 +170,16 @@ app.innerHTML = `
         <span class="menu-link-bold">Create or manage</span> keys at platform.openai.com/api-keys
       </a>
       <div class="menu-divider"></div>
+      <div class="menu-toggle-row">
+        <span class="menu-section menu-section-inline">Show pill when idle</span>
+        <label class="toggle-switch" title="Keep the collapsed pill visible when not recording">
+          <input id="menu-show-idle-pill-toggle" type="checkbox" />
+          <span class="toggle-track"></span>
+          <span class="toggle-thumb"></span>
+        </label>
+      </div>
+      <div class="menu-prompt-hint">Turn this off to completely hide the collapsed pill. Use the tray icon to show it again.</div>
+      <div class="menu-divider"></div>
       <div class="menu-section">Dictionary</div>
       <div id="menu-target-app" class="menu-target-app">
         <span class="target-app-dot"></span>
@@ -210,6 +221,7 @@ const menuKeyLink = document.getElementById("menu-key-link") as HTMLAnchorElemen
 const menuPromptInput = document.getElementById("menu-prompt-input") as HTMLTextAreaElement;
 const menuRefineToggle = document.getElementById("menu-refine-toggle") as HTMLInputElement;
 const menuRefinePromptInput = document.getElementById("menu-refine-prompt-input") as HTMLTextAreaElement;
+const menuShowIdlePillToggle = document.getElementById("menu-show-idle-pill-toggle") as HTMLInputElement;
 const menuTargetAppName = document.getElementById("menu-target-app-name")!;
 
 let hasOpenaiApiKey = false;
@@ -224,10 +236,13 @@ let promptSaveInFlight = false;
 let modelSaveInFlight = false;
 let refineDirty = false;
 let refineSaveInFlight = false;
+let showIdlePill = true;
+let showIdlePillSaveInFlight = false;
+let manualOverlayReveal = false;
 let widgetHovered = false;
 let expandTimeoutId: number | null = null;
 let collapseTimeoutId: number | null = null;
-let lastAppliedLayout: { width: number; height: number; anchorOffsetY: number } | null = null;
+let lastAppliedLayout: { width: number; height: number; anchorOffsetY: number; visible: boolean } | null = null;
 let overlayLayoutQueue: Promise<void> = Promise.resolve();
 
 function logDebug(message: string) {
@@ -277,7 +292,7 @@ function setWidgetHovered(next: boolean) {
 function getWindowLayout() {
   const menuVisible = menuOpen && !micMenu.classList.contains("hidden");
   const menuRect = menuVisible ? micMenu.getBoundingClientRect() : undefined;
-  return getOverlayLayout({
+  const layout = getOverlayLayout({
     expanded: isWidgetExpanded(),
     settingsLoaded,
     hasOpenaiApiKey: hasOpenaiApiKey || state !== "idle",
@@ -285,6 +300,10 @@ function getWindowLayout() {
     menuWidth: menuRect?.width,
     menuHeight: menuRect?.height,
   });
+  return {
+    ...layout,
+    visible: showIdlePill || state !== "idle" || menuOpen || manualOverlayReveal,
+  };
 }
 
 async function applyOverlayLayout(force = false) {
@@ -294,7 +313,8 @@ async function applyOverlayLayout(force = false) {
     !force &&
     lastAppliedLayout?.width === layout.width &&
     lastAppliedLayout?.height === layout.height &&
-    lastAppliedLayout?.anchorOffsetY === layout.anchorOffsetY
+    lastAppliedLayout?.anchorOffsetY === layout.anchorOffsetY &&
+    lastAppliedLayout?.visible === layout.visible
   ) {
     return;
   }
@@ -306,6 +326,7 @@ async function applyOverlayLayout(force = false) {
       width: layout.width,
       height: layout.height,
       anchorOffsetY: layout.anchorOffsetY,
+      visible: layout.visible,
     }));
   overlayLayoutQueue = apply;
   await apply;
@@ -1027,6 +1048,8 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
   menuKeyStatus.textContent = settings.hasOpenaiApiKey ? configuredLabel : "Not configured";
   menuKeyStatus.className = `menu-item ${settings.hasOpenaiApiKey ? "key-ok" : "key-missing"}`;
   menuModelSelect.value = settings.transcriptionModel ?? "gpt-4o-mini-transcribe";
+  showIdlePill = settings.showIdlePill ?? true;
+  menuShowIdlePillToggle.checked = showIdlePill;
   syncModelHint();
   if (!promptDirty) {
     menuPromptInput.value = settings.transcriptionPrompt ?? "";
@@ -1036,7 +1059,10 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
     menuRefinePromptInput.value = settings.refinePrompt ?? "";
     syncRefinePromptVisibility();
   }
-  if (bubbleVisibilityChanged) {
+  if (
+    bubbleVisibilityChanged ||
+    (lastAppliedLayout !== null && lastAppliedLayout.visible !== getWindowLayout().visible)
+  ) {
     void applyOverlayLayout();
   }
 }
@@ -1089,9 +1115,27 @@ async function loadSettings() {
     const settings = await invoke<AppSettings>("app_get_settings");
     applySettingsUi(settings);
   } catch {
-    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: "gpt-4o-mini-transcribe", transcriptionPrompt: "", refineEnabled: true, refinePrompt: "" });
+    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: "gpt-4o-mini-transcribe", transcriptionPrompt: "", refineEnabled: true, refinePrompt: "", showIdlePill: true });
   }
 }
+
+menuShowIdlePillToggle.addEventListener("change", async () => {
+  if (showIdlePillSaveInFlight) return;
+
+  showIdlePillSaveInFlight = true;
+  try {
+    const updated = await invoke<AppSettings>("app_save_settings", {
+      showIdlePill: menuShowIdlePillToggle.checked,
+    });
+    applySettingsUi(updated);
+    showToast(updated.showIdlePill ? "Idle pill shown" : "Idle pill hidden");
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : String(err));
+    await loadSettings();
+  } finally {
+    showIdlePillSaveInFlight = false;
+  }
+});
 
 menuModelSelect.addEventListener("change", async () => {
   if (modelSaveInFlight) return;
@@ -1279,8 +1323,14 @@ void listen("press-to-talk-stop", () => {
   logDebug("event press-to-talk-stop");
   return void handlePressToTalkStop();
 });
-void listen("overlay-revealed", () => void collapseOverlay());
-void listen("overlay-lost-focus", () => void collapseOverlay());
+void listen<boolean>("overlay-revealed", (event) => {
+  manualOverlayReveal = event.payload;
+  void collapseOverlay();
+});
+void listen("overlay-lost-focus", () => {
+  manualOverlayReveal = false;
+  void collapseOverlay();
+});
 
 // ---------------------------------------------------------------------------
 // Auto-update
@@ -1310,8 +1360,7 @@ if (import.meta.env.DEV) {
 widget.dataset.state = state;
 syncWidgetFrame();
 syncApiKeyBubble();
-void applyOverlayLayout(true);
-void loadSettings();
+void loadSettings().then(() => applyOverlayLayout(true));
 if (import.meta.env.PROD) {
   void ensureAutostartEnabled();
 }

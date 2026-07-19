@@ -29,6 +29,16 @@ describe("desktop regression contracts", () => {
     expect(collapsedRule).not.toMatch(/box-shadow:[^;]*inset/);
   });
 
+  it("can completely hide the idle pill and recover it from the tray", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+
+    expect(main).toContain("Show pill when idle");
+    expect(main).toContain('visible: showIdlePill || state !== "idle" || menuOpen || manualOverlayReveal');
+    expect(native).toContain("window.hide().map_err");
+    expect(native).toContain('MenuItem::with_id(app, "show", "Show Pill"');
+  });
+
   it("keeps the transparent canvas around the expanded pill clear", () => {
     const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
     const expandedRule = css.match(
