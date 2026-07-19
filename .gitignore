@@ -14,6 +14,7 @@ target*/
 .idea/
 .vscode/
 .gradle/
+.kotlin/
 .tools/
 .android/
 local.properties

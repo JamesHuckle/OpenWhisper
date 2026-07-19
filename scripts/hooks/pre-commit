@@ -1,0 +1,9 @@
+#!/bin/sh
+# Keep all native packages on one monotonically increasing release version.
+
+if [ "$OPENWHISPER_SKIP_VERSION_BUMP" = "1" ]; then
+  exit 0
+fi
+
+powershell.exe -ExecutionPolicy Bypass -File "$(git rev-parse --show-toplevel)/scripts/bump-release-version.ps1"
+exit $?

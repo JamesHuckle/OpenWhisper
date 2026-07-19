@@ -35,6 +35,12 @@ class OpenWhisperAccessibilityE2ETest {
             UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES or
                 UiAutomation.FLAG_DONT_USE_ACCESSIBILITY,
         )
+        // Keep this deterministic UI test independent of the background release feed.
+        instrumentation.targetContext
+            .getSharedPreferences("openwhisper_updates", 0)
+            .edit()
+            .putLong("last_check_epoch_ms", System.currentTimeMillis())
+            .commit()
         shell("settings delete secure enabled_accessibility_services")
         shell("settings put secure accessibility_enabled 0")
         SystemClock.sleep(250)

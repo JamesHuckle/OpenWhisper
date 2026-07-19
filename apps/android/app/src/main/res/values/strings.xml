@@ -22,7 +22,7 @@
     <string name="saved_securely">saved securely</string>
     <string name="not_saved">not saved</string>
     <string name="demo_title">OpenWhisper end-to-end test</string>
-    <string name="demo_instructions">Tap the first field. The microphone should appear above the keyboard. The password field must never show it.</string>
+    <string name="demo_instructions">Tap the first field. The microphone should appear beside the A key. The password field must never show it.</string>
     <string name="demo_initial_text">Hello </string>
     <string name="safe_dictation_field">Safe dictation field</string>
     <string name="password_field_hint">Password field (overlay forbidden)</string>
@@ -34,4 +34,19 @@
     <string name="notification_channel_name">Active dictation</string>
     <string name="listening_notification_title">OpenWhisper is listening</string>
     <string name="listening_notification_text">Tap the microphone again to transcribe</string>
+    <string name="check_for_updates">Check for updates</string>
+    <string name="update_available_title">OpenWhisper update available</string>
+    <string name="update_available_message">Version %1$s is ready. Updating keeps all your existing settings and encrypted API key.</string>
+    <string name="update_now">Update now</string>
+    <string name="later">Later</string>
+    <string name="downloading_update">Downloading the signed update…</string>
+    <string name="update_ready_title">Update ready</string>
+    <string name="allow_updates_message">Android needs permission to install OpenWhisper updates. Enable “Allow from this source”, then return here to continue.</string>
+    <string name="open_settings">Open settings</string>
+    <string name="update_failed_title">Couldn’t update OpenWhisper</string>
+    <string name="update_failed_message">Check your internet connection and try again. Your current app and settings have not changed.</string>
+    <string name="up_to_date_title">OpenWhisper is up to date</string>
+    <string name="up_to_date_message">You already have the latest version.</string>
+    <string name="update_notification_channel">App updates</string>
+    <string name="update_notification_message">Version %1$s is ready. Tap to update.</string>
 </resources>

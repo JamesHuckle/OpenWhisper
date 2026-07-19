@@ -20,12 +20,6 @@ the selected IME:
 The control is hidden when no keyboard is visible, focus is not editable, or
 the platform marks a field as password/sensitive.
 
-![API 36 emulator showing the OpenWhisper microphone over the keyboard](../artifacts/android/openwhisper-overlay.png)
-
-![Deterministic transcript inserted at the preserved cursor](../artifacts/android/openwhisper-inserted.png)
-
-![Password field focused with no OpenWhisper overlay](../artifacts/android/openwhisper-password.png)
-
 ## Architecture and safety boundaries
 
 - `OpenWhisperAccessibilityService` observes focus and IME windows, owns the
@@ -141,6 +135,27 @@ Build, sign, verify, upload, and re-download/verify the public asset with:
 
 Every release publishes both a versioned APK and the stable
 `OpenWhisper-Android.apk` asset used by the latest-download URL.
+When Android advances without a new desktop build, the release script carries
+the stable Windows installer and signed desktop update feed forward so the
+shared GitHub `releases/latest` URLs continue to work for both platforms.
+
+It also publishes `OpenWhisper-Android-update.json`. Android 0.2.0 and newer
+checks that feed daily while the accessibility service is enabled and whenever
+the app is opened. A system update notification opens an in-app prompt; one tap
+downloads the APK, verifies its SHA-256 digest, and opens Android's installer.
+Android still requires the user to approve the install (and, on first use, to
+allow OpenWhisper as an install source). Silent sideloaded updates are not
+permitted by the platform.
+
+Updates use the same `com.openwhisper.android` package and persistent signing
+key, so Android performs an in-place upgrade. Shared preferences, the Android
+Keystore entry, and the encrypted OpenAI API key remain untouched. Never change
+the application ID or release key, and increment `versionCode` for every
+Android release.
+
+The original 0.1.0 build predates this updater and cannot be made to display a
+remote prompt retroactively. Those users need to install 0.2.0 manually once;
+all later releases can notify them in-app.
 
 The automated environment validates Android 16/API 36 framework behavior and a
 real software IME. A physical S26 Ultra/One UI pass is still required before

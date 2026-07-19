@@ -170,7 +170,7 @@ if (Test-Path ".venv") {
     throw "Failed to remove worker .venv from build directory. Close any terminals/IDEs using the worker venv and retry."
   }
 }
-uv sync
+uv sync --link-mode copy
 
 Write-Host "==> Build standalone worker executable"
 uv run pyinstaller `
@@ -224,7 +224,7 @@ if (-not $SkipNpmInstall) {
 }
 
 Write-Host "==> Build Tauri Windows installer (NSIS)"
-npm run tauri:build
+npm run tauri:build:signed
 Pop-Location
 
 $InstallerDir = Join-Path $CargoTargetDir "release/bundle/nsis"

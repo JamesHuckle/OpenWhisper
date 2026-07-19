@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size, State, Window,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Size, State, Window,
     WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
@@ -430,10 +430,20 @@ mod text_inserter {
 
 #[cfg(target_os = "windows")]
 mod overlay_positioner {
+    use super::{PhysicalPosition, PhysicalSize, PlacementVisibility};
     use std::mem::size_of;
 
     const MONITOR_DEFAULTTOPRIMARY: u32 = 1;
+    const MONITOR_DEFAULTTONULL: u32 = 0;
     const MDT_EFFECTIVE_DPI: u32 = 0;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOREDRAW: u32 = 0x0008;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_SHOWWINDOW: u32 = 0x0040;
+    const SWP_HIDEWINDOW: u32 = 0x0080;
+    const SWP_NOCOPYBITS: u32 = 0x0100;
+    const SWP_NOOWNERZORDER: u32 = 0x0200;
+    const SWP_DEFERERASE: u32 = 0x2000;
 
     #[repr(C)]
     struct Point {
@@ -462,6 +472,17 @@ mod overlay_positioner {
         fn MonitorFromPoint(point: Point, dw_flags: u32) -> isize;
         fn GetMonitorInfoW(h_monitor: isize, lpmi: *mut MonitorInfo) -> i32;
         fn GetCursorPos(lp_point: *mut Point) -> i32;
+        fn GetDpiForWindow(hwnd: isize) -> u32;
+        fn GetWindowRect(hwnd: isize, rect: *mut Rect) -> i32;
+        fn SetWindowPos(
+            hwnd: isize,
+            insert_after: isize,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            flags: u32,
+        ) -> i32;
     }
 
     #[link(name = "shcore")]
@@ -474,8 +495,8 @@ mod overlay_positioner {
         ) -> i32;
     }
 
-    fn monitor_anchor_at(point: Point) -> Option<(i32, i32, u32)> {
-        let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTOPRIMARY) };
+    fn monitor_anchor_at(point: Point, fallback: u32) -> Option<(isize, i32, i32, u32)> {
+        let monitor = unsafe { MonitorFromPoint(point, fallback) };
         if monitor == 0 {
             return None;
         }
@@ -508,6 +529,7 @@ mod overlay_positioner {
         }
 
         Some((
+            monitor,
             (info.rc_work.left + info.rc_work.right) / 2,
             super::overlay_bottom_anchor(
                 info.rc_monitor.bottom,
@@ -519,34 +541,96 @@ mod overlay_positioner {
         ))
     }
 
-    pub fn primary_monitor_anchor() -> Option<(i32, i32, u32)> {
-        monitor_anchor_at(Point { x: 0, y: 0 })
+    pub fn primary_monitor_anchor() -> Option<(isize, i32, i32, u32)> {
+        monitor_anchor_at(Point { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY)
     }
 
-    pub fn cursor_monitor_anchor() -> Option<(i32, i32, u32)> {
+    pub fn cursor_monitor_anchor() -> Option<(isize, i32, i32, u32)> {
         let mut cursor = Point { x: 0, y: 0 };
         if unsafe { GetCursorPos(&mut cursor) } == 0 {
             return None;
         }
-        monitor_anchor_at(cursor)
+        // A cursor crossing a physical gap between displays belongs to no
+        // monitor yet. Keep the committed placement until it is truly on one.
+        monitor_anchor_at(cursor, MONITOR_DEFAULTTONULL)
+    }
+
+    pub fn set_window_placement(
+        hwnd: isize,
+        position: PhysicalPosition<i32>,
+        size: PhysicalSize<u32>,
+        visibility: PlacementVisibility,
+    ) -> Result<(), String> {
+        let visibility_flags = match visibility {
+            PlacementVisibility::Keep => 0,
+            PlacementVisibility::HideWithoutRedraw => {
+                SWP_HIDEWINDOW | SWP_NOREDRAW | SWP_NOCOPYBITS | SWP_DEFERERASE
+            }
+            PlacementVisibility::Show => SWP_SHOWWINDOW,
+        };
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | visibility_flags;
+        let succeeded = unsafe {
+            SetWindowPos(
+                hwnd,
+                0,
+                position.x,
+                position.y,
+                size.width as i32,
+                size.height as i32,
+                flags,
+            )
+        };
+        if succeeded == 0 {
+            Err("SetWindowPos failed while committing overlay placement".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn window_placement(
+        hwnd: isize,
+    ) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>, u32)> {
+        let mut rect = Rect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
+            return None;
+        }
+        Some((
+            PhysicalPosition::new(rect.left, rect.top),
+            PhysicalSize::new(
+                rect.right.saturating_sub(rect.left) as u32,
+                rect.bottom.saturating_sub(rect.top) as u32,
+            ),
+            unsafe { GetDpiForWindow(hwnd) },
+        ))
     }
 }
 
 #[cfg(target_os = "windows")]
 fn primary_overlay_anchor() -> Option<OverlayAnchor> {
-    overlay_positioner::primary_monitor_anchor().map(|(center_x, bottom_y, dpi)| OverlayAnchor {
-        center_x,
-        bottom_y,
-        dpi,
+    overlay_positioner::primary_monitor_anchor().map(|(monitor_id, center_x, bottom_y, dpi)| {
+        OverlayAnchor {
+            monitor_id,
+            center_x,
+            bottom_y,
+            dpi,
+        }
     })
 }
 
 #[cfg(target_os = "windows")]
 fn cursor_overlay_anchor() -> Option<OverlayAnchor> {
-    overlay_positioner::cursor_monitor_anchor().map(|(center_x, bottom_y, dpi)| OverlayAnchor {
-        center_x,
-        bottom_y,
-        dpi,
+    overlay_positioner::cursor_monitor_anchor().map(|(monitor_id, center_x, bottom_y, dpi)| {
+        OverlayAnchor {
+            monitor_id,
+            center_x,
+            bottom_y,
+            dpi,
+        }
     })
 }
 
@@ -617,16 +701,71 @@ struct FrontendSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OverlayAnchor {
+    monitor_id: isize,
     center_x: i32,
     bottom_y: i32,
     dpi: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OverlayLayoutSpec {
+    width: f64,
+    height: f64,
+    anchor_offset_y: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayPlacement {
+    position: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    dpi: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlacementVisibility {
+    Keep,
+    HideWithoutRedraw,
+    Show,
+}
+
+const MONITOR_SWITCH_STABLE_SAMPLES: u8 = 5;
+
+#[derive(Default)]
+struct MonitorTransitionDebouncer {
+    candidate: Option<OverlayAnchor>,
+    samples: u8,
+}
+
+impl MonitorTransitionDebouncer {
+    fn observe(
+        &mut self,
+        committed: Option<OverlayAnchor>,
+        observed: OverlayAnchor,
+    ) -> Option<OverlayAnchor> {
+        if committed == Some(observed) {
+            self.reset();
+            return None;
+        }
+        if self.candidate == Some(observed) {
+            self.samples = self.samples.saturating_add(1);
+        } else {
+            self.candidate = Some(observed);
+            self.samples = 1;
+        }
+        (self.samples >= MONITOR_SWITCH_STABLE_SAMPLES).then_some(observed)
+    }
+
+    fn reset(&mut self) {
+        self.candidate = None;
+        self.samples = 0;
+    }
 }
 
 struct AppState {
     worker: Mutex<Option<WorkerClient>>,
     settings: std::sync::Mutex<AppSettings>,
     overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
-    overlay_anchor_offset_logical: std::sync::Mutex<f64>,
+    overlay_layout: std::sync::Mutex<Option<OverlayLayoutSpec>>,
     overlay_layout_locked: AtomicBool,
 }
 
@@ -684,9 +823,46 @@ fn overlay_window_position_for_anchor_offset(
     position
 }
 
-fn scale_physical_dimension_for_monitor(current: u32, current_scale: f64, target_dpi: u32) -> i32 {
-    let target_scale = target_dpi as f64 / 96.0;
-    (current as f64 * target_scale / current_scale).round() as i32
+fn physical_dimension(logical: f64, dpi: u32) -> u32 {
+    (logical * dpi as f64 / 96.0).round().max(1.0) as u32
+}
+
+fn overlay_placement(anchor: OverlayAnchor, layout: OverlayLayoutSpec) -> OverlayPlacement {
+    let size = PhysicalSize::new(
+        physical_dimension(layout.width, anchor.dpi),
+        physical_dimension(layout.height, anchor.dpi),
+    );
+    let offset = (layout.anchor_offset_y * anchor.dpi as f64 / 96.0).round() as i32;
+    OverlayPlacement {
+        position: overlay_window_position_for_anchor_offset(
+            anchor,
+            size.width as i32,
+            size.height as i32,
+            offset,
+        ),
+        size,
+        dpi: anchor.dpi,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn commit_native_placement(
+    hwnd: isize,
+    placement: OverlayPlacement,
+    visibility: PlacementVisibility,
+) -> Result<(), String> {
+    overlay_positioner::set_window_placement(hwnd, placement.position, placement.size, visibility)
+}
+
+#[cfg(target_os = "windows")]
+fn native_placement_matches(hwnd: isize, expected: OverlayPlacement) -> Result<bool, String> {
+    let observed = overlay_positioner::window_placement(hwnd)
+        .ok_or_else(|| "GetWindowRect failed while verifying overlay placement".to_string())?;
+    Ok(
+        observed.0 == expected.position
+            && observed.1 == expected.size
+            && observed.2 == expected.dpi,
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -706,43 +882,62 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
         }
     }
 
-    if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().map_err(|e| e.to_string())? {
-            let size = window.outer_size().map_err(|e| e.to_string())?;
-            let current_scale = window.scale_factor().map_err(|e| e.to_string())?;
-            let target_width =
-                scale_physical_dimension_for_monitor(size.width, current_scale, anchor.dpi);
-            let target_height =
-                scale_physical_dimension_for_monitor(size.height, current_scale, anchor.dpi);
-            let anchor_offset_logical = *state
-                .overlay_anchor_offset_logical
-                .lock()
-                .map_err(|_| "Failed to lock overlay anchor offset".to_string())?;
-            let target_offset = (anchor_offset_logical * anchor.dpi as f64 / 96.0).round() as i32;
-            let position = overlay_window_position_for_anchor_offset(
-                anchor,
-                target_width,
-                target_height,
-                target_offset,
-            );
-            window
-                .set_position(Position::Physical(position))
-                .map_err(|e| e.to_string())?;
-            debug_log_line(
-                "window",
-                &format!(
-                    "monitor switch anchor=({}, {}) dpi={} position=({}, {}) predicted_size={}x{}",
-                    anchor.center_x,
-                    anchor.bottom_y,
-                    anchor.dpi,
-                    position.x,
-                    position.y,
-                    target_width,
-                    target_height
-                ),
-            );
+    let layout = *state
+        .overlay_layout
+        .lock()
+        .map_err(|_| "Failed to lock overlay layout".to_string())?;
+    let Some(layout) = layout else {
+        return Ok(false);
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(false);
+    };
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    let placement = overlay_placement(anchor, layout);
+    let was_visible = window.is_visible().map_err(|e| e.to_string())?;
+
+    // A monitor move can dispatch WM_DPICHANGED after SetWindowPos returns.
+    // Keep every intermediate rectangle hidden and non-redrawing, then expose
+    // exactly one already-settled rectangle to the compositor.
+    commit_native_placement(hwnd, placement, PlacementVisibility::HideWithoutRedraw)?;
+    let mut stable_samples = 0u8;
+    let mut correction_count = 0u8;
+    for _ in 0..12 {
+        std::thread::sleep(std::time::Duration::from_millis(8));
+        if native_placement_matches(hwnd, placement)? {
+            stable_samples = stable_samples.saturating_add(1);
+            if stable_samples >= 2 {
+                break;
+            }
+        } else {
+            stable_samples = 0;
+            correction_count = correction_count.saturating_add(1);
+            commit_native_placement(hwnd, placement, PlacementVisibility::HideWithoutRedraw)?;
         }
     }
+    if !native_placement_matches(hwnd, placement)? {
+        return Err(
+            "Windows did not settle the overlay at its committed DPI placement".to_string(),
+        );
+    }
+    if was_visible {
+        commit_native_placement(hwnd, placement, PlacementVisibility::Show)?;
+    }
+    debug_log_line(
+        "window",
+        &format!(
+            "monitor commit id={} anchor=({}, {}) dpi={} position=({}, {}) size={}x{} hidden_corrections={}",
+            anchor.monitor_id,
+            anchor.center_x,
+            anchor.bottom_y,
+            anchor.dpi,
+            placement.position.x,
+            placement.position.y,
+            placement.size.width,
+            placement.size.height,
+            correction_count
+        ),
+    );
 
     let mut current = state
         .overlay_anchor
@@ -753,31 +948,27 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
 }
 
 #[cfg(target_os = "windows")]
-fn position_main_window_before_reveal(app: &AppHandle) -> Result<(), String> {
+fn position_main_window_before_reveal(app: &AppHandle) -> Result<bool, String> {
     let state = app.state::<Arc<AppState>>().inner().clone();
     let Some(window) = app.get_webview_window("main") else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(anchor) = resolve_overlay_anchor(&state)? else {
-        return Ok(());
+        return Ok(false);
     };
-
-    let size = window.outer_size().map_err(|e| e.to_string())?;
-    let anchor_offset_logical = *state
-        .overlay_anchor_offset_logical
+    let layout = *state
+        .overlay_layout
         .lock()
-        .map_err(|_| "Failed to lock overlay anchor offset".to_string())?;
-    let physical_anchor_offset = (anchor_offset_logical * anchor.dpi as f64 / 96.0).round() as i32;
-    let position = overlay_window_position_for_anchor_offset(
-        anchor,
-        size.width as i32,
-        size.height as i32,
-        physical_anchor_offset,
-    );
-
-    window
-        .set_position(Position::Physical(position))
-        .map_err(|e| e.to_string())
+        .map_err(|_| "Failed to lock overlay layout".to_string())?;
+    let Some(layout) = layout else {
+        return Ok(false);
+    };
+    commit_native_placement(
+        window.hwnd().map_err(|e| e.to_string())?.0 as isize,
+        overlay_placement(anchor, layout),
+        PlacementVisibility::Keep,
+    )?;
+    Ok(true)
 }
 
 fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
@@ -1133,79 +1324,66 @@ async fn overlay_apply_layout(
             }
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         };
-        let anchor = resolve_overlay_anchor(&app_state)?;
+        let layout = OverlayLayoutSpec {
+            width,
+            height,
+            anchor_offset_y,
+        };
         *app_state
-            .overlay_anchor_offset_logical
+            .overlay_layout
             .lock()
-            .map_err(|_| "Failed to lock overlay anchor offset".to_string())? = anchor_offset_y;
+            .map_err(|_| "Failed to lock overlay layout".to_string())? = Some(layout);
+        let anchor = resolve_overlay_anchor(&app_state)?;
 
         if let Some(anchor) = anchor {
-            let before_size = window.outer_size().map_err(|e| e.to_string())?;
-            let scale = window.scale_factor().map_err(|e| e.to_string())?;
+            let placement = overlay_placement(anchor, layout);
+            let was_visible = window.is_visible().map_err(|e| e.to_string())?;
+            let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
             debug_log_line(
                 "layout",
                 &format!(
-                    "request logical={}x{} anchor=({}, {}) before={}x{} scale={}",
+                    "commit logical={}x{} anchor=({}, {}) dpi={} physical={}x{} position=({}, {}) visible={}",
                     width,
                     height,
                     anchor.center_x,
                     anchor.bottom_y,
-                    before_size.width,
-                    before_size.height,
-                    scale
+                    anchor.dpi,
+                    placement.size.width,
+                    placement.size.height,
+                    placement.position.x,
+                    placement.position.y,
+                    was_visible
                 ),
             );
-            let size_result = window
-                .set_size(Size::Logical(LogicalSize::new(width, height)))
-                .map_err(|e| e.to_string());
+            let visibility = match (was_visible, visible) {
+                (true, true) => PlacementVisibility::Keep,
+                (false, true) => PlacementVisibility::HideWithoutRedraw,
+                (_, false) => PlacementVisibility::HideWithoutRedraw,
+            };
+            commit_native_placement(hwnd, placement, visibility)?;
 
-            if let Err(err) = size_result {
-                return Err(err);
-            }
-
-            // WebView2 applies native resizes asynchronously. Poll until the
-            // outer frame changes and stabilizes instead of imposing a fixed
-            // 50 ms pause on every hover transition. The bounded fallback still
-            // protects mixed-DPI layouts where the resize takes longer.
-            let mut physical_size = before_size;
-            let mut changed = false;
-            let mut waited_ms = 0;
-            for _ in 0..10 {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                waited_ms += 5;
-                let observed = window.outer_size().map_err(|e| e.to_string())?;
-                if observed != before_size {
-                    if changed && observed == physical_size {
-                        physical_size = observed;
-                        break;
+            if visible && !was_visible {
+                let mut stable_samples = 0u8;
+                for _ in 0..12 {
+                    tokio::time::sleep(std::time::Duration::from_millis(8)).await;
+                    if native_placement_matches(hwnd, placement)? {
+                        stable_samples = stable_samples.saturating_add(1);
+                        if stable_samples >= 2 {
+                            break;
+                        }
+                    } else {
+                        stable_samples = 0;
+                        commit_native_placement(
+                            hwnd,
+                            placement,
+                            PlacementVisibility::HideWithoutRedraw,
+                        )?;
                     }
-                    changed = true;
                 }
-                physical_size = observed;
-            }
-
-            let physical_anchor_offset = (anchor_offset_y * scale).round() as i32;
-            let position = overlay_window_position_for_anchor_offset(
-                anchor,
-                physical_size.width as i32,
-                physical_size.height as i32,
-                physical_anchor_offset,
-            );
-            debug_log_line(
-                "layout",
-                &format!(
-                    "settled={}x{} position=({}, {}) wait_ms={}",
-                    physical_size.width, physical_size.height, position.x, position.y, waited_ms
-                ),
-            );
-
-            window
-                .set_position(Position::Physical(position))
-                .map_err(|e| e.to_string())?;
-            if visible {
-                window.show().map_err(|e| e.to_string())?;
-            } else {
-                window.hide().map_err(|e| e.to_string())?;
+                if !native_placement_matches(hwnd, placement)? {
+                    return Err("Initial overlay placement did not settle".to_string());
+                }
+                commit_native_placement(hwnd, placement, PlacementVisibility::Show)?;
             }
             return Ok(());
         }
@@ -1286,11 +1464,19 @@ fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
     }
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(target_os = "windows")]
-        if let Err(err) = position_main_window_before_reveal(app) {
-            debug_log_line(
-                "window",
-                &format!("position_main_window_before_reveal failed: {err}"),
-            );
+        match position_main_window_before_reveal(app) {
+            Ok(true) => {}
+            Ok(false) => {
+                debug_log_line("window", "reveal deferred until layout is committed");
+                return;
+            }
+            Err(err) => {
+                debug_log_line(
+                    "window",
+                    &format!("position_main_window_before_reveal failed: {err}"),
+                );
+                return;
+            }
         }
 
         debug_log_line("window", "reveal_window");
@@ -1361,7 +1547,7 @@ pub fn run() {
         worker: Mutex::new(None),
         settings: std::sync::Mutex::new(AppSettings::default()),
         overlay_anchor: std::sync::Mutex::new(None),
-        overlay_anchor_offset_logical: std::sync::Mutex::new(0.0),
+        overlay_layout: std::sync::Mutex::new(None),
         overlay_layout_locked: AtomicBool::new(false),
     });
 
@@ -1406,9 +1592,9 @@ pub fn run() {
                 eprintln!("Failed to create tray icon: {e}");
             }
 
-            // Autostart must behave exactly like a manual launch: the pill is
-            // always visible, but showing it passively preserves typing focus.
-            reveal_overlay_window(app.handle());
+            // The frontend's first layout commit performs the initial reveal.
+            // Until then the window has no authoritative logical size or DPI
+            // placement and must remain hidden.
 
             #[cfg(target_os = "windows")]
             {
@@ -1418,8 +1604,7 @@ pub fn run() {
                 std::thread::spawn(move || {
                     let mut last_hook_log = std::time::Instant::now();
                     let mut last_hook_event = String::new();
-                    let mut monitor_candidate: Option<OverlayAnchor> = None;
-                    let mut monitor_candidate_samples = 0u8;
+                    let mut monitor_transition = MonitorTransitionDebouncer::default();
                     loop {
                         text_inserter::save_foreground();
                         if let Some(cursor_anchor) = cursor_overlay_anchor() {
@@ -1430,35 +1615,18 @@ pub fn run() {
                                 .ok()
                                 .and_then(|guard| *guard);
 
-                            if current_anchor == Some(cursor_anchor) {
-                                monitor_candidate = None;
-                                monitor_candidate_samples = 0;
-                            } else {
-                                if monitor_candidate == Some(cursor_anchor) {
-                                    monitor_candidate_samples =
-                                        monitor_candidate_samples.saturating_add(1);
-                                } else {
-                                    monitor_candidate = Some(cursor_anchor);
-                                    monitor_candidate_samples = 1;
-                                }
-
-                                // Require five consecutive 20 ms observations
-                                // before switching. This filters pointer noise at
-                                // a shared monitor edge while keeping transitions
-                                // responsive once the cursor is truly on a screen.
-                                if monitor_candidate_samples >= 5 {
-                                    match sync_overlay_window_to_anchor(&poll_handle, cursor_anchor)
-                                    {
-                                        Ok(true) => {
-                                            monitor_candidate = None;
-                                            monitor_candidate_samples = 0;
-                                        }
-                                        Ok(false) => {}
-                                        Err(err) => debug_log_line(
-                                            "window",
-                                            &format!("monitor switch failed: {err}"),
-                                        ),
-                                    }
+                            // Require five consecutive 20 ms observations before
+                            // gathering and committing the destination geometry.
+                            if let Some(target) =
+                                monitor_transition.observe(current_anchor, cursor_anchor)
+                            {
+                                match sync_overlay_window_to_anchor(&poll_handle, target) {
+                                    Ok(true) => monitor_transition.reset(),
+                                    Ok(false) => {}
+                                    Err(err) => debug_log_line(
+                                        "window",
+                                        &format!("monitor switch failed: {err}"),
+                                    ),
                                 }
                             }
                         }
@@ -1527,13 +1695,18 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn test_anchor(monitor_id: isize, center_x: i32, bottom_y: i32, dpi: u32) -> OverlayAnchor {
+        OverlayAnchor {
+            monitor_id,
+            center_x,
+            bottom_y,
+            dpi,
+        }
+    }
+
     #[test]
     fn overlay_geometry_keeps_bottom_center_anchor_on_negative_monitor() {
-        let anchor = OverlayAnchor {
-            center_x: -1280,
-            bottom_y: 1430,
-            dpi: 96,
-        };
+        let anchor = test_anchor(1, -1280, 1430, 96);
 
         let collapsed = overlay_window_position_for_anchor(anchor, 100, 28);
         let expanded = overlay_window_position_for_anchor(anchor, 360, 520);
@@ -1548,11 +1721,7 @@ mod tests {
 
     #[test]
     fn overlay_geometry_handles_monitor_above_primary() {
-        let anchor = OverlayAnchor {
-            center_x: 960,
-            bottom_y: -10,
-            dpi: 96,
-        };
+        let anchor = test_anchor(1, 960, -10, 96);
         assert_eq!(
             overlay_window_position_for_anchor(anchor, 188, 72),
             PhysicalPosition::new(866, -82)
@@ -1576,20 +1745,24 @@ mod tests {
     }
 
     #[test]
-    fn monitor_switch_predicts_mixed_dpi_outer_size() {
-        assert_eq!(scale_physical_dimension_for_monitor(161, 1.25, 192), 258);
-        assert_eq!(scale_physical_dimension_for_monitor(44, 1.25, 192), 70);
-        assert_eq!(scale_physical_dimension_for_monitor(258, 2.0, 120), 161);
-        assert_eq!(scale_physical_dimension_for_monitor(70, 2.0, 120), 44);
+    fn destination_dpi_alone_determines_physical_size_and_position() {
+        let layout = OverlayLayoutSpec {
+            width: 92.0,
+            height: 28.0,
+            anchor_offset_y: 2.0,
+        };
+        let at_125 = overlay_placement(test_anchor(1, 1000, 900, 120), layout);
+        let at_200 = overlay_placement(test_anchor(2, 2000, 1700, 192), layout);
+
+        assert_eq!(at_125.size, PhysicalSize::new(115, 35));
+        assert_eq!(at_125.position, PhysicalPosition::new(943, 868));
+        assert_eq!(at_200.size, PhysicalSize::new(184, 56));
+        assert_eq!(at_200.position, PhysicalPosition::new(1908, 1648));
     }
 
     #[test]
     fn expanded_layout_grows_around_compact_anchor() {
-        let anchor = OverlayAnchor {
-            center_x: 960,
-            bottom_y: 1070,
-            dpi: 96,
-        };
+        let anchor = test_anchor(1, 960, 1070, 96);
         let compact = overlay_window_position_for_anchor(anchor, 38, 14);
         let expanded = overlay_window_position_for_anchor_offset(anchor, 92, 26, 6);
 
@@ -1608,5 +1781,63 @@ mod tests {
     fn passive_overlay_reveals_never_take_keyboard_focus() {
         assert!(!OverlayRevealIntent::Passive.should_focus());
         assert!(OverlayRevealIntent::Interactive.should_focus());
+    }
+
+    #[test]
+    fn repeated_entries_from_every_direction_commit_once_to_one_fixed_placement() {
+        let center = test_anchor(1, 960, 1070, 96);
+        let destinations = [
+            test_anchor(2, -960, 1070, 120), // enter from the left
+            test_anchor(3, 2880, 1430, 144), // enter from the right
+            test_anchor(4, 960, -10, 192),   // enter from above
+            test_anchor(5, 960, 3230, 168),  // enter from below
+        ];
+        let layout = OverlayLayoutSpec {
+            width: 92.0,
+            height: 28.0,
+            anchor_offset_y: 2.0,
+        };
+
+        for destination in destinations {
+            let expected = overlay_placement(destination, layout);
+            let mut committed = Some(center);
+            let mut transition = MonitorTransitionDebouncer::default();
+            let mut destination_commits = Vec::new();
+
+            for _ in 0..50 {
+                // Approach noise from either side of the monitor boundary must
+                // not move the already-visible pill.
+                for observed in [destination, center, destination, center] {
+                    assert_eq!(transition.observe(committed, observed), None);
+                }
+
+                let mut commits_this_entry = 0;
+                for _ in 0..MONITOR_SWITCH_STABLE_SAMPLES {
+                    if let Some(target) = transition.observe(committed, destination) {
+                        commits_this_entry += 1;
+                        destination_commits.push(overlay_placement(target, layout));
+                        committed = Some(target);
+                        transition.reset();
+                    }
+                }
+                for _ in 0..20 {
+                    assert_eq!(transition.observe(committed, destination), None);
+                }
+                assert_eq!(commits_this_entry, 1);
+
+                for _ in 0..MONITOR_SWITCH_STABLE_SAMPLES {
+                    if let Some(target) = transition.observe(committed, center) {
+                        committed = Some(target);
+                        transition.reset();
+                    }
+                }
+                assert_eq!(committed, Some(center));
+            }
+
+            assert_eq!(destination_commits.len(), 50);
+            assert!(destination_commits
+                .iter()
+                .all(|placement| *placement == expected));
+        }
     }
 }

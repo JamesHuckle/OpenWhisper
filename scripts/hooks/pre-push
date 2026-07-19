@@ -1,5 +1,5 @@
 #!/bin/sh
-# Git pre-push hook — triggers a release build when pushing to main.
+# Git pre-push hook — releases web, Windows, and Android when pushing to main.
 # Skip with: SKIP_RELEASE=1 git push
 
 if [ "$OPENWHISPER_RELEASING" = "1" ]; then

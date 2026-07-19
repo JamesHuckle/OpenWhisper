@@ -3,221 +3,236 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path `
   -replace '^Microsoft\.PowerShell\.Core\\FileSystem::', ''
 
-# Load .env (all secrets in one place)
 . "$PSScriptRoot/load-env.ps1" -Path (Join-Path $RepoRoot ".env")
-
-# Skip update notification if OPENWHISPER_SKIP_UPDATE_NOTIFY=1 in .env
-$NotifyUpdate = $env:OPENWHISPER_SKIP_UPDATE_NOTIFY -ne "1"
 
 function Resolve-RequiredCommand {
   param(
-    [Parameter(Mandatory = $true)]
-    [string]$Name,
+    [Parameter(Mandatory = $true)][string]$Name,
     [string[]]$Candidates = @()
   )
 
   $command = Get-Command $Name -ErrorAction SilentlyContinue
-  if ($command) {
-    return $command.Source
-  }
+  if ($command) { return $command.Source }
 
   foreach ($candidate in $Candidates) {
     if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path $candidate)) {
-      $dir = Split-Path -Parent $candidate
-      $pathEntries = @($env:Path -split ';')
-      if ($pathEntries -notcontains $dir) {
-        $env:Path = "$dir;$env:Path"
+      $directory = Split-Path -Parent $candidate
+      if (@($env:Path -split ';') -notcontains $directory) {
+        $env:Path = "$directory;$env:Path"
       }
       return $candidate
     }
   }
 
-  $candidateList = ($Candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ", "
-  if ([string]::IsNullOrWhiteSpace($candidateList)) {
-    throw "Required command '$Name' was not found in PATH."
-  }
+  throw "Required command '$Name' was not found."
+}
 
-  throw "Required command '$Name' was not found in PATH or common install locations: $candidateList"
+function Assert-LastExitCode {
+  param([Parameter(Mandatory = $true)][string]$Message)
+  if ($LASTEXITCODE -ne 0) { throw $Message }
 }
 
 function Get-GitHubRepoInfo {
-  $originUrl = (git remote get-url origin).Trim()
-  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($originUrl)) {
-    throw "Failed to read git remote 'origin'."
+  $originUrl = (git -C $RepoRoot remote get-url origin).Trim()
+  Assert-LastExitCode "Failed to read git remote 'origin'."
+  if ($originUrl -match '^https://github\.com/(?<owner>[^/]+)/(?<repo>[^/.]+?)(?:\.git)?$' -or
+      $originUrl -match '^git@github\.com:(?<owner>[^/]+)/(?<repo>[^/.]+?)(?:\.git)?$') {
+    return @{ Owner = $matches.owner; Repo = $matches.repo }
   }
-
-  if ($originUrl -match '^https://github\.com/(?<owner>[^/]+)/(?<repo>[^/.]+?)(?:\.git)?$') {
-    return @{
-      Owner = $matches.owner
-      Repo = $matches.repo
-    }
-  }
-
-  if ($originUrl -match '^git@github\.com:(?<owner>[^/]+)/(?<repo>[^/.]+?)(?:\.git)?$') {
-    return @{
-      Owner = $matches.owner
-      Repo = $matches.repo
-    }
-  }
-
   throw "Unsupported GitHub origin URL: $originUrl"
+}
+
+function Get-JsonWithRetry {
+  param(
+    [Parameter(Mandatory = $true)][string]$Uri,
+    [int]$Attempts = 6
+  )
+
+  for ($attempt = 1; $attempt -le $Attempts; $attempt += 1) {
+    try {
+      return Invoke-RestMethod -Uri $Uri
+    } catch {
+      if ($attempt -eq $Attempts) { throw }
+      Start-Sleep -Seconds 2
+    }
+  }
+}
+
+if (git -C $RepoRoot status --porcelain) {
+  throw "The release push requires a clean working tree. Commit every change first."
 }
 
 $ghPath = Resolve-RequiredCommand -Name "gh.exe" -Candidates @(
   (Join-Path ${env:ProgramFiles} "GitHub CLI\gh.exe"),
   (Join-Path $env:LOCALAPPDATA "Programs\GitHub CLI\gh.exe")
 )
-
-$cargoPath = Resolve-RequiredCommand -Name "cargo.exe" -Candidates @(
+$null = Resolve-RequiredCommand -Name "cargo.exe" -Candidates @(
   (Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe")
 )
-
-Write-Host "    gh: $ghPath"
-Write-Host "    cargo: $cargoPath"
+$null = Resolve-RequiredCommand -Name "uv.exe"
+$null = Resolve-RequiredCommand -Name "npm.cmd"
 
 $null = & $ghPath auth status 2>&1
-if ($LASTEXITCODE -ne 0) {
-  throw "GitHub CLI is installed but not authenticated. Run 'gh auth login' and retry."
+Assert-LastExitCode "GitHub CLI is installed but not authenticated. Run 'gh auth login' and retry."
+
+$tauriConfPath = Join-Path $RepoRoot "apps/desktop/src-tauri/tauri.conf.json"
+$androidGradlePath = Join-Path $RepoRoot "apps/android/app/build.gradle.kts"
+$tauriConf = Get-Content $tauriConfPath -Raw | ConvertFrom-Json
+$androidGradle = Get-Content $androidGradlePath -Raw
+$androidVersionMatch = [regex]::Match($androidGradle, 'versionName\s*=\s*"([^"]+)"')
+if (-not $androidVersionMatch.Success) { throw "Unable to read the Android version." }
+$version = [string]$tauriConf.version
+$androidVersion = $androidVersionMatch.Groups[1].Value
+if ($androidVersion -ne $version) {
+  throw "Desktop version $version and Android version $androidVersion differ. Commit normally so the pre-commit hook can synchronize them."
 }
 
-# Read version
-$tauriConfPath = Join-Path $RepoRoot "apps/desktop/src-tauri/tauri.conf.json"
-$tauriConf = Get-Content $tauriConfPath -Raw | ConvertFrom-Json
-$version = $tauriConf.version
-$productName = $tauriConf.productName
+$productName = [string]$tauriConf.productName
 $tag = "v$version"
+$repoInfo = Get-GitHubRepoInfo
+$currentCommit = (git -C $RepoRoot rev-parse HEAD).Trim()
+$remoteTagCommit = & git -C $RepoRoot ls-remote origin "refs/tags/$tag" |
+  ForEach-Object { ($_ -split "`t")[0] } |
+  Select-Object -First 1
+$remoteTagCommit = if ($null -eq $remoteTagCommit) { "" } else { [string]$remoteTagCommit.Trim() }
+if ($remoteTagCommit -and $remoteTagCommit -ne $currentCommit) {
+  throw "Release tag $tag already points to another commit. Commit normally to generate a newer version."
+}
 
-Write-Host ""
-Write-Host "=========================================="
-Write-Host "Building release: $productName $tag"
-if (-not $NotifyUpdate) { Write-Host "(no update notification)" }
-Write-Host "=========================================="
-Write-Host ""
-
-# Updater signing key (from .env or ~/.tauri/openwhisper.key)
-$KeyPath = Join-Path $env:USERPROFILE ".tauri\openwhisper.key"
-if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and (Test-Path $KeyPath)) {
-  $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $KeyPath -Raw
+$keyPath = Join-Path $env:USERPROFILE ".tauri\openwhisper.key"
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and (Test-Path $keyPath)) {
+  $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $keyPath -Raw
 }
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-  throw "Updater signing key required. Run: .\scripts\setup-updater-keys.ps1"
+  throw "Updater signing key required. Run .\scripts\setup-updater-keys.ps1"
 }
 
-# Build the Windows installer
-& "$PSScriptRoot/build-windows-installer.ps1"
+Write-Host ""
+Write-Host "============================================================"
+Write-Host "Coordinated production release: $productName $tag"
+Write-Host "Web + Windows desktop + Android"
+Write-Host "============================================================"
 
-# Locate installer
-$CargoTargetDir = Join-Path $env:USERPROFILE "openwhisper-cargo-target"
-$InstallerDir = Join-Path $CargoTargetDir "release/bundle/nsis"
-$VersionedInstaller = Join-Path $InstallerDir "${productName}_${version}_x64-setup.exe"
-
-if (-not (Test-Path $VersionedInstaller)) {
-  throw "Installer not found: $VersionedInstaller"
+Write-Host "==> Testing and building web"
+$webSourceDirectory = Join-Path $RepoRoot "apps/web"
+$webBuildDirectory = Join-Path $env:USERPROFILE "openwhisper-web-release-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $webBuildDirectory | Out-Null
+try {
+  & robocopy.exe $webSourceDirectory $webBuildDirectory /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD node_modules .next | Out-Null
+  if ($LASTEXITCODE -gt 7) { throw "Unable to prepare the local web build directory." }
+  Push-Location $webBuildDirectory
+  try {
+    & npm.cmd ci
+    Assert-LastExitCode "Web dependency installation failed."
+    & npm.cmd test
+    Assert-LastExitCode "Web tests failed."
+    & npm.cmd run build
+    Assert-LastExitCode "Web production build failed."
+  } finally { Pop-Location }
+} finally {
+  $resolvedWebBuildDirectory = [IO.Path]::GetFullPath($webBuildDirectory)
+  $resolvedUserProfile = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\'
+  if (
+    $resolvedWebBuildDirectory.StartsWith($resolvedUserProfile, [StringComparison]::OrdinalIgnoreCase) -and
+    (Split-Path -Leaf $resolvedWebBuildDirectory) -like "openwhisper-web-release-*" -and
+    (Test-Path -LiteralPath $resolvedWebBuildDirectory)
+  ) {
+    Remove-Item -LiteralPath $resolvedWebBuildDirectory -Recurse -Force
+  }
 }
 
-$StableInstaller = Join-Path $InstallerDir "${productName}_x64-setup.exe"
-Copy-Item -Path $VersionedInstaller -Destination $StableInstaller -Force
+Write-Host "==> Testing worker"
+Push-Location (Join-Path $RepoRoot "apps/worker")
+try {
+  & uv.exe sync --link-mode copy --reinstall
+  Assert-LastExitCode "Worker dependency synchronization failed."
+  & uv.exe run python -m unittest discover -s tests
+  Assert-LastExitCode "Worker tests failed."
+} finally { Pop-Location }
 
-# Tag and push with recursion guard
-Write-Host "==> Tagging $tag"
-git tag -f $tag
-if ($LASTEXITCODE -ne 0) {
-  throw "Failed to create tag"
-}
+Write-Host "==> Testing desktop"
+Push-Location (Join-Path $RepoRoot "apps/desktop")
+try {
+  & npm.cmd ci
+  Assert-LastExitCode "Desktop dependency installation failed."
+  & npm.cmd test
+  Assert-LastExitCode "Desktop tests failed."
+} finally { Pop-Location }
 
+Write-Host "==> Testing and building signed Android release"
+& "$PSScriptRoot/android.ps1" testDebugUnitTest
+Assert-LastExitCode "Android unit tests failed."
+& "$PSScriptRoot/build-android-release.ps1"
+Assert-LastExitCode "Android release build failed."
+
+Write-Host "==> Building signed Windows release"
+& "$PSScriptRoot/build-windows-installer.ps1" -SkipNpmInstall
+Assert-LastExitCode "Windows release build failed."
+
+$cargoTargetDir = Join-Path $env:USERPROFILE "openwhisper-cargo-target"
+$installerDir = Join-Path $cargoTargetDir "release/bundle/nsis"
+$versionedInstaller = Join-Path $installerDir "${productName}_${version}_x64-setup.exe"
+$signaturePath = "$versionedInstaller.sig"
+if (-not (Test-Path $versionedInstaller)) { throw "Installer not found: $versionedInstaller" }
+if (-not (Test-Path $signaturePath)) { throw "Signed updater artifact not found: $signaturePath" }
+$stableInstaller = Join-Path $installerDir "${productName}_x64-setup.exe"
+Copy-Item $versionedInstaller $stableInstaller -Force
+
+Write-Host "==> Publishing coordinated GitHub release $tag"
+& git -C $RepoRoot tag -f $tag
+Assert-LastExitCode "Failed to create release tag."
 $env:OPENWHISPER_RELEASING = "1"
 try {
-  git push origin $tag --force
-  if ($LASTEXITCODE -ne 0) {
-    throw "Failed to push tag"
-  }
-}
-finally {
-  $env:OPENWHISPER_RELEASING = $null
-}
+  & git -C $RepoRoot push origin $tag --force
+  Assert-LastExitCode "Failed to push release tag."
+} finally { $env:OPENWHISPER_RELEASING = $null }
 
-# Create or update GitHub release
-Write-Host "==> Publishing GitHub Release $tag"
-
-$repoInfo = Get-GitHubRepoInfo
-$ghToken = (& $ghPath auth token).Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($ghToken)) {
-  throw "Failed to retrieve GitHub auth token from gh."
-}
-
-$releaseHeaders = @{
-  Authorization = "Bearer $ghToken"
-  Accept = "application/vnd.github+json"
-  "X-GitHub-Api-Version" = "2022-11-28"
-  "User-Agent" = "OpenWhisper release hook"
-}
-
-$releaseLookupUrl = "https://api.github.com/repos/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/tags/$tag"
-$releaseExists = $false
-
-try {
-  Invoke-RestMethod -Method Get -Uri $releaseLookupUrl -Headers $releaseHeaders | Out-Null
-  $releaseExists = $true
-} catch {
-  $statusCode = $null
-  if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
-    $statusCode = [int]$_.Exception.Response.StatusCode
-  }
-
-  if ($statusCode -ne 404) {
-    throw
-  }
-}
-
+$releaseExists = $true
+& $ghPath release view $tag *> $null
+if ($LASTEXITCODE -ne 0) { $releaseExists = $false }
 if (-not $releaseExists) {
-  & $ghPath release create $tag `
-    --title "$productName $tag" `
-    --generate-notes `
-    --latest
-  if ($LASTEXITCODE -ne 0) {
-    throw "Failed to create release"
+  & $ghPath release create $tag --title "$productName $tag" --generate-notes --latest
+  Assert-LastExitCode "Failed to create GitHub release."
+}
+
+$pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+$signature = (Get-Content $signaturePath -Raw).Trim()
+$installerUrl = "https://github.com/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/download/$tag/${productName}_${version}_x64-setup.exe"
+$temporaryReleaseDirectory = Join-Path $env:TEMP "openwhisper-release-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $temporaryReleaseDirectory | Out-Null
+$latestJsonPath = Join-Path $temporaryReleaseDirectory "latest.json"
+$latestJson = @{
+  version = $version
+  notes = "OpenWhisper $version is ready. Your settings and API key will be preserved."
+  pub_date = $pubDate
+  platforms = @{
+    "windows-x86_64" = @{ signature = $signature; url = $installerUrl }
+  }
+} | ConvertTo-Json -Depth 5 -Compress
+[IO.File]::WriteAllText($latestJsonPath, $latestJson, [Text.UTF8Encoding]::new($false))
+try {
+  & $ghPath release upload $tag $versionedInstaller $stableInstaller $latestJsonPath --clobber
+  Assert-LastExitCode "Failed to upload Windows release assets."
+  & $ghPath release edit $tag --latest
+  Assert-LastExitCode "Failed to mark the coordinated release as latest."
+
+  & "$PSScriptRoot/release-android.ps1" -Tag $tag -SkipBuild
+  Assert-LastExitCode "Failed to publish Android release assets."
+
+  $windowsFeed = Get-JsonWithRetry -Uri "https://github.com/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/latest/download/latest.json"
+  if ([string]$windowsFeed.version -ne $version) {
+    throw "Published Windows update feed reports $($windowsFeed.version), expected $version."
+  }
+  $androidFeed = Get-JsonWithRetry -Uri "https://github.com/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/latest/download/OpenWhisper-Android-update.json"
+  if ([string]$androidFeed.versionName -ne $version) {
+    throw "Published Android update feed reports $($androidFeed.versionName), expected $version."
+  }
+} finally {
+  if (Test-Path $temporaryReleaseDirectory) {
+    Remove-Item $temporaryReleaseDirectory -Recurse -Force
   }
 }
 
-$uploadAssets = @($VersionedInstaller, $StableInstaller)
-$SigPath = Join-Path $InstallerDir "${productName}_${version}_x64-setup.exe.sig"
-
-if ($NotifyUpdate -and (Test-Path $SigPath)) {
-  $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-  $sigContent = (Get-Content $SigPath -Raw).Trim()
-  $installerUrl = "https://github.com/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/download/$tag/${productName}_${version}_x64-setup.exe"
-  $latestJson = @{
-    version   = $version
-    notes     = ""
-    pub_date  = $pubDate
-    platforms = @{
-      "windows-x86_64" = @{
-        signature = $sigContent
-        url       = $installerUrl
-      }
-    }
-  } | ConvertTo-Json -Depth 5 -Compress
-  $latestJsonPath = Join-Path $env:TEMP "latest.json"
-  Set-Content -Path $latestJsonPath -Value $latestJson -NoNewline
-  $uploadAssets += $latestJsonPath
-}
-
-& $ghPath release upload $tag $uploadAssets --clobber
-if ($LASTEXITCODE -ne 0) {
-  throw "Failed to upload assets"
-}
-
-& $ghPath release edit $tag --latest
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "Warning: could not mark release as latest"
-}
-
-# Done
 Write-Host ""
-Write-Host "=========================================="
-Write-Host "Released $productName $tag"
-Write-Host "=========================================="
-Write-Host ""
-Write-Host "GitHub:   https://github.com/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/tag/$tag"
-Write-Host ("Download: https://github.com/$($repoInfo.Owner)/$($repoInfo.Repo)/releases/latest/download/{0}_x64-setup.exe" -f $productName)
-Write-Host ""
+Write-Host "All signed release artifacts and update notifications are live for $tag."
+Write-Host "The main push will now complete and Vercel will deploy apps/web."

@@ -74,4 +74,13 @@ describe("desktop regression contracts", () => {
     expect(main).toContain("__openwhisperRealtimeSmoke");
     expect(css).not.toMatch(/\.live-transcript\s*\{/);
   });
+
+  it("asks before installing an update and reassures users that settings are kept", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+
+    expect(main).toContain("window.confirm(");
+    expect(main).toContain("Your settings and API key will be kept.");
+    expect(main).toContain("await update.downloadAndInstall()");
+    expect(main).toContain("await relaunch()");
+  });
 });

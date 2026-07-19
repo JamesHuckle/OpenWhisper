@@ -33,6 +33,7 @@ import com.openwhisper.android.overlay.ScreenRect
 import com.openwhisper.android.settings.SecureApiKeyStore
 import com.openwhisper.android.settings.SettingsRepository
 import com.openwhisper.android.transcription.OpenAiHttpTranscriptionClient
+import com.openwhisper.android.update.UpdateNotifier
 import java.util.concurrent.Executors
 
 class OpenWhisperAccessibilityService : AccessibilityService() {
@@ -73,6 +74,8 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
         }
         coordinator = DictationCoordinator(backend, editorController, ::render)
         createNotificationChannel()
+        UpdateNotifier.checkIfDue(this)
+        handler.postDelayed(updateCheck, UPDATE_CHECK_INTERVAL_MS)
         scheduleRefresh(100)
     }
 
@@ -180,6 +183,13 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
 
     private fun Rect.toScreenRect() = ScreenRect(left, top, right, bottom)
 
+    private val updateCheck = object : Runnable {
+        override fun run() {
+            UpdateNotifier.checkIfDue(this@OpenWhisperAccessibilityService)
+            handler.postDelayed(this, UPDATE_CHECK_INTERVAL_MS)
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun displayBounds(): Rect {
         if (Build.VERSION.SDK_INT >= 30) {
@@ -193,5 +203,6 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
     private companion object {
         const val NOTIFICATION_CHANNEL = "openwhisper_dictation"
         const val NOTIFICATION_ID = 7001
+        const val UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L
     }
 }

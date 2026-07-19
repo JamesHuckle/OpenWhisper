@@ -2,6 +2,46 @@
 
 WhisperFlow is a cross-platform desktop dictation app that captures live speech, transcribes with OpenAI speech models, and inserts text into the focused input target.
 
+## Push-to-release contract (read this first)
+
+Every normal `git push origin main` is a coordinated production release of
+the web, Windows, and Android apps. Configure the repository hooks once with:
+
+```powershell
+git config core.hooksPath scripts/hooks
+```
+
+After that, the supported workflow is simply:
+
+```powershell
+git add -A
+git commit -m "Describe the change"
+git push origin main
+```
+
+The commit hook assigns one new version to both native apps and increments the
+Android `versionCode`. The push hook requires a clean tree, runs the web,
+worker, desktop, and Android test/build checks, creates signed Windows and
+Android packages, publishes both update feeds to one GitHub Release, and only
+then allows the `main` push to finish. Vercel deploys `apps/web` from `main`.
+
+Users receive updates as follows:
+
+- Windows checks the signed feed at startup, announces the new version, and
+  installs it after the user confirms.
+- Android 0.2.0 and newer checks when opened and daily while its accessibility
+  service is enabled, posts an update notification, verifies the APK, and opens
+  Android's required installation confirmation.
+- The web app is replaced by the Vercel deployment; visitors receive the new
+  version on their next page load.
+
+A native release is deliberately a full signed rebuild on every push, even for
+a documentation-only change. Do not use `--no-verify`, `SKIP_RELEASE`, or
+`OPENWHISPER_SKIP_VERSION_BUMP` for a production push: those escape hatches
+break the guarantee that all apps share the release. If a hook fails, fix the
+reported problem and rerun the normal commit or push; a retry safely repairs
+the same release.
+
 ## Run website locally
 
 ```bash
@@ -55,6 +95,12 @@ the field that was focused when recording began.
 Download the signed Android beta from the public release page:
 
 **[Download OpenWhisper for Android](https://github.com/JamesHuckle/OpenWhisper/releases/latest/download/OpenWhisper-Android.apk)**
+
+Android 0.2.0 and newer checks for signed releases in the background, notifies
+the user, verifies the downloaded APK, and opens Android's normal update
+confirmation. In-place updates keep existing settings and the encrypted API
+key. Users on the original 0.1.0 beta must install 0.2.0 manually once to gain
+the updater.
 
 On Windows, the repository can install its own JDK, Android SDK, and API 36
 emulator under the ignored `.tools` directory:
@@ -128,7 +174,9 @@ This repository uses a hybrid architecture:
 
 ## Releasing a new version
 
-Releases happen **automatically** when you push to `main`. A Git pre-push hook builds the Windows installer locally and publishes it to GitHub Releases.
+Releases happen **automatically** when you commit and push to `main`. The
+repository hooks synchronize versions, test all components, build both native
+apps locally, and publish one coordinated GitHub Release.
 
 **Prerequisites (one-time):**
 - [Rust](https://rustup.rs) (`winget install -e --id Rustlang.Rustup`)
@@ -137,35 +185,32 @@ Releases happen **automatically** when you push to `main`. A Git pre-push hook b
 - [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org)
 - Hook path configured: `git config core.hooksPath scripts/hooks`
 - **Updater signing keys** (one-time): `.\scripts\setup-updater-keys.ps1`
+- **Android signing key** (one-time): `.\scripts\setup-android-signing.ps1`
+- Vercel project connected to this repository with production branch `main`
+  and root directory `apps/web`
 
 **Release workflow:**
 ```powershell
-# 1. Bump version in apps/desktop/src-tauri/tauri.conf.json (and Cargo.toml)
-# 2. Commit and push to main — the release happens automatically:
+# Versions are assigned by the commit hook. Commit and push normally:
+git add -A
+git commit -m "Describe the change"
 git push origin main
 ```
 
 When you push to `main`, the pre-push hook will:
-1. Build the standalone Python worker executable
-2. Build the Tauri Windows NSIS installer (with signed updater artifacts)
-3. Tag the commit with the version (e.g. `v0.1.0`)
-4. Create/update a GitHub Release marked as **latest**
-5. Upload installer, stable-named asset, and `latest.json` (for auto-update)
-6. Then the push completes normally
 
-**Auto-update:** Installed apps check for updates on startup. If a newer version exists, they download and install it, then relaunch.
+1. Test and production-build the website.
+2. Test the Python worker and desktop UI.
+3. Test, lint, build, sign, and verify the Android APK.
+4. Build and sign the Tauri Windows NSIS installer and updater artifact.
+5. Tag the commit, create/update the GitHub Release, and publish both update
+   feeds and stable download assets.
+6. Re-download and verify the public Android APK and both feed versions.
+7. Allow the push to complete, after which Vercel deploys the website.
 
-**Skip update notification** (release without notifying existing users): set `OPENWHISPER_SKIP_UPDATE_NOTIFY=1` in `.env`, then push or run the release script.
-
-**Manual release** (alternative to the hook):
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\release.ps1
-```
-
-To skip the release build for a quick push:
-```powershell
-$env:SKIP_RELEASE = "1"; git push origin main; $env:SKIP_RELEASE = $null
-```
+**Auto-update:** Installed native apps announce an available update and guide
+the user through installation. The desktop app relaunches afterward. Android
+requires a system confirmation for sideloaded updates.
 
 Detailed commands and production roadmap are in `docs/architecture.md`.
 

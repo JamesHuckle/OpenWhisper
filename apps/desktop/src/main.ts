@@ -1059,10 +1059,7 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
     menuRefinePromptInput.value = settings.refinePrompt ?? "";
     syncRefinePromptVisibility();
   }
-  if (
-    bubbleVisibilityChanged ||
-    (lastAppliedLayout !== null && lastAppliedLayout.visible !== getWindowLayout().visible)
-  ) {
+  if ((bubbleVisibilityChanged || lastAppliedLayout?.visible !== getWindowLayout().visible) && lastAppliedLayout !== null) {
     void applyOverlayLayout();
   }
 }
@@ -1336,14 +1333,24 @@ void listen("overlay-lost-focus", () => {
 // Auto-update
 // ---------------------------------------------------------------------------
 async function checkForUpdates() {
+  let updateAccepted = false;
   try {
     const update = await check();
     if (update) {
+      updateAccepted = window.confirm(
+        `OpenWhisper ${update.version} is available.\n\n` +
+          "Update now? Your settings and API key will be kept.",
+      );
+      if (!updateAccepted) return;
+      showToast("Downloading OpenWhisper update…", 30_000);
       await update.downloadAndInstall();
       await relaunch();
     }
   } catch {
-    // Ignore: no update, network error, or dev mode
+    if (updateAccepted) {
+      showToast("Update failed. Your current app and settings are unchanged.", 6000);
+    }
+    // Ignore background check failures, including development mode.
   }
 }
 
