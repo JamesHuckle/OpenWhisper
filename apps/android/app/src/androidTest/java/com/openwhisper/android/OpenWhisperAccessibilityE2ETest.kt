@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
+import android.view.ViewConfiguration
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -21,6 +22,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import kotlin.math.abs
 
 @RunWith(AndroidJUnit4::class)
 class OpenWhisperAccessibilityE2ETest {
@@ -40,6 +42,11 @@ class OpenWhisperAccessibilityE2ETest {
             .getSharedPreferences("openwhisper_updates", 0)
             .edit()
             .putLong("last_check_epoch_ms", System.currentTimeMillis())
+            .commit()
+        instrumentation.targetContext
+            .getSharedPreferences("openwhisper_overlay_position", 0)
+            .edit()
+            .clear()
             .commit()
         shell("settings delete secure enabled_accessibility_services")
         shell("settings put secure accessibility_enabled 0")
@@ -96,6 +103,36 @@ class OpenWhisperAccessibilityE2ETest {
             findOverlay() == null
         })
         assertFalse(hasOverlayWindow())
+    }
+
+    @Test
+    fun longPressDragMovesMicrophoneAndItRemainsTappable() {
+        focusEditor(R.id.demo_editor)
+        val initial = requireNotNull(waitForOverlay())
+        val dragX = 300
+        val dragY = -220
+
+        longPressDrag(
+            fromX = initial.centerX,
+            fromY = initial.centerY,
+            toX = initial.centerX + dragX,
+            toY = initial.centerY + dragY,
+        )
+
+        val moved = requireNotNull(waitForOverlay())
+        assertTrue("The microphone did not follow the horizontal touch drag", abs(moved.x - initial.x - dragX) <= 3)
+        assertTrue("The microphone did not follow the vertical touch drag", abs(moved.y - initial.y - dragY) <= 3)
+
+        tap(moved.centerX, moved.centerY)
+        SystemClock.sleep(300)
+        val listening = requireNotNull(waitForOverlay())
+        assertEquals("A service refresh reset the dragged horizontal position", moved.x, listening.x)
+        assertEquals("A service refresh reset the dragged vertical position", moved.y, listening.y)
+        tap(listening.centerX, listening.centerY)
+
+        assertTrue("The moved microphone no longer accepted taps", eventually(5_000) {
+            editorText(R.id.demo_editor).contains("OpenWhisper dictation works perfectly.")
+        })
     }
 
     private fun focusEditor(id: Int) {
@@ -195,6 +232,47 @@ class OpenWhisperAccessibilityE2ETest {
         } finally {
             down.recycle()
             up.recycle()
+        }
+    }
+
+    private fun longPressDrag(fromX: Int, fromY: Int, toX: Int, toY: Int) {
+        val downTime = SystemClock.uptimeMillis()
+        injectTouch(MotionEvent.ACTION_DOWN, downTime, downTime, fromX, fromY)
+        SystemClock.sleep(ViewConfiguration.getLongPressTimeout().toLong() + 150)
+
+        repeat(10) { index ->
+            val fraction = (index + 1) / 10f
+            injectTouch(
+                action = MotionEvent.ACTION_MOVE,
+                downTime = downTime,
+                eventTime = SystemClock.uptimeMillis(),
+                x = (fromX + (toX - fromX) * fraction).toInt(),
+                y = (fromY + (toY - fromY) * fraction).toInt(),
+            )
+            SystemClock.sleep(16)
+        }
+        injectTouch(
+            MotionEvent.ACTION_UP,
+            downTime,
+            SystemClock.uptimeMillis(),
+            toX,
+            toY,
+        )
+    }
+
+    private fun injectTouch(action: Int, downTime: Long, eventTime: Long, x: Int, y: Int) {
+        val event = MotionEvent.obtain(
+            downTime,
+            eventTime,
+            action,
+            x.toFloat(),
+            y.toFloat(),
+            0,
+        ).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
+        try {
+            assertTrue(automation.injectInputEvent(event, true))
+        } finally {
+            event.recycle()
         }
     }
 

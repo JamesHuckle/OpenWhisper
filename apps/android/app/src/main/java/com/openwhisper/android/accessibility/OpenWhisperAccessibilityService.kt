@@ -134,7 +134,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                 overlay.hide()
             }
             is OverlayDecision.Show -> {
-                if (!overlay.show(decision.topLeft)) scheduleRefresh(250)
+                if (!overlay.show(decision.topLeft, display.toScreenRect())) scheduleRefresh(250)
             }
         }
     }

@@ -29,6 +29,8 @@
     <string name="password_field">Password field</string>
     <string name="start_dictation">Start OpenWhisper dictation</string>
     <string name="stop_dictation">Stop OpenWhisper dictation</string>
+    <string name="move_microphone_hint">Long press and drag to move</string>
+    <string name="movable_microphone_description">%1$s. Long press and drag to move.</string>
     <string name="transcribing">OpenWhisper is transcribing</string>
     <string name="dictation_error">OpenWhisper error: %1$s</string>
     <string name="notification_channel_name">Active dictation</string>

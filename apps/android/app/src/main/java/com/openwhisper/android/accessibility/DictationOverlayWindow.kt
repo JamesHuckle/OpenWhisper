@@ -9,13 +9,20 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.util.Log
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.ImageButton
 import com.openwhisper.android.R
 import com.openwhisper.android.dictation.DictationState
+import com.openwhisper.android.overlay.NormalizedOverlayPosition
 import com.openwhisper.android.overlay.OverlayKeyGeometry
+import com.openwhisper.android.overlay.OverlayMovementBounds
 import com.openwhisper.android.overlay.ScreenPoint
+import com.openwhisper.android.overlay.ScreenRect
+import kotlin.math.hypot
 
 class DictationOverlayWindow(
     private val context: Context,
@@ -23,9 +30,26 @@ class DictationOverlayWindow(
     onClick: () -> Unit,
 ) {
     private val density = context.resources.displayMetrics.density
+    private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES_NAME, 0)
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     val controlWidthPx = dp(OverlayKeyGeometry.WIDTH_DP)
     val controlHeightPx = dp(OverlayKeyGeometry.HEIGHT_DP)
     private var attached = false
+    private var movementBounds: OverlayMovementBounds? = null
+    private var customPosition = loadCustomPosition()
+    private var touchDown = false
+    private var dragActive = false
+    private var gestureCancelled = false
+    private var downRawX = 0f
+    private var downRawY = 0f
+    private var dragStartX = 0
+    private var dragStartY = 0
+    private val activateDrag = Runnable {
+        if (touchDown && !gestureCancelled && attached) {
+            dragActive = true
+            control.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        }
+    }
     private val control = ImageButton(context).apply {
         id = R.id.overlay_microphone
         setImageResource(R.drawable.ic_microphone)
@@ -35,7 +59,9 @@ class DictationOverlayWindow(
         setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
         elevation = dp(2).toFloat()
         contentDescription = context.getString(R.string.start_dictation)
+        tooltipText = context.getString(R.string.move_microphone_hint)
         setOnClickListener { onClick() }
+        setOnTouchListener { _, event -> handleTouch(event) }
     }
     private val layout = WindowManager.LayoutParams(
         controlWidthPx,
@@ -54,9 +80,17 @@ class DictationOverlayWindow(
         render(DictationState.Idle)
     }
 
-    fun show(position: ScreenPoint): Boolean {
-        layout.x = position.x
-        layout.y = position.y
+    fun show(position: ScreenPoint, displayBounds: ScreenRect): Boolean {
+        val bounds = OverlayMovementBounds.within(
+            displayBounds = displayBounds,
+            controlWidthPx = controlWidthPx,
+            controlHeightPx = controlHeightPx,
+            marginPx = dp(OverlayKeyGeometry.GUTTER_MARGIN_DP).coerceAtLeast(1),
+        )
+        movementBounds = bounds
+        val resolvedPosition = customPosition?.resolve(bounds) ?: bounds.clamp(position)
+        layout.x = resolvedPosition.x
+        layout.y = resolvedPosition.y
         return runCatching {
             if (attached) {
                 windowManager.updateViewLayout(control, layout)
@@ -74,6 +108,7 @@ class DictationOverlayWindow(
 
     fun hide() {
         if (!attached) return
+        cancelTouch()
         runCatching { windowManager.removeView(control) }
         attached = false
     }
@@ -130,7 +165,7 @@ class DictationOverlayWindow(
     private fun style(icon: Int, description: String, colors: ControlColors) {
         control.setImageResource(icon)
         control.imageTintList = ColorStateList.valueOf(colors.icon)
-        control.contentDescription = description
+        control.contentDescription = context.getString(R.string.movable_microphone_description, description)
         control.background = roundedKey(colors)
         control.visibility = View.VISIBLE
     }
@@ -167,7 +202,100 @@ class DictationOverlayWindow(
     private fun withAlpha(color: Int, alpha: Int): Int =
         Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
+    private fun handleTouch(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchDown = true
+                dragActive = false
+                gestureCancelled = false
+                downRawX = event.rawX
+                downRawY = event.rawY
+                dragStartX = layout.x
+                dragStartY = layout.y
+                control.isPressed = true
+                control.postDelayed(activateDrag, ViewConfiguration.getLongPressTimeout().toLong())
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val distance = hypot(event.rawX - downRawX, event.rawY - downRawY)
+                if (!dragActive && distance > touchSlop) {
+                    gestureCancelled = true
+                    control.removeCallbacks(activateDrag)
+                    control.isPressed = false
+                }
+                if (dragActive) {
+                    moveTo(
+                        ScreenPoint(
+                            x = dragStartX + (event.rawX - downRawX).toInt(),
+                            y = dragStartY + (event.rawY - downRawY).toInt(),
+                        ),
+                    )
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                control.removeCallbacks(activateDrag)
+                if (dragActive) {
+                    persistCustomPosition()
+                } else if (!gestureCancelled) {
+                    control.performClick()
+                }
+                resetTouchState()
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                control.removeCallbacks(activateDrag)
+                if (dragActive) persistCustomPosition()
+                resetTouchState()
+            }
+        }
+        return true
+    }
+
+    private fun moveTo(position: ScreenPoint) {
+        val bounds = movementBounds ?: return
+        val clamped = bounds.clamp(position)
+        layout.x = clamped.x
+        layout.y = clamped.y
+        customPosition = NormalizedOverlayPosition.from(clamped, bounds)
+        if (attached) {
+            runCatching { windowManager.updateViewLayout(control, layout) }
+                .onFailure { Log.e("OpenWhisperOverlay", "Unable to move accessibility overlay", it) }
+        }
+    }
+
+    private fun persistCustomPosition() {
+        val position = customPosition ?: return
+        preferences.edit()
+            .putFloat(PREFERENCE_X, position.xFraction)
+            .putFloat(PREFERENCE_Y, position.yFraction)
+            .apply()
+    }
+
+    private fun loadCustomPosition(): NormalizedOverlayPosition? {
+        if (!preferences.contains(PREFERENCE_X) || !preferences.contains(PREFERENCE_Y)) return null
+        return NormalizedOverlayPosition(
+            xFraction = preferences.getFloat(PREFERENCE_X, 0f),
+            yFraction = preferences.getFloat(PREFERENCE_Y, 0f),
+        )
+    }
+
+    private fun cancelTouch() {
+        control.removeCallbacks(activateDrag)
+        resetTouchState()
+    }
+
+    private fun resetTouchState() {
+        touchDown = false
+        dragActive = false
+        gestureCancelled = false
+        control.isPressed = false
+    }
+
     private fun dp(value: Int): Int = (value * density).toInt()
 
     private data class ControlColors(val background: Int, val icon: Int, val border: Int)
+
+    private companion object {
+        const val PREFERENCES_NAME = "openwhisper_overlay_position"
+        const val PREFERENCE_X = "x_fraction"
+        const val PREFERENCE_Y = "y_fraction"
+    }
 }
