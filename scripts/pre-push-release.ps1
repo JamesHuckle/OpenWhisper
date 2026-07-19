@@ -58,7 +58,8 @@ function Get-JsonWithRetry {
   }
 }
 
-if (git -C $RepoRoot status --porcelain) {
+$workingTreeStatus = @(git -C $RepoRoot status --porcelain)
+if ($workingTreeStatus.Count -gt 0) {
   throw "The release push requires a clean working tree. Commit every change first."
 }
 
