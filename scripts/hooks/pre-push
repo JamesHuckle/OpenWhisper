@@ -1,4 +1,5 @@
 #!/bin/sh
+# Normal main pushes also synchronize the locally installed Windows app.
 # Git pre-push hook — releases web, Windows, and Android when pushing to main.
 # Skip with: SKIP_RELEASE=1 git push
 

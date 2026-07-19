@@ -253,6 +253,13 @@ try {
   }
 }
 
+Write-Host "==> Synchronizing the locally installed Windows app"
+& "$PSScriptRoot/sync-local-windows-release.ps1" `
+  -InstallerPath $versionedInstaller `
+  -ExpectedVersion $version
+Assert-LastExitCode "Failed to synchronize the locally installed Windows app."
+
 Write-Host ""
 Write-Host "All signed release artifacts and update notifications are live for $tag."
+Write-Host "The local Windows installation is also current at $version."
 Write-Host "The main push will now complete and Vercel will deploy apps/web."

@@ -137,6 +137,12 @@ Installer output: `artifacts\windows-installer\OpenWhisper_x64-setup.exe` (with 
 versioned and signed build outputs also kept under
 `%USERPROFILE%\openwhisper-cargo-target\release\bundle\nsis\`).
 
+Every normal push to `main` runs the local release hook. After the signed
+release and public update feeds are verified, the hook silently updates the
+installed `%LOCALAPPDATA%\OpenWhisper` copy to the same version and restarts it
+only when it was already running. `SKIP_RELEASE=1` intentionally bypasses both
+the release and this local installation sync.
+
 This repository uses a hybrid architecture:
 
 - `apps/desktop`: Tauri 2 desktop shell (UI + tray + local control plane)

@@ -53,6 +53,25 @@ describe("desktop regression contracts", () => {
     expect(buildScript).not.toContain("if ($IsUncRepo) {");
   });
 
+  it("updates the installed Windows app during every normal main push", () => {
+    const releaseScript = readFileSync(
+      resolve(repositoryRoot, "scripts/pre-push-release.ps1"),
+      "utf8",
+    );
+    const syncScript = readFileSync(
+      resolve(repositoryRoot, "scripts/sync-local-windows-release.ps1"),
+      "utf8",
+    );
+
+    expect(releaseScript).toContain('sync-local-windows-release.ps1');
+    expect(releaseScript).toContain('-InstallerPath $versionedInstaller');
+    expect(releaseScript).toContain('-ExpectedVersion $version');
+    expect(syncScript).toContain('VersionInfo.ProductVersion');
+    expect(syncScript).toContain('Start-Process -FilePath $resolvedInstaller -ArgumentList "/S" -Wait');
+    expect(syncScript).toContain('Local\\OpenWhisperLocalReleaseInstall');
+    expect(syncScript).toContain('Start-Process -FilePath $installedExecutable');
+  });
+
   it("builds signed releases without waiting for an interactive key prompt", () => {
     const packageJson = JSON.parse(
       readFileSync(resolve(desktopRoot, "package.json"), "utf8"),
