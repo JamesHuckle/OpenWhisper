@@ -11,8 +11,10 @@ import android.widget.EditText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.openwhisper.android.demo.DemoTargetActivity
+import com.openwhisper.android.overlay.OverlayKeyGeometry
 import java.io.FileInputStream
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -69,6 +71,11 @@ class OpenWhisperAccessibilityE2ETest {
         var overlay = waitForOverlay()
         assertNotNull("The accessibility microphone overlay did not appear", overlay)
         overlay = requireNotNull(overlay)
+        val density = instrumentation.targetContext.resources.displayMetrics.density
+        assertEquals(dp(OverlayKeyGeometry.WIDTH_DP, density), overlay.width)
+        assertEquals(dp(OverlayKeyGeometry.HEIGHT_DP, density), overlay.height)
+        assertEquals(overlay.height, overlay.width * 2)
+        assertEquals(dp(OverlayKeyGeometry.GUTTER_MARGIN_DP, density), overlay.x)
         tap(overlay.centerX, overlay.centerY)
         SystemClock.sleep(300)
         overlay = requireNotNull(waitForOverlay())
@@ -189,6 +196,8 @@ class OpenWhisperAccessibilityE2ETest {
         automation.executeShellCommand(command).use { descriptor ->
             FileInputStream(descriptor.fileDescriptor).bufferedReader().use { it.readText() }
         }
+
+    private fun dp(value: Int, density: Float): Int = (value * density).toInt()
 
     private data class OverlayBounds(
         val x: Int,

@@ -20,7 +20,8 @@ data class OverlayContext(
     val isPassword: Boolean = false,
     val isSensitive: Boolean = false,
     val displayBounds: ScreenRect = ScreenRect(0, 0, 1080, 2400),
-    val controlSizePx: Int = 128,
+    val controlWidthPx: Int = 64,
+    val controlHeightPx: Int = 128,
     val marginPx: Int = 24,
 )
 
@@ -37,13 +38,17 @@ class OverlayPolicy {
         }
 
         val minX = context.displayBounds.left + context.marginPx
-        val maxX = (context.displayBounds.right - context.marginPx - context.controlSizePx)
+        val maxX = (context.displayBounds.right - context.marginPx - context.controlWidthPx)
             .coerceAtLeast(minX)
         val minY = context.displayBounds.top + context.marginPx
-        val maxY = (context.displayBounds.bottom - context.marginPx - context.controlSizePx)
+        val maxY = (context.displayBounds.bottom - context.marginPx - context.controlHeightPx)
             .coerceAtLeast(minY)
-        val desiredX = keyboard.right - context.marginPx - context.controlSizePx
-        val desiredY = keyboard.top - context.marginPx - context.controlSizePx
+        // Android IMEs do not expose individual key bounds. On conventional phone
+        // layouts the A/home row is centered about 40% down the IME window, and the
+        // staggered row leaves a small gutter immediately to its left.
+        val desiredX = keyboard.left + context.marginPx
+        val homeRowCenterY = keyboard.top + (keyboard.bottom - keyboard.top) * HOME_ROW_FRACTION
+        val desiredY = (homeRowCenterY - context.controlHeightPx / 2f).toInt()
 
         return OverlayDecision.Show(
             ScreenPoint(
@@ -51,5 +56,9 @@ class OverlayPolicy {
                 y = desiredY.coerceIn(minY, maxY),
             ),
         )
+    }
+
+    private companion object {
+        const val HOME_ROW_FRACTION = 0.4f
     }
 }

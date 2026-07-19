@@ -27,6 +27,7 @@ import com.openwhisper.android.dictation.SelectingDictationBackend
 import com.openwhisper.android.editor.EditorSessionController
 import com.openwhisper.android.overlay.OverlayContext
 import com.openwhisper.android.overlay.OverlayDecision
+import com.openwhisper.android.overlay.OverlayKeyGeometry
 import com.openwhisper.android.overlay.OverlayPolicy
 import com.openwhisper.android.overlay.ScreenRect
 import com.openwhisper.android.settings.SecureApiKeyStore
@@ -118,8 +119,10 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                 isPassword = snapshot?.isPassword == true,
                 isSensitive = snapshot?.isSensitive == true,
                 displayBounds = display.toScreenRect(),
-                controlSizePx = overlay.controlSizePx,
-                marginPx = (12 * density).toInt(),
+                controlWidthPx = overlay.controlWidthPx,
+                controlHeightPx = overlay.controlHeightPx,
+                marginPx = (OverlayKeyGeometry.GUTTER_MARGIN_DP * density).toInt()
+                    .coerceAtLeast(1),
             ),
         )
         when (decision) {

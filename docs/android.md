@@ -12,7 +12,7 @@ This gives the intended S26 Ultra experience while leaving Samsung Keyboard as
 the selected IME:
 
 1. Focus a normal editable field and let Samsung Keyboard appear.
-2. OpenWhisper docks its mic over the keyboard's top-right edge.
+2. OpenWhisper docks its compact mic key in the left gutter beside the A key.
 3. Tap once to record and again to finish.
 4. The transcript is inserted at the captured cursor or replaces only the
    captured selection.

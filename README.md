@@ -47,10 +47,10 @@ That rebuilds the local Tauri desktop app bundle.
 
 `apps/android` is a native Kotlin companion app. Android does not provide a
 supported way for a third-party app to modify Samsung Keyboard itself, so the
-app keeps the selected keyboard and docks a user-authorized accessibility mic
-over its top-right edge. It records on device, sends a WAV file directly to the
-OpenAI audio transcription endpoint, and safely inserts the result into the
-field that was focused when recording began.
+app keeps the selected keyboard and docks a small, user-authorized accessibility
+mic beside the keyboard's A key. It records on device, sends a WAV file directly
+to the OpenAI audio transcription endpoint, and safely inserts the result into
+the field that was focused when recording began.
 
 Download the signed Android beta from the public release page:
 

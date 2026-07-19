@@ -41,18 +41,19 @@ class OverlayPolicyTest {
     }
 
     @Test
-    fun positionsMicAboveKeyboardAndInsideDisplay() {
+    fun positionsMicInLeftGutterBesideHomeRow() {
         val decision = policy.decide(
             OverlayContext(
                 keyboardBounds = ScreenRect(0, 1400, 1080, 2400),
                 hasEditableFocus = true,
                 displayBounds = ScreenRect(0, 0, 1080, 2400),
-                controlSizePx = 128,
+                controlWidthPx = 64,
+                controlHeightPx = 128,
                 marginPx = 24,
             ),
         )
 
-        assertEquals(OverlayDecision.Show(ScreenPoint(928, 1248)), decision)
+        assertEquals(OverlayDecision.Show(ScreenPoint(24, 1736)), decision)
     }
 
     @Test
@@ -62,11 +63,12 @@ class OverlayPolicyTest {
                 keyboardBounds = ScreenRect(-500, 40, -300, 500),
                 hasEditableFocus = true,
                 displayBounds = ScreenRect(-500, 0, -300, 500),
-                controlSizePx = 128,
+                controlWidthPx = 64,
+                controlHeightPx = 128,
                 marginPx = 24,
             ),
         )
 
-        assertEquals(OverlayDecision.Show(ScreenPoint(-452, 24)), decision)
+        assertEquals(OverlayDecision.Show(ScreenPoint(-476, 160)), decision)
     }
 }
