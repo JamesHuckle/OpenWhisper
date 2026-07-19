@@ -152,6 +152,17 @@ app.innerHTML = `
     </div>
 
     <div id="mic-menu" class="mic-menu hidden">
+      <div class="menu-section">Appearance</div>
+      <div class="menu-toggle-row">
+        <span class="menu-section menu-section-inline">Show pill when idle</span>
+        <label class="toggle-switch" title="Keep the collapsed pill visible when not recording">
+          <input id="menu-show-idle-pill-toggle" type="checkbox" aria-label="Show pill when idle" />
+          <span class="toggle-track"></span>
+          <span class="toggle-thumb"></span>
+        </label>
+      </div>
+      <div class="menu-prompt-hint">Turn this off to completely hide the collapsed pill. Use the tray icon to show it again.</div>
+      <div class="menu-divider"></div>
       <div class="menu-section">Microphone</div>
       <div id="mic-list"></div>
       <div class="menu-divider"></div>
@@ -169,16 +180,6 @@ app.innerHTML = `
       <a id="menu-key-link" class="menu-link" href="https://platform.openai.com/api-keys">
         <span class="menu-link-bold">Create or manage</span> keys at platform.openai.com/api-keys
       </a>
-      <div class="menu-divider"></div>
-      <div class="menu-toggle-row">
-        <span class="menu-section menu-section-inline">Show pill when idle</span>
-        <label class="toggle-switch" title="Keep the collapsed pill visible when not recording">
-          <input id="menu-show-idle-pill-toggle" type="checkbox" />
-          <span class="toggle-track"></span>
-          <span class="toggle-thumb"></span>
-        </label>
-      </div>
-      <div class="menu-prompt-hint">Turn this off to completely hide the collapsed pill. Use the tray icon to show it again.</div>
       <div class="menu-divider"></div>
       <div class="menu-section">Dictionary</div>
       <div id="menu-target-app" class="menu-target-app">

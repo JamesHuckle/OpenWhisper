@@ -231,20 +231,37 @@ npm run tauri:build:signed
 Pop-Location
 
 $InstallerDir = Join-Path $CargoTargetDir "release/bundle/nsis"
-
-if ($IsUncRepo) {
-  $OutDir = Join-Path $OriginalRepoRoot "artifacts/windows-installer"
-  if (-not (Test-Path $InstallerDir)) {
-    throw "Installer directory not found: $InstallerDir"
-  }
-  if (Test-Path $OutDir) {
-    Remove-Item $OutDir -Recurse -Force
-  }
-  New-Item -ItemType Directory -Path $OutDir | Out-Null
-  Copy-Item (Join-Path $InstallerDir "*") -Destination $OutDir -Recurse -Force
-  Write-Host "==> Copied installer artifacts back to:"
-  Write-Host "    $OutDir"
+if (-not (Test-Path $InstallerDir)) {
+  throw "Installer directory not found: $InstallerDir"
 }
+
+$TauriConfig = Get-Content (Join-Path $DesktopDir "src-tauri/tauri.conf.json") -Raw | ConvertFrom-Json
+$ProductName = [string]$TauriConfig.productName
+$Version = [string]$TauriConfig.version
+$VersionedInstaller = Join-Path $InstallerDir "${ProductName}_${Version}_x64-setup.exe"
+if (-not (Test-Path $VersionedInstaller)) {
+  throw "Versioned installer not found: $VersionedInstaller"
+}
+
+# Keep a predictable installer name fresh for local installs. Previously this
+# alias was only refreshed by the release scripts, so a successful local build
+# could leave developers reinstalling an old application from artifacts/.
+$StableInstaller = Join-Path $InstallerDir "${ProductName}_x64-setup.exe"
+Copy-Item -LiteralPath $VersionedInstaller -Destination $StableInstaller -Force
+
+$OutDir = Join-Path $OriginalRepoRoot "artifacts/windows-installer"
+New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
+Copy-Item -LiteralPath $VersionedInstaller -Destination $OutDir -Force
+Copy-Item -LiteralPath $StableInstaller -Destination $OutDir -Force
+
+$VersionedSignature = "$VersionedInstaller.sig"
+if (Test-Path $VersionedSignature) {
+  Copy-Item -LiteralPath $VersionedSignature -Destination $OutDir -Force
+}
+
+Write-Host "==> Local installer copies refreshed:"
+Write-Host "    $(Join-Path $OutDir (Split-Path -Leaf $VersionedInstaller))"
+Write-Host "    $(Join-Path $OutDir (Split-Path -Leaf $StableInstaller))"
 
 Write-Host ""
 Write-Host "Installer artifacts:"

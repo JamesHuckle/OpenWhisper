@@ -133,7 +133,9 @@ To rebuild the full Windows installer instead, run from the repo root:
 powershell -ExecutionPolicy Bypass -File .\scripts\build-windows-installer.ps1
 ```
 
-Installer output: `%USERPROFILE%\openwhisper-cargo-target\release\bundle\nsis\`
+Installer output: `artifacts\windows-installer\OpenWhisper_x64-setup.exe` (with the
+versioned and signed build outputs also kept under
+`%USERPROFILE%\openwhisper-cargo-target\release\bundle\nsis\`).
 
 This repository uses a hybrid architecture:
 

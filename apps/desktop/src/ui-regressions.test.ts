@@ -34,9 +34,23 @@ describe("desktop regression contracts", () => {
     const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
 
     expect(main).toContain("Show pill when idle");
+    expect(main.indexOf("Show pill when idle")).toBeLessThan(main.indexOf("Microphone</div>"));
+    expect(main).toContain('aria-label="Show pill when idle"');
     expect(main).toContain('visible: showIdlePill || state !== "idle" || menuOpen || manualOverlayReveal');
     expect(native).toContain("window.hide().map_err");
     expect(native).toContain('MenuItem::with_id(app, "show", "Show Pill"');
+  });
+
+  it("refreshes the stable local installer after every Windows build", () => {
+    const buildScript = readFileSync(
+      resolve(repositoryRoot, "scripts/build-windows-installer.ps1"),
+      "utf8",
+    );
+
+    expect(buildScript).toContain('$StableInstaller = Join-Path $InstallerDir');
+    expect(buildScript).toContain('Copy-Item -LiteralPath $VersionedInstaller -Destination $StableInstaller -Force');
+    expect(buildScript).toContain('$OutDir = Join-Path $OriginalRepoRoot "artifacts/windows-installer"');
+    expect(buildScript).not.toContain("if ($IsUncRepo) {");
   });
 
   it("builds signed releases without waiting for an interactive key prompt", () => {
