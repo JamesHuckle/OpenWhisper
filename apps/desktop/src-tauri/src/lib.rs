@@ -436,6 +436,9 @@ mod overlay_positioner {
     const MONITOR_DEFAULTTOPRIMARY: u32 = 1;
     const MONITOR_DEFAULTTONULL: u32 = 0;
     const MDT_EFFECTIVE_DPI: u32 = 0;
+    const HWND_TOPMOST: isize = -1;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
     const SWP_NOZORDER: u32 = 0x0004;
     const SWP_NOREDRAW: u32 = 0x0008;
     const SWP_NOACTIVATE: u32 = 0x0010;
@@ -584,6 +587,30 @@ mod overlay_positioner {
             Err("SetWindowPos failed while committing overlay placement".to_string())
         } else {
             Ok(())
+        }
+    }
+
+    /// Re-insert the overlay at the very top of the always-on-top band.
+    ///
+    /// The window is created WS_EX_TOPMOST, but that only guarantees it sits
+    /// above *non*-topmost windows — other topmost windows created after it
+    /// (or brought forward later) can still stack on top. Every placement
+    /// commit uses SWP_NOZORDER to avoid disturbing z-order during the hidden
+    /// settling loop, so nothing otherwise re-raises the pill. The active
+    /// listening pill must never be occluded, so we re-assert HWND_TOPMOST
+    /// whenever the pill is shown or updated while visible. SWP_NOACTIVATE
+    /// keeps it from stealing keyboard focus from the user's real window.
+    pub fn reassert_topmost(hwnd: isize) {
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            );
         }
     }
 
@@ -922,6 +949,7 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
     }
     if was_visible {
         commit_native_placement(hwnd, placement, PlacementVisibility::Show)?;
+        overlay_positioner::reassert_topmost(hwnd);
     }
     debug_log_line(
         "window",
@@ -1385,6 +1413,13 @@ async fn overlay_apply_layout(
                 }
                 commit_native_placement(hwnd, placement, PlacementVisibility::Show)?;
             }
+            // The recording pill can appear while the window is already up (an
+            // idle→recording transition is a Keep, not a Show). Re-raise it to
+            // the top of the topmost band on every visible layout commit so the
+            // active listening pill is never occluded by other topmost windows.
+            if visible {
+                overlay_positioner::reassert_topmost(hwnd);
+            }
             return Ok(());
         }
     }
@@ -1482,6 +1517,10 @@ fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
         debug_log_line("window", "reveal_window");
         let _ = window.show();
         let _ = window.unminimize();
+        #[cfg(target_os = "windows")]
+        if let Ok(hwnd) = window.hwnd() {
+            overlay_positioner::reassert_topmost(hwnd.0 as isize);
+        }
         if intent.should_focus() {
             let _ = window.set_focus();
         }
