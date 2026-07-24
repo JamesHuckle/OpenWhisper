@@ -14,7 +14,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
-import android.widget.ImageButton
+import androidx.core.content.ContextCompat
 import com.openwhisper.android.R
 import com.openwhisper.android.dictation.DictationState
 import com.openwhisper.android.overlay.NormalizedOverlayPosition
@@ -50,13 +50,8 @@ class DictationOverlayWindow(
             control.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         }
     }
-    private val control = ImageButton(context).apply {
+    private val control = DictationControlView(context).apply {
         id = R.id.overlay_microphone
-        setImageResource(R.drawable.ic_microphone)
-        scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
-        val horizontalPadding = (controlWidthPx - dp(OverlayKeyGeometry.ICON_SIZE_DP)) / 2
-        val verticalPadding = (controlHeightPx - dp(OverlayKeyGeometry.ICON_SIZE_DP)) / 2
-        setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
         elevation = dp(2).toFloat()
         contentDescription = context.getString(R.string.start_dictation)
         tooltipText = context.getString(R.string.move_microphone_hint)
@@ -115,7 +110,7 @@ class DictationOverlayWindow(
 
     fun render(state: DictationState) {
         when (state) {
-            DictationState.Idle -> style(
+            DictationState.Idle -> styleIcon(
                 R.drawable.ic_microphone,
                 context.getString(R.string.start_dictation),
                 palette(
@@ -125,8 +120,8 @@ class DictationOverlayWindow(
                     darkIcon = Color.rgb(195, 196, 255),
                 ),
             )
-            is DictationState.Listening -> style(
-                R.drawable.ic_stop,
+            is DictationState.Listening -> styleMeter(
+                DictationControlView.Mode.LISTENING,
                 context.getString(R.string.stop_dictation),
                 palette(
                     lightBackground = Color.rgb(251, 234, 236),
@@ -137,8 +132,8 @@ class DictationOverlayWindow(
             )
             is DictationState.Finalizing,
             is DictationState.ReadyToInsert,
-            -> style(
-                R.drawable.ic_transcribing,
+            -> styleMeter(
+                DictationControlView.Mode.PROCESSING,
                 context.getString(R.string.transcribing),
                 palette(
                     lightBackground = Color.rgb(252, 240, 225),
@@ -147,7 +142,7 @@ class DictationOverlayWindow(
                     darkIcon = Color.rgb(255, 208, 152),
                 ),
             )
-            is DictationState.Failed -> style(
+            is DictationState.Failed -> styleIcon(
                 R.drawable.ic_error,
                 context.getString(R.string.dictation_error, state.message),
                 palette(
@@ -160,11 +155,28 @@ class DictationOverlayWindow(
         }
     }
 
+    /** Push a live microphone level (0..1) into the equalizer while listening. */
+    fun onAmplitude(level: Float) {
+        control.onAmplitude(level)
+    }
+
     fun destroy() = hide()
 
-    private fun style(icon: Int, description: String, colors: ControlColors) {
-        control.setImageResource(icon)
-        control.imageTintList = ColorStateList.valueOf(colors.icon)
+    private fun styleIcon(icon: Int, description: String, colors: ControlColors) {
+        prepareControl(description, colors)
+        control.showIcon(ContextCompat.getDrawable(context, icon)?.mutate(), colors.icon)
+    }
+
+    private fun styleMeter(mode: DictationControlView.Mode, description: String, colors: ControlColors) {
+        prepareControl(description, colors)
+        when (mode) {
+            DictationControlView.Mode.LISTENING -> control.showListening(colors.icon)
+            DictationControlView.Mode.PROCESSING -> control.showProcessing(colors.icon)
+            DictationControlView.Mode.ICON -> Unit
+        }
+    }
+
+    private fun prepareControl(description: String, colors: ControlColors) {
         control.contentDescription = context.getString(R.string.movable_microphone_description, description)
         control.background = roundedKey(colors)
         control.visibility = View.VISIBLE

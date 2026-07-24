@@ -255,21 +255,6 @@ body {
   overflow: hidden;
 }
 
-/* Idle baseline — visible at rest */
-.meter-baseline {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 48px;
-  height: 2px;
-  margin-left: -24px;
-  margin-top: -1px;
-  background: rgba(158, 240, 201, 0.6);
-  border-radius: 1px;
-  pointer-events: none;
-  display: none;
-}
-
 /* Idle wobbly line — subtle wave when expanded and idle */
 .meter-idle-wave {
   position: absolute;
@@ -293,14 +278,9 @@ body {
   75% { transform: translate(-1px, -1px) scaleY(1.02); opacity: 0.85; }
 }
 
-#widget[data-expanded="true"][data-state="transcribing"] .meter-idle-wave,
-#widget[data-expanded="true"][data-state="recording"][data-silent="true"] .meter-idle-wave {
+/* Resting shimmer — only when expanded and idle, before recording starts. */
+#widget[data-expanded="true"][data-state="idle"] .meter-idle-wave {
   display: block;
-}
-
-[data-state="idle"] .meter-idle-wave,
-#widget[data-state="recording"]:not([data-silent="true"]) .meter-idle-wave {
-  display: none;
 }
 
 #widget[data-expanded="true"][data-state="idle"] .meter,
@@ -309,42 +289,13 @@ body {
   opacity: 1;
 }
 
-.meter-canvas {
-  display: none;
-  width: 48px;
-  height: 28px;
-  border-radius: 4px;
-  position: relative;
-  z-index: 1;
-  transform: scaleY(1.5);
-  transform-origin: center center;
-}
-
-[data-state="recording"] .meter-baseline {
-  display: block;
-}
-
 .meter-idle-bars {
   display: flex;
   align-items: flex-end;
   justify-content: center;
   gap: 3px;
-}
-
-[data-state="recording"] .meter-canvas {
-  display: block;
-}
-
-[data-state="recording"] .meter-idle-bars {
-  display: none;
-}
-
-[data-state="transcribing"] .meter-canvas {
-  display: none;
-}
-
-[data-state="transcribing"] .meter-idle-bars {
-  display: none;
+  position: relative;
+  z-index: 1;
 }
 
 #widget[data-expanded="false"] .meter,
@@ -359,23 +310,15 @@ body {
 .wave-bar {
   --wave-level: 0.15;
   width: 3px;
-  height: 10px;
+  height: 18px;
   border-radius: 999px;
   transform-origin: center bottom;
   transform: scaleY(var(--wave-level));
   background: linear-gradient(to top, var(--accent), var(--accent-strong));
   box-shadow: 0 0 6px var(--accent-dim);
-  transition: transform 45ms ease-out;
+  transition: transform 60ms ease-out;
   opacity: 0;
 }
-
-.wave-bar:nth-child(1) { height: 5px; }
-.wave-bar:nth-child(2) { height: 8px; }
-.wave-bar:nth-child(3) { height: 10px; }
-.wave-bar:nth-child(4) { height: 7px; }
-.wave-bar:nth-child(5) { height: 9px; }
-.wave-bar:nth-child(6) { height: 6px; }
-.wave-bar:nth-child(7) { height: 8px; }
 
 [data-state="recording"] .widget-surface {
   border-color: rgba(126, 240, 191, 0.22);
@@ -387,21 +330,24 @@ body {
   opacity: 1;
 }
 
+/* Processing — a smooth wave travels left→right across the bars so the pill
+   clearly reads as "working" (distinct from the reactive listening bars). */
 [data-state="transcribing"] .wave-bar {
-  animation: wave-bar-idle 1.2s ease-in-out infinite;
+  transition: none;
+  animation: loading-wave 1.05s ease-in-out infinite;
 }
 
 [data-state="transcribing"] .wave-bar:nth-child(1) { animation-delay: 0s; }
-[data-state="transcribing"] .wave-bar:nth-child(2) { animation-delay: 0.1s; }
-[data-state="transcribing"] .wave-bar:nth-child(3) { animation-delay: 0.2s; }
-[data-state="transcribing"] .wave-bar:nth-child(4) { animation-delay: 0.3s; }
-[data-state="transcribing"] .wave-bar:nth-child(5) { animation-delay: 0.2s; }
-[data-state="transcribing"] .wave-bar:nth-child(6) { animation-delay: 0.1s; }
-[data-state="transcribing"] .wave-bar:nth-child(7) { animation-delay: 0s; }
+[data-state="transcribing"] .wave-bar:nth-child(2) { animation-delay: 0.08s; }
+[data-state="transcribing"] .wave-bar:nth-child(3) { animation-delay: 0.16s; }
+[data-state="transcribing"] .wave-bar:nth-child(4) { animation-delay: 0.24s; }
+[data-state="transcribing"] .wave-bar:nth-child(5) { animation-delay: 0.32s; }
+[data-state="transcribing"] .wave-bar:nth-child(6) { animation-delay: 0.40s; }
+[data-state="transcribing"] .wave-bar:nth-child(7) { animation-delay: 0.48s; }
 
-@keyframes wave-bar-idle {
-  0%, 100% { opacity: 0.7; transform: scaleY(0.4); }
-  50% { opacity: 1; transform: scaleY(var(--wave-level)); }
+@keyframes loading-wave {
+  0%, 100% { opacity: 0.55; transform: scaleY(0.28); }
+  50% { opacity: 1; transform: scaleY(0.9); }
 }
 
 [data-state="recording"] .wave-bar,

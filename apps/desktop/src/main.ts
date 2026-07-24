@@ -6,7 +6,6 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
-import { continuousVisualizer } from "sound-visualizer";
 import {
   COLLAPSED_HEIGHT,
   COLLAPSED_WIDTH,
@@ -67,9 +66,8 @@ const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
 );
 
 let micStream: MediaStream | null = null;
-let soundVisualizer: { start: () => void; stop: () => void; reset: () => void } | null = null;
-let volumeMonitorFrameId: number | null = null;
-let volumeMonitorDisconnect: (() => void) | null = null;
+let meterFrameId: number | null = null;
+let meterDisconnect: (() => void) | null = null;
 const SILENT_THRESHOLD = 14;
 let transcribeTimer: number | null = null;
 let micDevices: MicDevice[] = [];
@@ -103,11 +101,9 @@ app.innerHTML = `
       <div class="widget-surface" aria-hidden="true"></div>
 
       <span class="meter meter-wave-bars" aria-hidden="true">
-        <span class="meter-baseline" aria-hidden="true"></span>
         <svg class="meter-idle-wave" viewBox="0 0 76 28" aria-hidden="true">
           <path class="meter-idle-wave-path" d="M0,14 C6,11 12,17 18,14 C24,11 30,17 36,14 C42,11 48,17 54,14 C60,11 66,17 72,14 C74,12 76,14" fill="none" stroke="currentColor" stroke-width="0.9" stroke-linecap="round" />
         </svg>
-        <canvas id="meter-canvas" class="meter-canvas" width="48" height="28"></canvas>
         <span class="meter-idle-bars">
           <span class="wave-bar" data-bar="0"></span>
           <span class="wave-bar" data-bar="1"></span>
@@ -207,7 +203,6 @@ app.innerHTML = `
 
 const apiKeyBubble = document.getElementById("api-key-bubble")!;
 const widget = document.getElementById("widget")!;
-const meterCanvas = document.getElementById("meter-canvas") as HTMLCanvasElement;
 const waveBars = document.querySelectorAll<HTMLElement>(".wave-bar");
 const btnMic = document.getElementById("btn-mic") as HTMLButtonElement;
 const btnDropdown = document.getElementById("btn-dropdown") as HTMLButtonElement;
@@ -586,45 +581,81 @@ function toBase64(buf: ArrayBuffer): string {
 }
 
 // ---------------------------------------------------------------------------
-// Volume monitor — show wobbly line when mic is silent during recording
+// Meter — real-time equalizer bars driven by live mic frequency data.
+// Each of the VOLUME_BAR_COUNT bars tracks a log-spaced frequency band so the
+// pill reacts to the user's voice while listening; it also detects silence so
+// the surface can show a calm resting line when nothing is being said.
 // ---------------------------------------------------------------------------
-function startVolumeMonitor(stream: MediaStream) {
+const barSmoothed: number[] = Array(VOLUME_BAR_COUNT).fill(0.15);
+
+function startMeter(stream: MediaStream) {
   const ctx = new AudioContext();
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.75;
   const source = ctx.createMediaStreamSource(stream);
   source.connect(analyser);
-  const data = new Uint8Array(analyser.fftSize);
+
+  const bins = analyser.frequencyBinCount; // 128
+  const freq = new Uint8Array(bins);
+  const time = new Uint8Array(analyser.fftSize);
+  barSmoothed.fill(0.15);
+
+  // Log-spaced band edges over the voice-dominant lower bins so the equalizer
+  // spreads energy evenly across bars instead of clumping in the low end.
+  const usableBins = Math.max(VOLUME_BAR_COUNT + 1, Math.floor(bins * 0.7));
+  const edges: number[] = [];
+  for (let i = 0; i <= VOLUME_BAR_COUNT; i++) {
+    const t = i / VOLUME_BAR_COUNT;
+    edges.push(Math.min(usableBins, Math.max(1, Math.round(usableBins ** t))));
+  }
 
   function tick() {
     if (state !== "recording") return;
-    analyser.getByteTimeDomainData(data);
-    let min = 255, max = 0;
-    for (let i = 0; i < data.length; i++) {
-      if (data[i] < min) min = data[i];
-      if (data[i] > max) max = data[i];
-    }
-    const range = max - min;
-    widget.dataset.silent = range < SILENT_THRESHOLD ? "true" : "false";
-    volumeMonitorFrameId = requestAnimationFrame(tick);
-  }
-  volumeMonitorFrameId = requestAnimationFrame(tick);
+    analyser.getByteFrequencyData(freq);
+    analyser.getByteTimeDomainData(time);
 
-  volumeMonitorDisconnect = () => {
-    if (volumeMonitorFrameId !== null) {
-      cancelAnimationFrame(volumeMonitorFrameId);
-      volumeMonitorFrameId = null;
+    let min = 255, max = 0;
+    for (let i = 0; i < time.length; i++) {
+      if (time[i] < min) min = time[i];
+      if (time[i] > max) max = time[i];
+    }
+    widget.dataset.silent = max - min < SILENT_THRESHOLD ? "true" : "false";
+
+    const levels: number[] = [];
+    for (let b = 0; b < VOLUME_BAR_COUNT; b++) {
+      const start = edges[b];
+      const end = Math.max(start + 1, edges[b + 1]);
+      let sum = 0;
+      for (let i = start; i < end; i++) sum += freq[i];
+      const avg = sum / (end - start) / 255; // 0..1
+      const target = Math.max(0.15, Math.min(1, avg ** 0.6 * 1.35));
+      // Fast attack, slower release keeps the bars lively but not jittery.
+      const prev = barSmoothed[b];
+      barSmoothed[b] = prev + (target - prev) * (target > prev ? 0.6 : 0.22);
+      levels.push(barSmoothed[b]);
+    }
+    setWaveBarLevels(levels);
+    meterFrameId = requestAnimationFrame(tick);
+  }
+  meterFrameId = requestAnimationFrame(tick);
+
+  meterDisconnect = () => {
+    if (meterFrameId !== null) {
+      cancelAnimationFrame(meterFrameId);
+      meterFrameId = null;
     }
     source.disconnect();
     analyser.disconnect();
-    ctx.close();
-    volumeMonitorDisconnect = null;
+    void ctx.close();
+    meterDisconnect = null;
     delete widget.dataset.silent;
+    barSmoothed.fill(0.15);
   };
 }
 
-function stopVolumeMonitor() {
-  volumeMonitorDisconnect?.();
+function stopMeter() {
+  meterDisconnect?.();
 }
 
 // ---------------------------------------------------------------------------
@@ -727,13 +758,7 @@ async function startRecording() {
       onCaptureStarted: async (stream) => {
         setState("recording");
         widget.dataset.silent = "true";
-        soundVisualizer = continuousVisualizer(stream, meterCanvas, {
-          strokeColor: "#9ef0c9",
-          rectWidth: 3,
-          slices: 20,
-        });
-        soundVisualizer.start();
-        startVolumeMonitor(stream);
+        startMeter(stream);
         logDebug(`capture ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
         // A shortcut may be released while microphone permission/capture starts.
@@ -771,11 +796,8 @@ async function stopRecording() {
   if (state !== "recording") return;
   setState("transcribing");
   startTranscribeTimeout();
-  if (soundVisualizer) {
-    soundVisualizer.stop();
-    soundVisualizer = null;
-  }
-  stopVolumeMonitor();
+  stopMeter();
+  // The loading sweep is CSS-driven; reset to a neutral level underneath it.
   setWaveBarLevels(Array(VOLUME_BAR_COUNT).fill(0.5));
 
   if (pcmAudioContext) {
@@ -811,11 +833,7 @@ function cleanup() {
   logDebug(`cleanup state=${state} session=${currentSessionId ?? "none"}`);
   stopPolling();
   clearTranscribeTimeout();
-  if (soundVisualizer) {
-    soundVisualizer.stop();
-    soundVisualizer = null;
-  }
-  stopVolumeMonitor();
+  stopMeter();
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
   }

@@ -86,7 +86,10 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
         }
         val secrets = SecureApiKeyStore(this)
         val liveBackend = BufferedDictationBackend(
-            recorder = AndroidAudioRecorder(this),
+            recorder = AndroidAudioRecorder(this) { level ->
+                // Deliver live mic levels to the overlay's equalizer on the UI thread.
+                handler.post { if (::overlay.isInitialized) overlay.onAmplitude(level) }
+            },
             client = OpenAiHttpTranscriptionClient(secrets::load),
             background = ExecutorBackgroundRunner(backgroundExecutor),
             callbacks = MainThreadCallbackDispatcher(handler),
