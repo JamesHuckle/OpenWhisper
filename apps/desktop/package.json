@@ -1,7 +1,7 @@
 {
   "name": "openwhisper-desktop",
   "private": true,
-  "version": "0.2.13",
+  "version": "0.2.14",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,7 +18,8 @@
     "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-global-shortcut": "^2.3.1",
     "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.10.0"
+    "@tauri-apps/plugin-updater": "^2.10.0",
+    "sound-visualizer": "^1.4.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.0.0",
