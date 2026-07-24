@@ -20,6 +20,13 @@ the selected IME:
 The control is hidden when no keyboard is visible, focus is not editable, or
 the platform marks a field as password/sensitive.
 
+Some rich-text apps, including OneNote, place their editor in an embedded or
+virtual view hierarchy. Android's direct input-focus lookup can return `null`
+for those hierarchies even while the keyboard is visible. OpenWhisper falls
+back to traversing the interactive application windows for the focused editor
+and also accepts custom editors that expose the platform's set-text action
+without setting the redundant editable flag.
+
 ## Architecture and safety boundaries
 
 - `OpenWhisperAccessibilityService` observes focus and IME windows, owns the

@@ -50,10 +50,19 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         settings = SettingsRepository(this)
-        editorProvider = AccessibilityEditorProvider {
-            findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        }
+        editorProvider = AccessibilityEditorProvider(
+            focusedNode = {
+                findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                    ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            },
+            windowRoots = {
+                windows
+                    .asSequence()
+                    .filter { it.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+                    .mapNotNull(AccessibilityWindowInfo::getRoot)
+                    .toList()
+            },
+        )
         val editorController = EditorSessionController(editorProvider)
         val secrets = SecureApiKeyStore(this)
         val liveBackend = BufferedDictationBackend(

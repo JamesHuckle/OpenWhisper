@@ -10,11 +10,46 @@ import com.openwhisper.android.editor.FocusedEditorProvider
 
 class AccessibilityEditorProvider(
     private val focusedNode: () -> AccessibilityNodeInfo?,
+    private val windowRoots: () -> List<AccessibilityNodeInfo> = { emptyList() },
 ) : FocusedEditorProvider {
     override fun focusedEditor(): EditableNode? {
-        val node = focusedNode() ?: return null
-        if (!node.isEditable || !node.isEnabled || !node.isFocused) return null
+        val node = focusedNode()
+            ?.takeIf(::isUsableEditor)
+            ?: windowRoots()
+                .asSequence()
+                .mapNotNull(::findFocusedEditor)
+                .firstOrNull()
+            ?: return null
         return AccessibilityEditableNode(node)
+    }
+
+    private fun findFocusedEditor(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        return FocusedEditorSearch.find(
+            roots = listOf(root),
+            children = { node ->
+                (0 until node.childCount).mapNotNull(node::getChild)
+            },
+            matches = ::isUsableEditor,
+            maxVisited = MAX_TRAVERSED_NODES,
+        )
+    }
+
+    private fun isUsableEditor(node: AccessibilityNodeInfo): Boolean {
+        val supportsSetText = node.actionList.any {
+            it.id == AccessibilityNodeInfo.ACTION_SET_TEXT
+        }
+        return EditorNodeEligibility.isUsable(
+            isEnabled = node.isEnabled,
+            isInputFocused = node.isFocused,
+            isEditable = node.isEditable,
+            supportsSetText = supportsSetText,
+        )
+    }
+
+    private companion object {
+        // Accessibility trees are expected to be finite, but a defensive limit
+        // keeps a malformed third-party virtual hierarchy off the main thread.
+        const val MAX_TRAVERSED_NODES = 10_000
     }
 }
 
