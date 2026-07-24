@@ -78,6 +78,37 @@ class EditorSessionControllerTest {
         val result = controller.commit(requireNotNull(controller.begin()), " world")
         assertEquals(EditorCommitResult.Unsupported, result)
     }
+
+    @Test
+    fun routesSessionsBackToTheChannelThatCapturedThem() {
+        val accessibility = RecordingSessionPort(
+            EditorSession("accessibility", channel = EditorSessionChannel.Accessibility),
+        )
+        val inputConnection = RecordingSessionPort(
+            EditorSession("input", channel = EditorSessionChannel.InputConnection),
+        )
+        val routing = RoutingEditorSessionPort(inputConnection, accessibility)
+
+        val session = requireNotNull(routing.begin())
+        assertEquals(EditorSessionChannel.InputConnection, session.channel)
+        routing.commit(session, "dictated")
+
+        assertEquals("dictated", inputConnection.transcript)
+        assertNull(accessibility.transcript)
+    }
+}
+
+private class RecordingSessionPort(
+    private val session: EditorSession?,
+) : EditorSessionPort {
+    var transcript: String? = null
+
+    override fun begin(): EditorSession? = session
+
+    override fun commit(session: EditorSession, transcript: String): EditorCommitResult {
+        this.transcript = transcript
+        return EditorCommitResult.Committed
+    }
 }
 
 private class FakeFocusedEditorProvider(var focused: FakeEditableNode?) : FocusedEditorProvider {

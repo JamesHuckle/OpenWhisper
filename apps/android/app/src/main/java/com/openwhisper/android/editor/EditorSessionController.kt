@@ -14,7 +14,13 @@ fun interface FocusedEditorProvider {
 data class EditorSession(
     val stableId: String,
     val snapshot: EditorSnapshot? = null,
+    val channel: EditorSessionChannel = EditorSessionChannel.Accessibility,
 )
+
+enum class EditorSessionChannel {
+    Accessibility,
+    InputConnection,
+}
 
 enum class EditorCommitResult {
     Committed,
@@ -55,4 +61,18 @@ class EditorSessionController(
             is InsertionPlan.Rejected -> EditorCommitResult.Unsupported
         }
     }
+}
+
+class RoutingEditorSessionPort(
+    private val inputConnection: EditorSessionPort,
+    private val accessibility: EditorSessionPort,
+) : EditorSessionPort {
+    override fun begin(): EditorSession? =
+        inputConnection.begin() ?: accessibility.begin()
+
+    override fun commit(session: EditorSession, transcript: String): EditorCommitResult =
+        when (session.channel) {
+            EditorSessionChannel.InputConnection -> inputConnection.commit(session, transcript)
+            EditorSessionChannel.Accessibility -> accessibility.commit(session, transcript)
+        }
 }

@@ -27,6 +27,13 @@ back to traversing the interactive application windows for the focused editor
 and also accepts custom editors that expose the platform's set-text action
 without setting the redundant editable flag.
 
+On Android 13 and newer, OpenWhisper also registers as an accessibility input
+method editor. If a rich-text app provides a real keyboard `InputConnection`
+but no editable accessibility node, OpenWhisper uses that same connection to
+detect the editor and commit only the dictated text at its current selection.
+Password input types remain suppressed, and focus or surrounding-text changes
+during dictation still cancel insertion.
+
 ## Architecture and safety boundaries
 
 - `OpenWhisperAccessibilityService` observes focus and IME windows, owns the

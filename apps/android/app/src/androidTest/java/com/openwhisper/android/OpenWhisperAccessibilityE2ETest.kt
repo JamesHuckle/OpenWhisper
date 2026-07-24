@@ -12,6 +12,7 @@ import android.widget.EditText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.openwhisper.android.demo.DemoTargetActivity
+import com.openwhisper.android.demo.InputConnectionOnlyView
 import com.openwhisper.android.overlay.OverlayKeyGeometry
 import java.io.FileInputStream
 import org.junit.After
@@ -99,10 +100,38 @@ class OpenWhisperAccessibilityE2ETest {
         })
 
         focusEditor(R.id.demo_password)
-        assertTrue("The microphone remained visible over a password editor", eventually(2_000) {
-            findOverlay() == null
-        })
+        assertTrue(
+            "The microphone remained visible over a password editor. ${focusedEditorDebug()}",
+            eventually(2_000) { findOverlay() == null },
+        )
         assertFalse(hasOverlayWindow())
+    }
+
+    @Test
+    fun inputConnectionOnlyEditorShowsMicAndAcceptsDictation() {
+        focusEditor(R.id.demo_input_connection_only)
+
+        var overlay = waitForOverlay()
+        assertNotNull(
+            "The microphone did not appear for an editor hidden from the accessibility tree",
+            overlay,
+        )
+        overlay = requireNotNull(overlay)
+        tap(overlay.centerX, overlay.centerY)
+        SystemClock.sleep(300)
+        overlay = requireNotNull(waitForOverlay())
+        tap(overlay.centerX, overlay.centerY)
+
+        assertTrue("The transcript was not committed through the input connection", eventually(5_000) {
+            editorText(R.id.demo_input_connection_only)
+                .contains("OpenWhisper dictation works perfectly.")
+        })
+
+        focusEditor(R.id.demo_input_connection_password)
+        assertTrue(
+            "The microphone appeared for an input-connection-only password editor",
+            eventually(2_000) { findOverlay() == null },
+        )
     }
 
     @Test
@@ -137,14 +166,19 @@ class OpenWhisperAccessibilityE2ETest {
 
     private fun focusEditor(id: Int) {
         instrumentation.waitForIdleSync()
-        assertTrue("The software keyboard did not become visible", eventually(5_000) {
+        assertTrue("The target editor did not receive input focus", eventually(5_000) {
+            var focused = false
             instrumentation.runOnMainSync {
-                val editor = activity.findViewById<EditText>(id)
+                val editor = activity.findViewById<android.view.View>(id)
                 editor.requestFocus()
-                editor.setSelection(editor.text.length)
+                if (editor is EditText) editor.setSelection(editor.text.length)
+                focused = activity.currentFocus?.id == id
                 activity.getSystemService(InputMethodManager::class.java)
                     .showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT)
             }
+            focused
+        })
+        assertTrue("The software keyboard did not become visible", eventually(5_000) {
             shell("dumpsys window").contains("mImeShowing=true")
         })
     }
@@ -152,9 +186,26 @@ class OpenWhisperAccessibilityE2ETest {
     private fun editorText(id: Int): String {
         var text = ""
         instrumentation.runOnMainSync {
-            text = activity.findViewById<EditText>(id).text.toString()
+            text = when (val editor = activity.findViewById<android.view.View>(id)) {
+                is EditText -> editor.text.toString()
+                is InputConnectionOnlyView -> editor.editorText()
+                else -> ""
+            }
         }
         return text
+    }
+
+    private fun focusedEditorDebug(): String {
+        var description = "No local input focus"
+        instrumentation.runOnMainSync {
+            val focused = activity.currentFocus ?: return@runOnMainSync
+            val node = focused.createAccessibilityNodeInfo()
+            description = "focus=${node.className}, editable=${node.isEditable}, " +
+                "focused=${node.isFocused}, password=${node.isPassword}, " +
+                "inputType=${(focused as? EditText)?.inputType}, " +
+                "transformation=${(focused as? EditText)?.transformationMethod?.javaClass?.name}"
+        }
+        return description
     }
 
     private fun waitForOverlay(): OverlayBounds? {

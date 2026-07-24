@@ -4,9 +4,9 @@ import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
-import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import com.openwhisper.android.R
 
@@ -40,6 +40,14 @@ class DemoTargetActivity : Activity() {
             gravity = android.view.Gravity.TOP
             contentDescription = getString(R.string.safe_dictation_field)
         })
+        content.addView(InputConnectionOnlyView(this).apply {
+            id = R.id.demo_input_connection_only
+        })
+        content.addView(InputConnectionOnlyView(this).apply {
+            id = R.id.demo_input_connection_password
+            editorInputType =
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        })
         content.addView(EditText(this).apply {
             id = R.id.demo_password
             hint = getString(R.string.password_field_hint)
@@ -48,7 +56,7 @@ class DemoTargetActivity : Activity() {
             setPadding(0, dp(24), 0, 0)
         })
 
-        setContentView(content)
+        setContentView(ScrollView(this).apply { addView(content) })
         content.requestFocus()
     }
 

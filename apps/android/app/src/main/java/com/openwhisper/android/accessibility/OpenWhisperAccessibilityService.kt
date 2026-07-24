@@ -1,6 +1,7 @@
 package com.openwhisper.android.accessibility
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.InputMethod
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -15,6 +16,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import androidx.annotation.RequiresApi
 import com.openwhisper.android.MainActivity
 import com.openwhisper.android.audio.AndroidAudioRecorder
 import com.openwhisper.android.dictation.BufferedDictationBackend
@@ -25,6 +27,8 @@ import com.openwhisper.android.dictation.ExecutorBackgroundRunner
 import com.openwhisper.android.dictation.MainThreadCallbackDispatcher
 import com.openwhisper.android.dictation.SelectingDictationBackend
 import com.openwhisper.android.editor.EditorSessionController
+import com.openwhisper.android.editor.InputConnectionEditorSessionController
+import com.openwhisper.android.editor.RoutingEditorSessionPort
 import com.openwhisper.android.overlay.OverlayContext
 import com.openwhisper.android.overlay.OverlayDecision
 import com.openwhisper.android.overlay.OverlayKeyGeometry
@@ -43,6 +47,8 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
     }
     private lateinit var settings: SettingsRepository
     private lateinit var editorProvider: AccessibilityEditorProvider
+    private var accessibilityInputMethod: OpenWhisperInputMethod? = null
+    private var inputConnectionEditor: InputConnectionEditorSessionController? = null
     private lateinit var coordinator: DictationCoordinator
     private lateinit var overlay: DictationOverlayWindow
     private var refreshQueued = false
@@ -63,7 +69,21 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                     .toList()
             },
         )
-        val editorController = EditorSessionController(editorProvider)
+        val accessibilityEditor = EditorSessionController(editorProvider)
+        val editorController = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            InputConnectionEditorSessionController(
+                provider = {
+                    if (editorProvider.focusedEditor() == null) {
+                        accessibilityInputMethod?.currentEditor()
+                    } else {
+                        null
+                    }
+                },
+            ).also { inputConnectionEditor = it }
+                .let { RoutingEditorSessionPort(it, accessibilityEditor) }
+        } else {
+            accessibilityEditor
+        }
         val secrets = SecureApiKeyStore(this)
         val liveBackend = BufferedDictationBackend(
             recorder = AndroidAudioRecorder(this),
@@ -92,6 +112,11 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
         scheduleRefresh(80)
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    override fun onCreateInputMethod(): InputMethod =
+        OpenWhisperInputMethod(this) { scheduleRefresh(0) }
+            .also { accessibilityInputMethod = it }
+
     override fun onInterrupt() {
         if (::coordinator.isInitialized) coordinator.cancel()
         if (::overlay.isInitialized) overlay.hide()
@@ -118,6 +143,11 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
     private fun refreshOverlay() {
         val editor = editorProvider.focusedEditor()
         val snapshot = editor?.snapshot()
+        val inputAvailability = if (editor == null) {
+            inputConnectionEditor?.currentAvailability()
+        } else {
+            null
+        }
         val keyboard = windows
             .firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
             ?.let { window -> Rect().also(window::getBoundsInScreen) }
@@ -127,9 +157,11 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
         val decision = OverlayPolicy().decide(
             OverlayContext(
                 keyboardBounds = keyboard?.toScreenRect(),
-                hasEditableFocus = editor != null,
-                isPassword = snapshot?.isPassword == true,
-                isSensitive = snapshot?.isSensitive == true,
+                hasEditableFocus = editor != null || inputAvailability != null,
+                isPassword = snapshot?.isPassword == true ||
+                    inputAvailability?.isPassword == true,
+                isSensitive = snapshot?.isSensitive == true ||
+                    inputAvailability?.isSensitive == true,
                 displayBounds = display.toScreenRect(),
                 controlWidthPx = overlay.controlWidthPx,
                 controlHeightPx = overlay.controlHeightPx,
