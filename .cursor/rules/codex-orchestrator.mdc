@@ -1,14 +1,28 @@
 ---
-description: Prefer authenticated Codex CLI delegation for substantial work while allowing Cursor to handle routine tasks
+description: Cursor builds in-situ by default; Codex wrapper is opt-in only
 globs:
 alwaysApply: true
 ---
 
-# Codex delegation contract
+# Cursor-native build contract
 
-You are a full Cursor coding agent with all normal tools available. Use your own
-tools directly for routine work, but strongly prefer delegating substantial work
-to Codex through the platform-appropriate checked wrapper:
+You are a full Cursor coding agent. **Edit files in this workspace directly**
+with your normal tools (Read, Write, StrReplace, Shell, etc.). That is the
+default path for almost all work — including substantial multi-file changes.
+
+Do **not** delegate to Codex unless the user explicitly asks (e.g. says
+"delegate to Codex", "use Codex", or runs `/delegate-to-codex`).
+
+## Why
+
+The Codex A2A wrapper is optional: no live IDE patch stream (disk writes are
+still incremental). Prefer Cursor-native edits so the user can watch patches
+land in the editor. The wrapper pins a model + static catalog so long runs are
+not killed by models-cache refresh FD leaks.
+
+## When the user explicitly asks for Codex
+
+Use only the checked wrapper — never bare `codex` / `npx codex`:
 
 ```powershell
 & .\scripts\invoke-codex-agent.ps1 -Task '<complete task and acceptance criteria>'
@@ -18,40 +32,15 @@ to Codex through the platform-appropriate checked wrapper:
 bash ./scripts/invoke-codex-agent.sh --task '<complete task and acceptance criteria>'
 ```
 
-Use PowerShell only in a native Windows Cursor window. Use Bash only when Cursor
-is connected to WSL/Remote Linux. Determine the environment from the active
-terminal; never cross the Windows/WSL boundary to launch the other wrapper.
+Use PowerShell only in a native Windows Cursor window; Bash only in WSL/Remote
+Linux. Never cross that boundary. Never run two write delegations concurrently.
+Never nest delegation.
 
-Delegate when the task involves architecture or implementation planning,
-difficult debugging, multi-file or high-risk changes, unfamiliar subsystems,
-deep code review, broad refactoring, test strategy, or work likely to benefit
-from sustained reasoning. Prefer giving Codex the bulk of those tasks rather
-than merely asking it a token question.
+If the wrapper blocks or fails, report the concrete failure and **continue the
+task yourself in Cursor** unless the user insists on Codex only.
 
-Cursor may directly read, search, edit, delete, run commands, fix a localized
-issue, apply an obvious small patch, format code, or perform quick verification.
-Do not delegate when the coordination overhead is larger than the work.
+## After an explicit Codex run
 
-Do not invoke `codex`, `codex.exe`, `npx ... codex`, or another Codex launcher
-directly; delegated work must use the checked wrapper.
-
-The delegated task must be self-contained. Include the requested outcome,
-constraints, relevant paths, existing dirty-worktree warning, and the tests or
-checks that establish completion. Tell Codex to preserve unrelated user changes.
-
-After delegation finishes:
-
-1. Inspect `git diff` and the wrapper's final report.
-2. Run proportionate verification yourself.
-3. If a substantial correction is required, delegate a follow-up through the
-   same wrapper. Apply small, obvious corrections directly when faster.
-4. Summarize the actual edits and verification to the user.
-
-For read-only questions, either answer after inspection or delegate with
-`-ReadOnly` (PowerShell) or `--read-only` (Bash). Never run two write
-delegations concurrently in one worktree.
-Never ask Codex to invoke Cursor or this wrapper; nested delegation is forbidden.
-
-If the wrapper blocks or fails, report the concrete failure. Continue directly
-only when the remaining work is routine and safe; never bypass the wrapper to
-launch Codex directly.
+1. Inspect `git diff` and the wrapper report.
+2. Verify proportionately yourself.
+3. Apply small fixes directly in Cursor when faster.

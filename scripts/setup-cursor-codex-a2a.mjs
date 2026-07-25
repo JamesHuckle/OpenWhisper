@@ -42,7 +42,8 @@ const required = [
   ".cursor/codex-a2a-user-rule.txt",
   ".cursor/commands/delegate-to-codex.md",
   "scripts/invoke-codex-agent.ps1",
-  "scripts/invoke-codex-agent.sh"
+  "scripts/invoke-codex-agent.sh",
+  "scripts/prepare-codex-static-catalog.mjs"
 ];
 
 const run = (command, commandArgs, options = {}) => {

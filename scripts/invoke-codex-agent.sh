@@ -3,7 +3,7 @@ set -euo pipefail
 
 task=""
 read_only=0
-model=""
+model="${CURSOR_CODEX_MODEL:-gpt-5.6-sol}"
 
 while (($#)); do
   case "$1" in
@@ -33,21 +33,22 @@ while (($#)); do
 done
 
 [[ -n "$task" ]] || { echo "--task is required" >&2; exit 2; }
-[[ -z "${OPENWHISPER_CODEX_A2A_DEPTH:-}" ]] || {
-  echo "Nested agent delegation is forbidden (OPENWHISPER_CODEX_A2A_DEPTH is already set)." >&2
+[[ -z "${CURSOR_CODEX_A2A_DEPTH:-}" ]] || {
+  echo "Nested agent delegation is forbidden (CURSOR_CODEX_A2A_DEPTH is already set)." >&2
   exit 3
 }
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd -- "$script_dir/.." && pwd -P)
 git_dir=$(git -C "$repo_root" rev-parse --absolute-git-dir 2>/dev/null) || {
-  echo "The A2A wrapper must run inside the OpenWhisper Git worktree." >&2
+  echo "The A2A wrapper must run inside a Git worktree." >&2
   exit 4
 }
 
 # mkdir is atomic on both Linux filesystems and /mnt/c, and conflicts with the
 # same path used by the Windows FileMode.CreateNew lock.
-lock_path="$git_dir/openwhisper-codex-a2a.lock"
+lock_path="$git_dir/cursor-codex-a2a.lock"
+state_dir="$git_dir/cursor-codex-a2a"
 if ! mkdir -- "$lock_path" 2>/dev/null; then
   echo "Another Codex delegation is active, or a stale lock exists at $lock_path." >&2
   echo "Verify no Codex task is running before removing the stale lock." >&2
@@ -61,6 +62,18 @@ command -v codex >/dev/null 2>&1 || {
   echo "codex is not installed in this WSL distribution or is not on PATH." >&2
   exit 6
 }
+command -v node >/dev/null 2>&1 || {
+  echo "node is required to prepare the static Codex model catalog." >&2
+  exit 7
+}
+
+mkdir -p -- "$state_dir"
+catalog_path="$state_dir/model-catalog.json"
+node "$script_dir/prepare-codex-static-catalog.mjs" "$catalog_path" "$model" >/dev/null
+[[ -f "$catalog_path" ]] || {
+  echo "Failed to prepare static Codex model catalog at $catalog_path." >&2
+  exit 8
+}
 
 status=$(git -C "$repo_root" status --short)
 [[ -n "$status" ]] || status="(clean)"
@@ -68,7 +81,7 @@ sandbox="workspace-write"
 ((read_only)) && sandbox="read-only"
 
 prompt=$(cat <<EOF
-You are the sole implementation agent for this OpenWhisper task.
+You are the sole implementation agent for this task.
 
 TASK
 $task
@@ -86,10 +99,18 @@ $status
 EOF
 )
 
-args=(exec --cd "$repo_root" --sandbox "$sandbox" --color never)
-[[ -z "$model" ]] || args+=(--model "$model")
-args+=(-)
+# Static catalog => StaticModelsManager; skip refresh-child FD leaks that kill
+# long-running exec when models_cache TTL/schema skew forces cold refresh.
+args=(
+  exec
+  --cd "$repo_root"
+  --sandbox "$sandbox"
+  --color never
+  --model "$model"
+  --disable remote_models
+  -c "model_catalog_json=\"$catalog_path\""
+  -
+)
 
-export OPENWHISPER_CODEX_A2A_DEPTH=1
+export CURSOR_CODEX_A2A_DEPTH=1
 printf '%s\n' "$prompt" | codex "${args[@]}"
-
