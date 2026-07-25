@@ -1,9 +1,12 @@
 mod worker_client;
 
 use anyhow::{anyhow, Result};
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,9 +19,11 @@ use tauri::{
 };
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 use worker_client::WorkerClient;
 
 const SECONDARY_MONITOR_VERTICAL_OFFSET_LOGICAL: f64 = 2.0;
+const RECORDING_RETENTION_COUNT: usize = 10;
 
 fn overlay_bottom_anchor(monitor_bottom: i32, work_bottom: i32, is_primary: bool, dpi: u32) -> i32 {
     const BOTTOM_MARGIN: i32 = 10;
@@ -1032,6 +1037,271 @@ struct SessionStartResponse {
     session_id: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RecordingMetadata {
+    id: String,
+    created_at_ms: u128,
+    name: String,
+    source: String,
+    mime_type: String,
+    file_name: String,
+    status: String,
+    bytes: u64,
+    transcript: String,
+    error: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordingStartResponse {
+    id: String,
+}
+
+fn recordings_root(app_handle: &AppHandle) -> Result<PathBuf> {
+    let mut root = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| anyhow!("Failed to resolve app data directory: {e}"))?;
+    root.push("recordings");
+    Ok(root)
+}
+
+fn recording_metadata_path(root: &std::path::Path, id: &str) -> PathBuf {
+    root.join(id).join("metadata.json")
+}
+
+fn read_recording_metadata(root: &std::path::Path, id: &str) -> Result<RecordingMetadata> {
+    let raw = fs::read_to_string(recording_metadata_path(root, id))?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+fn write_recording_metadata(root: &std::path::Path, metadata: &RecordingMetadata) -> Result<()> {
+    let path = recording_metadata_path(root, &metadata.id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(metadata)?)?;
+    Ok(())
+}
+
+fn list_recording_metadata(root: &std::path::Path) -> Result<Vec<RecordingMetadata>> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut recordings = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if let Ok(metadata) = read_recording_metadata(root, &entry.file_name().to_string_lossy()) {
+            recordings.push(metadata);
+        }
+    }
+    recordings.sort_by(|left, right| right.created_at_ms.cmp(&left.created_at_ms));
+    Ok(recordings)
+}
+
+fn prune_recordings(root: &std::path::Path, keep: usize) -> Result<()> {
+    for recording in list_recording_metadata(root)?.into_iter().skip(keep) {
+        let path = root.join(recording.id);
+        if path.starts_with(root) {
+            fs::remove_dir_all(path)?;
+        }
+    }
+    Ok(())
+}
+
+fn wav_header(pcm_bytes: u32, sample_rate: u32) -> [u8; 44] {
+    let mut header = [0_u8; 44];
+    header[0..4].copy_from_slice(b"RIFF");
+    header[4..8].copy_from_slice(&(36_u32.saturating_add(pcm_bytes)).to_le_bytes());
+    header[8..12].copy_from_slice(b"WAVE");
+    header[12..16].copy_from_slice(b"fmt ");
+    header[16..20].copy_from_slice(&16_u32.to_le_bytes());
+    header[20..22].copy_from_slice(&1_u16.to_le_bytes());
+    header[22..24].copy_from_slice(&1_u16.to_le_bytes());
+    header[24..28].copy_from_slice(&sample_rate.to_le_bytes());
+    header[28..32].copy_from_slice(&(sample_rate.saturating_mul(2)).to_le_bytes());
+    header[32..34].copy_from_slice(&2_u16.to_le_bytes());
+    header[34..36].copy_from_slice(&16_u16.to_le_bytes());
+    header[36..40].copy_from_slice(b"data");
+    header[40..44].copy_from_slice(&pcm_bytes.to_le_bytes());
+    header
+}
+
+fn append_pcm_chunk(
+    root: &std::path::Path,
+    recording_id: &str,
+    chunk: &[u8],
+    sample_rate: u32,
+) -> Result<()> {
+    let mut metadata = read_recording_metadata(root, recording_id)?;
+    let path = root.join(recording_id).join(&metadata.file_name);
+    let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
+    file.seek(SeekFrom::End(0))?;
+    file.write_all(chunk)?;
+    let pcm_bytes = file
+        .metadata()?
+        .len()
+        .saturating_sub(44)
+        .min(u32::MAX as u64) as u32;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&wav_header(pcm_bytes, sample_rate))?;
+    file.flush()?;
+    metadata.bytes = pcm_bytes as u64 + 44;
+    write_recording_metadata(root, &metadata)?;
+    Ok(())
+}
+
+fn safe_extension(name: &str, mime_type: &str) -> &'static str {
+    let lowercase = name.to_ascii_lowercase();
+    if lowercase.ends_with(".wav") || mime_type.contains("wav") {
+        "wav"
+    } else if lowercase.ends_with(".mp3") || mime_type.contains("mpeg") {
+        "mp3"
+    } else if lowercase.ends_with(".m4a") || mime_type.contains("m4a") {
+        "m4a"
+    } else if lowercase.ends_with(".mp4") || mime_type.contains("mp4") {
+        "mp4"
+    } else if lowercase.ends_with(".ogg") || mime_type.contains("ogg") {
+        "ogg"
+    } else {
+        "webm"
+    }
+}
+
+#[tauri::command]
+fn recording_begin(
+    app_handle: AppHandle,
+    source: String,
+    name: String,
+) -> Result<RecordingStartResponse, String> {
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let dir = root.join(&id);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("audio.wav"), wav_header(0, 24_000)).map_err(|e| e.to_string())?;
+    let metadata = RecordingMetadata {
+        id: id.clone(),
+        created_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0),
+        name,
+        source,
+        mime_type: "audio/wav".to_string(),
+        file_name: "audio.wav".to_string(),
+        status: "recording".to_string(),
+        bytes: 44,
+        transcript: String::new(),
+        error: String::new(),
+    };
+    write_recording_metadata(&root, &metadata).map_err(|e| e.to_string())?;
+    prune_recordings(&root, RECORDING_RETENTION_COUNT).map_err(|e| e.to_string())?;
+    Ok(RecordingStartResponse { id })
+}
+
+#[tauri::command]
+fn recording_append_chunk(
+    app_handle: AppHandle,
+    recording_id: String,
+    chunk_base64: String,
+) -> Result<(), String> {
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let chunk = base64::engine::general_purpose::STANDARD
+        .decode(chunk_base64)
+        .map_err(|e| format!("Invalid audio chunk: {e}"))?;
+    append_pcm_chunk(&root, &recording_id, &chunk, 24_000).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn recording_import(
+    app_handle: AppHandle,
+    name: String,
+    mime_type: String,
+    file_base64: String,
+) -> Result<RecordingStartResponse, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(file_base64)
+        .map_err(|e| format!("Could not read imported audio: {e}"))?;
+    if bytes.is_empty() {
+        return Err("The selected audio file is empty".to_string());
+    }
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let id = Uuid::new_v4().to_string();
+    let extension = safe_extension(&name, &mime_type);
+    let file_name = format!("audio.{extension}");
+    let dir = root.join(&id);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join(&file_name), &bytes).map_err(|e| e.to_string())?;
+    let metadata = RecordingMetadata {
+        id: id.clone(),
+        created_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0),
+        name,
+        source: "import".to_string(),
+        mime_type,
+        file_name,
+        status: "saved".to_string(),
+        bytes: bytes.len() as u64,
+        transcript: String::new(),
+        error: String::new(),
+    };
+    write_recording_metadata(&root, &metadata).map_err(|e| e.to_string())?;
+    prune_recordings(&root, RECORDING_RETENTION_COUNT).map_err(|e| e.to_string())?;
+    Ok(RecordingStartResponse { id })
+}
+
+#[tauri::command]
+fn recording_finish(
+    app_handle: AppHandle,
+    recording_id: String,
+    status: String,
+    transcript: String,
+    error: String,
+) -> Result<(), String> {
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let mut metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
+    metadata.status = status;
+    metadata.transcript = transcript;
+    metadata.error = error;
+    write_recording_metadata(&root, &metadata).map_err(|e| e.to_string())?;
+    prune_recordings(&root, RECORDING_RETENTION_COUNT).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn recording_list(app_handle: AppHandle) -> Result<Vec<RecordingMetadata>, String> {
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    list_recording_metadata(&root).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn recording_open(app_handle: AppHandle, recording_id: String) -> Result<(), String> {
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
+    let audio_path = root.join(recording_id).join(metadata.file_name);
+    app_handle
+        .opener()
+        .open_path(audio_path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn recordings_open_folder(app_handle: AppHandle) -> Result<(), String> {
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    app_handle
+        .opener()
+        .open_path(root.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 fn debug_log_line(source: &str, message: &str) {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1313,6 +1583,13 @@ async fn paste_to_target(text: String) -> Result<(), String> {
     text_inserter::restore_and_paste();
 
     Ok(())
+}
+
+#[tauri::command]
+fn copy_to_clipboard(text: String) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text(text))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1718,10 +1995,18 @@ pub fn run() {
             worker_poll_session_events,
             worker_append_audio_chunk,
             worker_finalize_session_audio,
+            recording_begin,
+            recording_append_chunk,
+            recording_import,
+            recording_finish,
+            recording_list,
+            recording_open,
+            recordings_open_folder,
             debug_log,
             get_foreground_app,
             open_api_keys_page,
             capture_paste_target,
+            copy_to_clipboard,
             paste_to_target,
             replace_streamed_target,
             overlay_apply_layout
@@ -1741,6 +2026,76 @@ mod tests {
             bottom_y,
             dpi,
         }
+    }
+
+    #[test]
+    fn recording_store_keeps_ten_readable_wavs() {
+        let root = std::env::temp_dir().join(format!("openwhisper-store-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..12_u128 {
+            let id = format!("recording-{index}");
+            let directory = root.join(&id);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("audio.wav"), wav_header(0, 24_000)).unwrap();
+            write_recording_metadata(
+                &root,
+                &RecordingMetadata {
+                    id: id.clone(),
+                    created_at_ms: index,
+                    name: format!("Recording {index}"),
+                    source: "microphone".to_string(),
+                    mime_type: "audio/wav".to_string(),
+                    file_name: "audio.wav".to_string(),
+                    status: "saved".to_string(),
+                    bytes: 44,
+                    transcript: String::new(),
+                    error: String::new(),
+                },
+            )
+            .unwrap();
+        }
+
+        prune_recordings(&root, RECORDING_RETENTION_COUNT).unwrap();
+        let retained = list_recording_metadata(&root).unwrap();
+        assert_eq!(retained.len(), RECORDING_RETENTION_COUNT);
+        assert_eq!(retained.first().unwrap().id, "recording-11");
+        assert_eq!(retained.last().unwrap().id, "recording-2");
+        for recording in retained {
+            let path = root.join(recording.id).join(recording.file_name);
+            assert_eq!(&fs::read(path).unwrap()[0..4], b"RIFF");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn appended_backup_is_immediately_a_valid_wav() {
+        let root = std::env::temp_dir().join(format!("openwhisper-wav-test-{}", Uuid::new_v4()));
+        let id = "active";
+        fs::create_dir_all(root.join(id)).unwrap();
+        fs::write(root.join(id).join("audio.wav"), wav_header(0, 24_000)).unwrap();
+        write_recording_metadata(
+            &root,
+            &RecordingMetadata {
+                id: id.to_string(),
+                created_at_ms: 1,
+                name: "Active".to_string(),
+                source: "microphone".to_string(),
+                mime_type: "audio/wav".to_string(),
+                file_name: "audio.wav".to_string(),
+                status: "recording".to_string(),
+                bytes: 44,
+                transcript: String::new(),
+                error: String::new(),
+            },
+        )
+        .unwrap();
+
+        append_pcm_chunk(&root, id, &[1, 2, 3, 4], 24_000).unwrap();
+        let wav = fs::read(root.join(id).join("audio.wav")).unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
+        assert_eq!(&wav[44..], &[1, 2, 3, 4]);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

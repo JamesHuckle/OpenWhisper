@@ -6,7 +6,11 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import java.io.ByteArrayOutputStream
+import com.openwhisper.android.recordings.PcmRecording
+import com.openwhisper.android.recordings.PcmRecordingWriter
+import com.openwhisper.android.recordings.RecordingStore
+import java.text.DateFormat
+import java.util.Date
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlin.math.min
@@ -19,12 +23,13 @@ import kotlin.math.sqrt
  */
 class AndroidAudioRecorder(
     private val context: Context,
+    private val recordingStore: RecordingStore,
     private val onAmplitude: ((Float) -> Unit)? = null,
 ) : PcmRecorder {
     private val recording = AtomicBoolean(false)
     private var audioRecord: AudioRecord? = null
     private var readThread: Thread? = null
-    private var output: ByteArrayOutputStream? = null
+    private var output: PcmRecordingWriter? = null
     @Volatile
     private var readFailure: String? = null
 
@@ -58,7 +63,10 @@ class AndroidAudioRecorder(
             throw IllegalStateException("Microphone could not be initialized")
         }
 
-        val sink = ByteArrayOutputStream()
+        val sink = recordingStore.beginPcm(
+            "Recording ${DateFormat.getDateTimeInstance().format(Date())}",
+            SAMPLE_RATE,
+        )
         audioRecord = recorder
         output = sink
         readFailure = null
@@ -70,6 +78,7 @@ class AndroidAudioRecorder(
             audioRecord = null
             output = null
             recorder.release()
+            runCatching { sink.finish("capture_failed") }
             throw error
         }
 
@@ -82,9 +91,10 @@ class AndroidAudioRecorder(
     override fun stop(): PcmRecording {
         val recorder: AudioRecord
         val thread: Thread?
-        val sink: ByteArrayOutputStream
+        val sink: PcmRecordingWriter
         synchronized(this) {
-            check(recording.getAndSet(false)) { "Microphone was not recording" }
+            val wasRecording = recording.getAndSet(false)
+            check(wasRecording || readFailure != null) { "Microphone was not recording" }
             recorder = requireNotNull(audioRecord)
             thread = readThread
             sink = requireNotNull(output)
@@ -97,34 +107,38 @@ class AndroidAudioRecorder(
             readThread = null
             output = null
         }
-        readFailure?.let { throw IllegalStateException(it) }
-        return PcmRecording(synchronized(sink) { sink.toByteArray() }, SAMPLE_RATE)
+        val recording = sink.finish(if (readFailure == null) "saved" else "capture_failed")
+        readFailure?.let { throw IllegalStateException("$it. Raw audio was saved in OpenWhisper.") }
+        return recording
     }
 
     override fun cancel() {
         val recorder: AudioRecord?
         val thread: Thread?
+        val sink: PcmRecordingWriter?
         synchronized(this) {
             recording.set(false)
             recorder = audioRecord
             thread = readThread
             audioRecord = null
             readThread = null
+            sink = output
             output = null
         }
         runCatching { recorder?.stop() }
         thread?.join(1_000)
         recorder?.release()
+        runCatching { sink?.finish("cancelled") }
     }
 
-    private fun readLoop(recorder: AudioRecord, sink: ByteArrayOutputStream, bufferSize: Int) {
+    private fun readLoop(recorder: AudioRecord, sink: PcmRecordingWriter, bufferSize: Int) {
         val buffer = ByteArray(bufferSize)
         // Read in short windows so the live meter updates ~16×/second.
         val readLength = min(buffer.size, AMPLITUDE_WINDOW_BYTES)
         while (recording.get()) {
             val count = recorder.read(buffer, 0, readLength, AudioRecord.READ_BLOCKING)
             if (count > 0) {
-                synchronized(sink) { sink.write(buffer, 0, count) }
+                sink.write(buffer, count)
                 emitAmplitude(buffer, count)
             } else {
                 audioReadFailure(count, recording.get())?.let { failure ->

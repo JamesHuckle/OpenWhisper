@@ -6,23 +6,26 @@ import os
 import re
 import sys
 import threading
+import wave
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from httpx import Timeout
 from openai import OpenAI
 
-# Streaming: bail after 5s with no data (first token or between events)
-_STREAM_TIMEOUT = Timeout(connect=10.0, read=5.0, write=30.0, pool=10.0)
-# Blocking: full response arrives in one shot, needs more headroom
-_BLOCKING_TIMEOUT = Timeout(connect=10.0, read=15.0, write=30.0, pool=10.0)
-_POLISH_TIMEOUT = Timeout(connect=10.0, read=15.0, write=10.0, pool=10.0)
+# Long recordings can legitimately take many minutes to upload and transcribe.
+_STREAM_TIMEOUT = Timeout(connect=30.0, read=1800.0, write=600.0, pool=30.0)
+_BLOCKING_TIMEOUT = Timeout(connect=30.0, read=1800.0, write=600.0, pool=30.0)
+_POLISH_TIMEOUT = Timeout(connect=30.0, read=300.0, write=120.0, pool=30.0)
 _MIN_SENTENCES_PER_POLISH_CHUNK = 4
 _MAX_PARALLEL_POLISH_CHUNKS = 5
+_MAX_POLISH_CHUNK_CHARS = 12_000
+_MAX_AUDIO_UPLOAD_BYTES = 24 * 1024 * 1024
 _REALTIME_TRANSCRIBE_ALIAS = "gpt-realtime-transcribe"
 _REALTIME_TRANSCRIBE_MODEL = "gpt-realtime-whisper"
-_REALTIME_FINAL_TIMEOUT_SECONDS = 20.0
+_REALTIME_FINAL_TIMEOUT_SECONDS = 120.0
 
 _STREAMING_MODELS = frozenset({
     "gpt-4o-transcribe",
@@ -291,25 +294,25 @@ class OpenWhisperOpenAI:
     @staticmethod
     def _chunk_for_polish(text: str) -> list[str]:
         sentences = OpenWhisperOpenAI._split_sentences(text)
-        if len(sentences) <= _MIN_SENTENCES_PER_POLISH_CHUNK:
+        if (
+            len(sentences) <= _MIN_SENTENCES_PER_POLISH_CHUNK
+            and len(text) <= _MAX_POLISH_CHUNK_CHARS
+        ):
             return [text]
 
-        chunk_count = min(
-            _MAX_PARALLEL_POLISH_CHUNKS,
-            max(1, len(sentences) // _MIN_SENTENCES_PER_POLISH_CHUNK),
-        )
-        if chunk_count == 1:
-            return [text]
-
-        base_size, remainder = divmod(len(sentences), chunk_count)
         chunks: list[str] = []
-        cursor = 0
-        for idx in range(chunk_count):
-            size = base_size + (1 if idx < remainder else 0)
-            chunk = " ".join(sentences[cursor : cursor + size]).strip()
-            if chunk:
-                chunks.append(chunk)
-            cursor += size
+        current: list[str] = []
+        current_chars = 0
+        for sentence in sentences:
+            added_chars = len(sentence) + (1 if current else 0)
+            if current and current_chars + added_chars > _MAX_POLISH_CHUNK_CHARS:
+                chunks.append(" ".join(current))
+                current = []
+                current_chars = 0
+            current.append(sentence)
+            current_chars += len(sentence) + (1 if len(current) > 1 else 0)
+        if current:
+            chunks.append(" ".join(current))
         return chunks or [text]
 
     @staticmethod
@@ -350,6 +353,138 @@ class OpenWhisperOpenAI:
         if self._model in _STREAMING_MODELS:
             return self._transcribe_streaming(client, audio_file, effective_prompt)
         return self._transcribe_blocking(client, audio_file, effective_prompt)
+
+    def transcribe_file(
+        self,
+        path: str | Path,
+        mime_type: str,
+        prompt: str = "",
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> str:
+        audio_path = Path(path)
+        if not audio_path.exists() or audio_path.stat().st_size == 0:
+            raise RuntimeError("No audio bytes provided")
+
+        if mime_type.startswith("audio/pcm"):
+            sample_rate = self._sample_rate_from_mime(mime_type)
+            return self._transcribe_pcm_file(
+                audio_path,
+                sample_rate,
+                prompt,
+                on_progress,
+            )
+
+        size = audio_path.stat().st_size
+        if mime_type in {"audio/wav", "audio/x-wav"} and size > _MAX_AUDIO_UPLOAD_BYTES:
+            return self._transcribe_wav_file(audio_path, prompt, on_progress)
+        if size > _MAX_AUDIO_UPLOAD_BYTES:
+            raise RuntimeError(
+                "This compressed audio file is larger than 24 MB. "
+                "Convert it to a smaller MP3/M4A or split it before importing."
+            )
+        return self.transcribe_bytes(audio_path.read_bytes(), mime_type, prompt)
+
+    def _transcribe_wav_file(
+        self,
+        path: Path,
+        prompt: str,
+        on_progress: Callable[[int, int], None] | None,
+    ) -> str:
+        with wave.open(str(path), "rb") as source:
+            channels = source.getnchannels()
+            sample_width = source.getsampwidth()
+            sample_rate = source.getframerate()
+            total_frames = source.getnframes()
+            frame_bytes = channels * sample_width
+            if channels <= 0 or sample_width <= 0 or sample_rate <= 0:
+                raise RuntimeError("The WAV file has an invalid audio format")
+            frames_per_chunk = max(1, (_MAX_AUDIO_UPLOAD_BYTES - 128) // frame_bytes)
+            total_chunks = max(1, (total_frames + frames_per_chunk - 1) // frames_per_chunk)
+            transcripts: list[str] = []
+            for chunk_index in range(total_chunks):
+                frames = source.readframes(frames_per_chunk)
+                if not frames:
+                    break
+                if on_progress:
+                    on_progress(chunk_index + 1, total_chunks)
+                contextual_prompt = prompt
+                if transcripts:
+                    contextual_prompt = (
+                        f"{prompt}\nPrevious segment transcript: {transcripts[-1][-1200:]}"
+                    ).strip()
+                wav = self._audio_frames_to_wav(
+                    frames,
+                    channels,
+                    sample_width,
+                    sample_rate,
+                )
+                transcripts.append(
+                    self.transcribe_bytes(wav, "audio/wav", contextual_prompt).strip()
+                )
+        return " ".join(part for part in transcripts if part).strip()
+
+    def _transcribe_pcm_file(
+        self,
+        path: Path,
+        sample_rate: int,
+        prompt: str,
+        on_progress: Callable[[int, int], None] | None,
+    ) -> str:
+        bytes_per_frame = 2
+        max_pcm_bytes = _MAX_AUDIO_UPLOAD_BYTES - 44
+        max_pcm_bytes -= max_pcm_bytes % bytes_per_frame
+        total_bytes = path.stat().st_size
+        total_chunks = max(1, (total_bytes + max_pcm_bytes - 1) // max_pcm_bytes)
+        transcripts: list[str] = []
+
+        with path.open("rb") as source:
+            for chunk_index in range(total_chunks):
+                pcm = source.read(max_pcm_bytes)
+                if not pcm:
+                    break
+                if on_progress:
+                    on_progress(chunk_index + 1, total_chunks)
+                contextual_prompt = prompt
+                if transcripts:
+                    previous_tail = transcripts[-1][-1200:]
+                    contextual_prompt = (
+                        f"{prompt}\nPrevious segment transcript: {previous_tail}"
+                    ).strip()
+                wav = self._pcm_to_wav(pcm, sample_rate)
+                transcripts.append(
+                    self.transcribe_bytes(wav, "audio/wav", contextual_prompt).strip()
+                )
+
+        return " ".join(part for part in transcripts if part).strip()
+
+    @staticmethod
+    def _pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
+        return OpenWhisperOpenAI._audio_frames_to_wav(pcm, 1, 2, sample_rate)
+
+    @staticmethod
+    def _audio_frames_to_wav(
+        frames: bytes,
+        channels: int,
+        sample_width: int,
+        sample_rate: int,
+    ) -> bytes:
+        output = io.BytesIO()
+        with wave.open(output, "wb") as wav:
+            wav.setnchannels(channels)
+            wav.setsampwidth(sample_width)
+            wav.setframerate(sample_rate)
+            wav.writeframes(frames)
+        return output.getvalue()
+
+    @staticmethod
+    def _sample_rate_from_mime(mime_type: str) -> int:
+        match = re.search(r"(?:rate|samplerate)=(\d+)", mime_type, re.IGNORECASE)
+        if not match:
+            raise RuntimeError("PCM audio is missing its sample rate")
+        sample_rate = int(match.group(1))
+        if sample_rate <= 0:
+            raise RuntimeError("PCM audio has an invalid sample rate")
+        return sample_rate
 
     def _transcribe_streaming(
         self, client: OpenAI, audio_file: io.BytesIO, prompt: str
@@ -393,8 +528,11 @@ class OpenWhisperOpenAI:
         mime_map = {
             "audio/webm": ".webm",
             "audio/wav": ".wav",
+            "audio/x-wav": ".wav",
             "audio/mpeg": ".mp3",
+            "audio/mp3": ".mp3",
             "audio/mp4": ".m4a",
+            "audio/x-m4a": ".m4a",
             "audio/ogg": ".ogg",
         }
         return mime_map.get(mime_type, ".webm")

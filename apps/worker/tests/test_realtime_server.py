@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import unittest
+from unittest.mock import patch
 
 from openwhisper_worker.protocol import WorkerRequest
 from openwhisper_worker.server import WorkerServer
@@ -18,6 +19,7 @@ class FakeRealtimeStream:
         self.on_delta("hello")
 
     def finalize(self) -> str:
+        self.closed = True
         return "hello world"
 
     def close(self) -> None:
@@ -29,9 +31,11 @@ class FakeRealtimeOpenAI:
 
     def __init__(self) -> None:
         self.stream: FakeRealtimeStream | None = None
+        self.streams: list[FakeRealtimeStream] = []
 
     def start_realtime_transcription(self, on_delta) -> FakeRealtimeStream:
         self.stream = FakeRealtimeStream(on_delta)
+        self.streams.append(self.stream)
         return self.stream
 
     def polish(self, text: str, _prompt: str) -> str:
@@ -83,6 +87,36 @@ class RealtimeWorkerServerTests(unittest.TestCase):
             final_event.result["events"], [{"type": "final", "text": "hello world"}]
         )
         self.assertTrue(final_event.result["done"])
+
+    def test_long_realtime_audio_rotates_and_stitches_sessions(self) -> None:
+        started = self.server.handle(request("start_session", refine_enabled=False))
+        session_id = started.result["session_id"]
+        with patch("openwhisper_worker.server._REALTIME_ROTATE_BYTES", 4):
+            self.server.handle(
+                request(
+                    "append_audio_chunk",
+                    session_id=session_id,
+                    chunk_base64=base64.b64encode(b"\x01\x02\x03\x04").decode("ascii"),
+                )
+            )
+            self.server.handle(
+                request(
+                    "append_audio_chunk",
+                    session_id=session_id,
+                    chunk_base64=base64.b64encode(b"\x05\x06").decode("ascii"),
+                )
+            )
+
+        self.assertEqual(len(self.fake_openai.streams), 2)
+        self.assertTrue(self.fake_openai.streams[0].closed)
+        finalized = self.server.handle(
+            request(
+                "finalize_session_audio",
+                session_id=session_id,
+                mime_type="audio/pcm;rate=24000",
+            )
+        )
+        self.assertEqual(finalized.result["final_text"], "hello world hello world")
 
 
 if __name__ == "__main__":

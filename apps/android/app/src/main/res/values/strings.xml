@@ -14,6 +14,17 @@
     <string name="demo_mode">Deterministic demo transcription</string>
     <string name="demo_mode_explanation">Demo mode uses no microphone, network, or API key. Turn it off to use live OpenAI transcription.</string>
     <string name="open_demo">Open end-to-end test screen</string>
+    <string name="audio_and_recovery">Audio files and recovery</string>
+    <string name="transcribe_audio_file">Transcribe an audio file</string>
+    <string name="saving_audio">Saving a local copy before transcription…</string>
+    <string name="no_saved_recordings">No saved recordings yet. OpenWhisper keeps the latest 10.</string>
+    <string name="saved_recording_format">%1$s\n%2$s | %3$s | tap to view raw audio</string>
+    <string name="open_raw_recording">Open raw recording: %1$s</string>
+    <string name="transcription_complete">Transcription complete</string>
+    <string name="copy_transcript">Copy transcript</string>
+    <string name="view_raw_audio">View raw audio</string>
+    <string name="transcription_failed">Transcription failed</string>
+    <string name="transcription_failed_saved">%1$s\n\nThe original audio was saved locally. Use “View raw audio” to open it.</string>
     <string name="status_format">%1$s: %2$s</string>
     <string name="enabled">enabled</string>
     <string name="not_enabled">not enabled</string>

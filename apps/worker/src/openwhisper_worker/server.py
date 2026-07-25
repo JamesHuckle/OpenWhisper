@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import os
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -17,11 +19,17 @@ class Session:
     prompt: str
     refine_enabled: bool
     refine_prompt: str
-    audio_bytes: bytearray
+    audio_path: str
+    audio_bytes: int
     events: list[dict[str, Any]]
     realtime_stream: RealtimeTranscriptionStream | None = None
+    realtime_bytes: int = 0
+    realtime_segments: list[str] | None = None
     cursor: int = 0
     finalized: bool = False
+
+
+_REALTIME_ROTATE_BYTES = 24_000 * 2 * 25 * 60
 
 
 class WorkerServer:
@@ -63,14 +71,22 @@ class WorkerServer:
         )
         sys.stderr.flush()
         session_id = str(uuid.uuid4())
+        audio_file = tempfile.NamedTemporaryFile(
+            prefix=f"openwhisper-{session_id}-",
+            suffix=".audio",
+            delete=False,
+        )
+        audio_file.close()
         session = Session(
             session_id=session_id,
             profile_id=profile_id,
             prompt=prompt,
             refine_enabled=refine_enabled,
             refine_prompt=refine_prompt,
-            audio_bytes=bytearray(),
+            audio_path=audio_file.name,
+            audio_bytes=0,
             events=[{"type": "partial", "text": "Listening..."}],
+            realtime_segments=[],
         )
         self._sessions[session_id] = session
         if self._openai.model == "gpt-realtime-transcribe":
@@ -90,6 +106,7 @@ class WorkerServer:
         session = self._sessions.pop(session_id)
         if session.realtime_stream:
             session.realtime_stream.close()
+        self._remove_audio_file(session)
         return self._ok(
             request.id,
             {
@@ -134,13 +151,26 @@ class WorkerServer:
             return self._err(request.id, "bad_request", f"Invalid base64 chunk: {exc}")
 
         session = self._sessions[session_id]
-        session.audio_bytes.extend(chunk)
+        with open(session.audio_path, "ab") as audio_file:
+            audio_file.write(chunk)
+        session.audio_bytes += len(chunk)
         if session.realtime_stream:
+            if session.realtime_bytes and (
+                session.realtime_bytes + len(chunk) > _REALTIME_ROTATE_BYTES
+            ):
+                segment = session.realtime_stream.finalize().strip()
+                if segment:
+                    session.realtime_segments.append(segment)
+                session.realtime_stream = self._openai.start_realtime_transcription(
+                    lambda delta: session.events.append({"type": "partial", "text": delta})
+                )
+                session.realtime_bytes = 0
             session.realtime_stream.append(chunk)
+            session.realtime_bytes += len(chunk)
         else:
-            kb = len(session.audio_bytes) // 1024
+            kb = session.audio_bytes // 1024
             session.events.append({"type": "partial", "text": f"Captured {kb} KB of audio..."})
-        return self._ok(request.id, {"buffered_bytes": len(session.audio_bytes)})
+        return self._ok(request.id, {"buffered_bytes": session.audio_bytes})
 
     def _handle_finalize_session_audio(self, request: WorkerRequest) -> WorkerResponse:
         session_id = str(request.params.get("session_id", ""))
@@ -149,25 +179,36 @@ class WorkerServer:
             return self._err(request.id, "bad_request", "Unknown session_id")
 
         session = self._sessions[session_id]
-        if not session.audio_bytes:
+        if session.audio_bytes == 0:
             session.events.append({"type": "error", "text": "No audio captured"})
             session.finalized = True
+            self._remove_audio_file(session)
             return self._ok(request.id, {"final_text": ""})
 
         try:
             if session.realtime_stream:
-                text = session.realtime_stream.finalize()
+                final_segment = session.realtime_stream.finalize().strip()
                 session.realtime_stream = None
+                text = " ".join(
+                    [*(session.realtime_segments or []), final_segment]
+                ).strip()
             else:
-                text = self._openai.transcribe_bytes(
-                    bytes(session.audio_bytes),
+                text = self._openai.transcribe_file(
+                    session.audio_path,
                     mime_type=mime_type,
                     prompt=session.prompt,
+                    on_progress=lambda current, total: session.events.append(
+                        {
+                            "type": "partial",
+                            "text": f"Transcribing part {current} of {total}...",
+                        }
+                    ),
                 )
         except Exception as exc:  # noqa: BLE001
-            msg = "Transcription timed out" if "timeout" in str(exc).lower() else str(exc)
+            msg = str(exc).strip() or exc.__class__.__name__
             session.events.append({"type": "error", "text": msg})
             session.finalized = True
+            self._remove_audio_file(session)
             return self._ok(request.id, {"final_text": ""})
 
         if not text.strip():
@@ -177,6 +218,7 @@ class WorkerServer:
             sys.stderr.flush()
             session.events.append({"type": "error", "text": "No speech detected"})
             session.finalized = True
+            self._remove_audio_file(session)
             return self._ok(request.id, {"final_text": ""})
 
         if session.refine_enabled:
@@ -193,6 +235,12 @@ class WorkerServer:
             except Exception as exc:  # noqa: BLE001
                 sys.stderr.write(f"[worker] refine failed session_id={session_id!r} error={exc}\n")
                 sys.stderr.flush()
+                session.events.append(
+                    {
+                        "type": "warning",
+                        "text": f"Refinement failed; using the raw transcript: {exc}",
+                    }
+                )
                 pass  # fall back to raw transcript on any LLM error
             else:
                 sys.stderr.write(
@@ -205,7 +253,15 @@ class WorkerServer:
 
         session.events.append({"type": "final", "text": text})
         session.finalized = True
+        self._remove_audio_file(session)
         return self._ok(request.id, {"final_text": text})
+
+    @staticmethod
+    def _remove_audio_file(session: Session) -> None:
+        try:
+            os.remove(session.audio_path)
+        except FileNotFoundError:
+            pass
 
     @staticmethod
     def _ok(request_id: str, result: dict[str, Any]) -> WorkerResponse:

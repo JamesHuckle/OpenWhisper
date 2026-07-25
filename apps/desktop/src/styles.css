@@ -588,6 +588,128 @@ body {
   display: none;
 }
 
+.failure-panel {
+  margin: 4px 10px 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 113, 113, 0.35);
+  border-radius: 8px;
+  background: rgba(137, 35, 35, 0.18);
+}
+
+.failure-panel.hidden {
+  display: none;
+}
+
+.failure-title {
+  color: #ffb8b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.failure-message {
+  margin-top: 5px;
+  color: #f7dede;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.menu-action-row {
+  display: flex;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.menu-action-row-wide {
+  margin: 2px 16px 7px;
+}
+
+.menu-action,
+.menu-icon-action {
+  min-height: 32px;
+  border: 1px solid rgba(158, 240, 201, 0.3);
+  border-radius: 7px;
+  background: rgba(56, 217, 150, 0.12);
+  color: var(--accent-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.menu-action {
+  flex: 1;
+  padding: 7px 10px;
+}
+
+.menu-icon-action {
+  width: 34px;
+  flex: none;
+  display: grid;
+  place-items: center;
+}
+
+.menu-icon-action svg {
+  width: 17px;
+  height: 17px;
+}
+
+.menu-action:hover,
+.menu-icon-action:hover {
+  background: rgba(56, 217, 150, 0.2);
+}
+
+.menu-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.menu-action-secondary {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.recent-recordings {
+  display: grid;
+  margin: 0 10px 4px;
+}
+
+.recording-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.recording-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.recording-row-main {
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recording-row-meta,
+.recordings-empty {
+  color: var(--text-muted);
+  font-size: 9.5px;
+}
+
+.recordings-empty {
+  padding: 7px 6px;
+}
+
 .menu-select {
   width: 100%;
   margin: 4px 0 7px;

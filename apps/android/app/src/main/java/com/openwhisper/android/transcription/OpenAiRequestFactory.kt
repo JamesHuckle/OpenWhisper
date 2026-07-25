@@ -1,6 +1,7 @@
 package com.openwhisper.android.transcription
 
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.UUID
 import org.json.JSONObject
 
@@ -13,8 +14,16 @@ data class TranscriptionHttpRequest(
 class TranscriptionException(message: String, cause: Throwable? = null) :
     Exception(message, cause)
 
+data class TranscriptionAudio(
+    val file: File,
+    val mimeType: String,
+    val pcmSampleRate: Int? = null,
+    val pcmDataOffset: Long = 0,
+    val pcmDataLength: Long = file.length(),
+)
+
 fun interface TranscriptionClient {
-    fun transcribe(wav: ByteArray): String
+    fun transcribe(audio: TranscriptionAudio): String
 }
 
 class OpenAiRequestFactory(
@@ -24,6 +33,7 @@ class OpenAiRequestFactory(
         apiKey: String,
         wav: ByteArray,
         model: String = "gpt-4o-mini-transcribe",
+        prompt: String = "",
     ): TranscriptionHttpRequest {
         require(apiKey.isNotBlank()) { "API key is required" }
         require(wav.isNotEmpty()) { "WAV audio is required" }
@@ -34,6 +44,12 @@ class OpenAiRequestFactory(
         output.writeUtf8("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         output.writeUtf8(model)
         output.writeUtf8("\r\n")
+        if (prompt.isNotBlank()) {
+            output.writeUtf8("--$boundary\r\n")
+            output.writeUtf8("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+            output.writeUtf8(prompt)
+            output.writeUtf8("\r\n")
+        }
         output.writeUtf8("--$boundary\r\n")
         output.writeUtf8(
             "Content-Disposition: form-data; name=\"file\"; " +

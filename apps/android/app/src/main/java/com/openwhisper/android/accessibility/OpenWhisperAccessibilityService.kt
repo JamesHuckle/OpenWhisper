@@ -34,6 +34,7 @@ import com.openwhisper.android.overlay.OverlayDecision
 import com.openwhisper.android.overlay.OverlayKeyGeometry
 import com.openwhisper.android.overlay.OverlayPolicy
 import com.openwhisper.android.overlay.ScreenRect
+import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.settings.SecureApiKeyStore
 import com.openwhisper.android.settings.SettingsRepository
 import com.openwhisper.android.transcription.OpenAiHttpTranscriptionClient
@@ -85,12 +86,14 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             accessibilityEditor
         }
         val secrets = SecureApiKeyStore(this)
+        val recordingStore = RecordingStore(this)
         val liveBackend = BufferedDictationBackend(
-            recorder = AndroidAudioRecorder(this) { level ->
+            recorder = AndroidAudioRecorder(this, recordingStore) { level ->
                 // Deliver live mic levels to the overlay's equalizer on the UI thread.
                 handler.post { if (::overlay.isInitialized) overlay.onAmplitude(level) }
             },
             client = OpenAiHttpTranscriptionClient(secrets::load),
+            recordingStore = recordingStore,
             background = ExecutorBackgroundRunner(backgroundExecutor),
             callbacks = MainThreadCallbackDispatcher(handler),
         )

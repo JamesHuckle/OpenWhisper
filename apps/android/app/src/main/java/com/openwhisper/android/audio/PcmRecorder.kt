@@ -1,9 +1,6 @@
 package com.openwhisper.android.audio
 
-data class PcmRecording(
-    val bytes: ByteArray,
-    val sampleRate: Int,
-)
+typealias PcmRecording = com.openwhisper.android.recordings.PcmRecording
 
 interface PcmRecorder {
     fun start()

@@ -20,7 +20,7 @@ import "./styles.css";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-type TranscriptEvent = { type: "partial" | "final" | "error"; text: string };
+type TranscriptEvent = { type: "partial" | "final" | "warning" | "error"; text: string };
 type PollResponse = { events: TranscriptEvent[]; done?: boolean };
 type TranscriptionModel =
   | "gpt-4o-mini-transcribe"
@@ -37,6 +37,18 @@ type AppSettings = {
 };
 type WidgetState = "idle" | "recording" | "transcribing" | "error";
 type MicDevice = { id: string; label: string };
+type RecordingMetadata = {
+  id: string;
+  createdAtMs: number;
+  name: string;
+  source: string;
+  mimeType: string;
+  fileName: string;
+  status: string;
+  bytes: number;
+  transcript: string;
+  error: string;
+};
 
 // ---------------------------------------------------------------------------
 // State
@@ -44,6 +56,8 @@ type MicDevice = { id: string; label: string };
 let state: WidgetState = "idle";
 let currentSessionId: string | null = null;
 let pollTimer: number | null = null;
+let pollInFlight = false;
+let pollFailureCount = 0;
 let finalTranscript = "";
 let liveTranscript = "";
 let streamTextToTarget = false;
@@ -57,6 +71,14 @@ let pcmProcessor: ScriptProcessorNode | null = null;
 let pcmSilentGain: GainNode | null = null;
 let recordingMimeType = "audio/webm";
 let isRecording = false;
+let currentRecordingId: string | null = null;
+let lastFailedRecordingId: string | null = null;
+let backupTail: Promise<void> = Promise.resolve();
+let backupError: unknown = null;
+let pendingAudioParts: Uint8Array[] = [];
+let pendingAudioBytes = 0;
+let sessionFailure = "";
+let shouldPasteFinalTranscript = true;
 let pressToTalkHeld = false;
 let pressToTalkStarting = false;
 const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
@@ -71,14 +93,13 @@ let soundVisualizer: { start: () => void; stop: () => void; reset: () => void } 
 let volumeMonitorFrameId: number | null = null;
 let volumeMonitorDisconnect: (() => void) | null = null;
 const SILENT_THRESHOLD = 14;
-let transcribeTimer: number | null = null;
 let micDevices: MicDevice[] = [];
 let selectedMicId = "default";
 let menuOpen = false;
 
-const TRANSCRIBE_TIMEOUT_MS = 20_000;
 const HOVER_EXPAND_DELAY_MS = 40;
 const HOVER_COLLAPSE_GRACE_MS = 90;
+const AUDIO_BATCH_BYTES = 16 * 1024;
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -152,6 +173,27 @@ app.innerHTML = `
     </div>
 
     <div id="mic-menu" class="mic-menu hidden">
+      <div id="failure-panel" class="failure-panel hidden" role="alert">
+        <div class="failure-title">Transcription failed</div>
+        <div id="failure-message" class="failure-message"></div>
+        <div class="menu-action-row">
+          <button id="failure-open-recording" class="menu-action" type="button">Open raw audio</button>
+          <button id="failure-dismiss" class="menu-action menu-action-secondary" type="button">Dismiss</button>
+        </div>
+      </div>
+      <div class="menu-section">Recordings</div>
+      <div class="menu-action-row menu-action-row-wide">
+        <button id="menu-import-audio" class="menu-action" type="button">Transcribe audio file</button>
+        <button id="menu-open-recordings" class="menu-icon-action" type="button" title="Open recordings folder" aria-label="Open recordings folder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path d="M3.5 7.5h6l2 2h9v9.5a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19Z" />
+            <path d="M3.5 7.5V5A1.5 1.5 0 0 1 5 3.5h5l2 2h5" />
+          </svg>
+        </button>
+      </div>
+      <input id="audio-file-input" type="file" accept="audio/*,.wav,.mp3,.m4a,.mp4,.mpeg,.mpga,.webm,.ogg" hidden />
+      <div id="recent-recordings" class="recent-recordings"></div>
+      <div class="menu-divider"></div>
       <div class="menu-section">Appearance</div>
       <div class="menu-toggle-row">
         <span class="menu-section menu-section-inline">Show pill when idle</span>
@@ -224,6 +266,14 @@ const menuRefineToggle = document.getElementById("menu-refine-toggle") as HTMLIn
 const menuRefinePromptInput = document.getElementById("menu-refine-prompt-input") as HTMLTextAreaElement;
 const menuShowIdlePillToggle = document.getElementById("menu-show-idle-pill-toggle") as HTMLInputElement;
 const menuTargetAppName = document.getElementById("menu-target-app-name")!;
+const failurePanel = document.getElementById("failure-panel")!;
+const failureMessage = document.getElementById("failure-message")!;
+const failureOpenRecording = document.getElementById("failure-open-recording") as HTMLButtonElement;
+const failureDismiss = document.getElementById("failure-dismiss") as HTMLButtonElement;
+const menuImportAudio = document.getElementById("menu-import-audio") as HTMLButtonElement;
+const menuOpenRecordings = document.getElementById("menu-open-recordings") as HTMLButtonElement;
+const audioFileInput = document.getElementById("audio-file-input") as HTMLInputElement;
+const recentRecordings = document.getElementById("recent-recordings")!;
 
 let hasOpenaiApiKey = false;
 let settingsLoaded = false;
@@ -377,6 +427,7 @@ async function openMenu() {
   menuOpen = true;
   micMenu.classList.remove("hidden");
   startAppPoll();
+  void refreshRecordings();
   await applyOverlayLayout();
 }
 
@@ -441,8 +492,7 @@ function handleWidgetClick(e: MouseEvent) {
     if (state === "recording") {
       void stopRecording();
     } else {
-      cleanup();
-      setState("idle");
+      void cancelTranscription();
     }
     return;
   }
@@ -456,8 +506,7 @@ function handleWidgetKeydown(e: KeyboardEvent) {
       e.preventDefault();
       if (state === "recording") void stopRecording();
       else {
-        cleanup();
-        setState("idle");
+        void cancelTranscription();
       }
     }
     return;
@@ -552,27 +601,6 @@ function setWaveBarLevels(levels: number[]) {
 }
 
 // ---------------------------------------------------------------------------
-// Transcription timeout
-// ---------------------------------------------------------------------------
-function startTranscribeTimeout() {
-  clearTranscribeTimeout();
-  transcribeTimer = window.setTimeout(() => {
-    if (state === "transcribing") {
-      showToast("Transcription timed out - try again");
-      cleanup();
-      setState("idle");
-    }
-  }, TRANSCRIBE_TIMEOUT_MS);
-}
-
-function clearTranscribeTimeout() {
-  if (transcribeTimer !== null) {
-    clearTimeout(transcribeTimer);
-    transcribeTimer = null;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Base64 helper
 // ---------------------------------------------------------------------------
 function toBase64(buf: ArrayBuffer): string {
@@ -644,8 +672,151 @@ function resampleToPcm16(input: Float32Array, sourceRate: number): ArrayBuffer {
 }
 
 function queueAudioChunk(buffer: ArrayBuffer) {
-  audioQueue.append(buffer);
+  pendingAudioParts.push(new Uint8Array(buffer));
+  pendingAudioBytes += buffer.byteLength;
+  if (pendingAudioBytes >= AUDIO_BATCH_BYTES) flushAudioBatch();
 }
+
+function flushAudioBatch() {
+  if (pendingAudioBytes === 0) return;
+  const combined = new Uint8Array(pendingAudioBytes);
+  let offset = 0;
+  for (const part of pendingAudioParts) {
+    combined.set(part, offset);
+    offset += part.byteLength;
+  }
+  pendingAudioParts = [];
+  pendingAudioBytes = 0;
+
+  const recordingId = currentRecordingId;
+  if (recordingId) {
+    const chunkBase64 = toBase64(combined.buffer);
+    backupTail = backupTail
+      .then(() => invoke<void>("recording_append_chunk", {
+        recordingId,
+        chunkBase64,
+      }))
+      .catch((error) => {
+        backupError ??= error;
+      });
+  }
+  audioQueue.append(combined.buffer);
+}
+
+function errorMessage(error: unknown, fallback = "Transcription failed"): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  const message = String(error ?? "").trim();
+  return message || fallback;
+}
+
+async function finishCurrentRecording(status: string, transcript: string, error: string) {
+  const recordingId = currentRecordingId;
+  if (!recordingId) return;
+  currentRecordingId = null;
+  try {
+    await invoke("recording_finish", {
+      recordingId,
+      status,
+      transcript,
+      error,
+    });
+  } catch (finishError) {
+    logDebug(`recording metadata update failed=${errorMessage(finishError)}`);
+  }
+  void refreshRecordings();
+}
+
+async function handleTranscriptionFailure(error: unknown) {
+  if (pcmAudioContext) await stopPcmCapture();
+  flushAudioBatch();
+  await backupTail;
+  const message = errorMessage(error);
+  const recordingId = currentRecordingId;
+  if (recordingId) {
+    lastFailedRecordingId = recordingId;
+    await finishCurrentRecording("failed", "", message);
+  }
+  failureMessage.textContent = recordingId
+    ? `${message} The raw audio was saved locally and can be opened below.`
+    : message;
+  failureOpenRecording.disabled = !lastFailedRecordingId;
+  failurePanel.classList.remove("hidden");
+  showToast(message, 8000);
+  await openMenu();
+  await applyOverlayLayout(true);
+}
+
+function formatRecordingSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function refreshRecordings() {
+  try {
+    const recordings = await invoke<RecordingMetadata[]>("recording_list");
+    recentRecordings.replaceChildren();
+    for (const recording of recordings.slice(0, 4)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "recording-row";
+      const when = new Date(recording.createdAtMs).toLocaleString([], {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const main = document.createElement("span");
+      main.className = "recording-row-main";
+      main.textContent = recording.name;
+      const meta = document.createElement("span");
+      meta.className = "recording-row-meta";
+      meta.textContent = `${when} | ${formatRecordingSize(recording.bytes)} | ${recording.status}`;
+      button.append(main, meta);
+      button.title = "Open raw audio";
+      button.addEventListener("click", () => {
+        void invoke("recording_open", { recordingId: recording.id }).catch((error) => {
+          showToast(errorMessage(error, "Could not open recording"));
+        });
+      });
+      recentRecordings.appendChild(button);
+    }
+    if (recordings.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "recordings-empty";
+      empty.textContent = "No saved recordings yet";
+      recentRecordings.appendChild(empty);
+    }
+    if (menuOpen) await applyOverlayLayout(true);
+  } catch (error) {
+    logDebug(`recording list failed=${errorMessage(error)}`);
+  }
+}
+
+failureOpenRecording.addEventListener("click", () => {
+  if (!lastFailedRecordingId) return;
+  void invoke("recording_open", { recordingId: lastFailedRecordingId }).catch((error) => {
+    showToast(errorMessage(error, "Could not open recording"));
+  });
+});
+
+failureDismiss.addEventListener("click", () => {
+  failurePanel.classList.add("hidden");
+  void applyOverlayLayout(true);
+});
+
+menuOpenRecordings.addEventListener("click", () => {
+  void invoke("recordings_open_folder").catch((error) => {
+    showToast(errorMessage(error, "Could not open recordings folder"));
+  });
+});
+
+menuImportAudio.addEventListener("click", () => audioFileInput.click());
+
+audioFileInput.addEventListener("change", () => {
+  const file = audioFileInput.files?.[0];
+  audioFileInput.value = "";
+  if (file) void transcribeImportedFile(file);
+});
 
 async function startPcmCapture(stream: MediaStream) {
   pcmAudioContext = new AudioContext();
@@ -699,28 +870,24 @@ async function startRecording() {
       audio: selectedMicId === "default" ? true : { deviceId: { exact: selectedMicId } },
     };
     micStream = await navigator.mediaDevices.getUserMedia(constraints);
+    const backup = await invoke<{ id: string }>("recording_begin", {
+      source: "microphone",
+      name: `Recording ${new Date().toLocaleString()}`,
+    });
+    currentRecordingId = backup.id;
+    backupTail = Promise.resolve();
+    backupError = null;
+    pendingAudioParts = [];
+    pendingAudioBytes = 0;
+    sessionFailure = "";
+    pollFailureCount = 0;
+    shouldPasteFinalTranscript = true;
 
     const result = await captureBeforeSession({
       // Capture is deliberately attached before any worker or network startup.
       // The queue retains these opening chunks until a session id is available.
       startCapture: async () => {
-        if (settings.transcriptionModel === "gpt-realtime-transcribe") {
-          await startPcmCapture(micStream!);
-        } else {
-          const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-            ? "audio/webm;codecs=opus"
-            : "audio/webm";
-          recordingMimeType = "audio/webm";
-          mediaRecorder = new MediaRecorder(micStream!, { mimeType });
-          mediaRecorder.ondataavailable = (event: BlobEvent) => {
-            if (event.data.size > 0) audioQueue.appendAsync(event.data.arrayBuffer());
-          };
-          mediaRecorder.onstop = () => {
-            micStream?.getTracks().forEach((track) => track.stop());
-            isRecording = false;
-          };
-          mediaRecorder.start(250);
-        }
+        await startPcmCapture(micStream!);
         isRecording = true;
         return micStream!;
       },
@@ -760,7 +927,10 @@ async function startRecording() {
     logDebug(`startRecording ready session=${currentSessionId ?? "none"} held=${pressToTalkHeld}`);
   } catch (err) {
     logDebug(`startRecording error=${err instanceof Error ? err.message : String(err)}`);
-    showToast(err instanceof Error ? err.message : String(err));
+    if (pcmAudioContext) await stopPcmCapture();
+    flushAudioBatch();
+    await backupTail;
+    await handleTranscriptionFailure(err);
     cleanup();
     setState("idle");
   }
@@ -770,7 +940,6 @@ async function stopRecording() {
   logDebug(`stopRecording enter state=${state} session=${currentSessionId ?? "none"}`);
   if (state !== "recording") return;
   setState("transcribing");
-  startTranscribeTimeout();
   if (soundVisualizer) {
     soundVisualizer.stop();
     soundVisualizer = null;
@@ -780,6 +949,7 @@ async function stopRecording() {
 
   if (pcmAudioContext) {
     await stopPcmCapture();
+    flushAudioBatch();
   } else if (mediaRecorder && mediaRecorder.state !== "inactive") {
     await new Promise<void>((resolve) => {
       mediaRecorder!.addEventListener("stop", () => resolve(), { once: true });
@@ -794,6 +964,8 @@ async function finalizeRecording() {
   if (!currentSessionId) return;
   try {
     await audioQueue.drain();
+    await backupTail;
+    if (backupError) throw backupError;
     await invoke("worker_finalize_session_audio", {
       sessionId: currentSessionId,
       mimeType: recordingMimeType,
@@ -801,16 +973,96 @@ async function finalizeRecording() {
     logDebug(`stopRecording finalized session=${currentSessionId}`);
   } catch (err) {
     logDebug(`stopRecording error=${err instanceof Error ? err.message : String(err)}`);
-    showToast(err instanceof Error ? err.message : String(err));
+    await handleTranscriptionFailure(err);
     cleanup();
     setState("idle");
   }
 }
 
+async function cancelTranscription() {
+  const sessionId = currentSessionId;
+  if (sessionId) {
+    await invoke("worker_stop_session", { sessionId }).catch((error) => {
+      logDebug(`stop session failed=${errorMessage(error)}`);
+    });
+  }
+  await finishCurrentRecording("cancelled", "", "Cancelled by user");
+  cleanup();
+  setState("idle");
+  showToast("Transcription cancelled. Raw audio is still saved.", 4000);
+}
+
+async function transcribeImportedFile(file: File) {
+  if (state !== "idle") {
+    showToast("Finish the current recording first");
+    return;
+  }
+  try {
+    const settings = await invoke<AppSettings>("app_get_settings");
+    if (!settings.hasOpenaiApiKey) {
+      throw new Error("Set your OpenAI API key before importing audio");
+    }
+    if (settings.transcriptionModel === "gpt-realtime-transcribe") {
+      throw new Error("Choose Fast or Accurate transcription for imported audio files");
+    }
+    const bytes = await file.arrayBuffer();
+    const mimeType = file.type || mimeTypeForFileName(file.name);
+    const stored = await invoke<{ id: string }>("recording_import", {
+      name: file.name,
+      mimeType,
+      fileBase64: toBase64(bytes),
+    });
+    currentRecordingId = stored.id;
+    lastFailedRecordingId = null;
+    sessionFailure = "";
+    pollFailureCount = 0;
+    shouldPasteFinalTranscript = false;
+    finalTranscript = "";
+    liveTranscript = "";
+    pastedTranscript = "";
+    targetWriteQueue = Promise.resolve();
+    setState("transcribing");
+    closeMenu();
+
+    const session = await invoke<{ session_id: string }>("worker_start_session", {
+      profileId: "file-import",
+    });
+    currentSessionId = session.session_id;
+    startPolling();
+    const chunkSize = 512 * 1024;
+    for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+      const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + chunkSize));
+      await invoke("worker_append_audio_chunk", {
+        sessionId: currentSessionId,
+        chunkBase64: toBase64(chunk),
+      });
+    }
+    await invoke("worker_finalize_session_audio", {
+      sessionId: currentSessionId,
+      mimeType,
+    });
+  } catch (error) {
+    await handleTranscriptionFailure(error);
+    cleanup();
+    setState("idle");
+  }
+}
+
+function mimeTypeForFileName(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".wav")) return "audio/wav";
+  if (lower.endsWith(".mp3") || lower.endsWith(".mpeg") || lower.endsWith(".mpga")) {
+    return "audio/mpeg";
+  }
+  if (lower.endsWith(".m4a")) return "audio/x-m4a";
+  if (lower.endsWith(".mp4")) return "audio/mp4";
+  if (lower.endsWith(".ogg")) return "audio/ogg";
+  return "audio/webm";
+}
+
 function cleanup() {
   logDebug(`cleanup state=${state} session=${currentSessionId ?? "none"}`);
   stopPolling();
-  clearTranscribeTimeout();
   if (soundVisualizer) {
     soundVisualizer.stop();
     soundVisualizer = null;
@@ -825,6 +1077,8 @@ function cleanup() {
   micStream = null;
   currentSessionId = null;
   audioQueue.reset();
+  pendingAudioParts = [];
+  pendingAudioBytes = 0;
   liveTranscript = "";
   streamTextToTarget = false;
 }
@@ -845,7 +1099,8 @@ function stopPolling() {
 }
 
 async function pollOnce() {
-  if (!currentSessionId) return;
+  if (!currentSessionId || pollInFlight) return;
+  pollInFlight = true;
   try {
     const resp = await invoke<PollResponse>("worker_poll_session_events", {
       sessionId: currentSessionId,
@@ -860,7 +1115,8 @@ async function pollOnce() {
         ev.type === "partial" &&
         ev.text !== "Listening..." &&
         ev.text !== "Refining transcript..." &&
-        !ev.text.startsWith("Captured ")
+        !ev.text.startsWith("Captured ") &&
+        !ev.text.startsWith("Transcribing part ")
       ) {
         liveTranscript += ev.text;
         widget.dataset.liveTranscript = liveTranscript;
@@ -875,18 +1131,24 @@ async function pollOnce() {
           });
         }
       } else if (ev.type === "error") {
-        showToast(ev.text || "Transcription failed", 3000);
+        sessionFailure = ev.text || "Transcription failed";
+        await handleTranscriptionFailure(sessionFailure);
+      } else if (ev.type === "warning") {
+        showToast(ev.text, 8000);
       }
     }
+    pollFailureCount = 0;
     if (resp.done) {
-      clearTranscribeTimeout();
       stopPolling();
       if (finalTranscript) {
         lastTranscript = finalTranscript;
         localStorage.setItem("ow_last_transcript", lastTranscript);
         syncWidgetFrame();
         await targetWriteQueue;
-        if (pastedTranscript) {
+        if (!shouldPasteFinalTranscript) {
+          await invoke("copy_to_clipboard", { text: finalTranscript });
+          showToast("Transcript copied to clipboard", 3000);
+        } else if (pastedTranscript) {
           if (pastedTranscript.trim() !== finalTranscript.trim()) {
             await invoke("replace_streamed_target", {
               streamedText: pastedTranscript,
@@ -898,14 +1160,26 @@ async function pollOnce() {
           await invoke("paste_to_target", { text: finalTranscript });
           showToast("Transcribed and pasted", 2000);
         }
+        await finishCurrentRecording("complete", finalTranscript, "");
+      } else if (sessionFailure) {
+        await finishCurrentRecording("failed", "", sessionFailure);
       }
       cleanup();
       widget.removeAttribute("data-live-transcript");
       widget.setAttribute("aria-label", "Click to start or stop transcription");
       setState("idle");
     }
-  } catch {
-    // transient poll errors are non-fatal
+  } catch (error) {
+    const message = errorMessage(error, "Could not read transcription status");
+    logDebug(`poll failed=${message}`);
+    pollFailureCount += 1;
+    if (pollFailureCount >= 3 && (state === "recording" || state === "transcribing")) {
+      await handleTranscriptionFailure(`Could not read transcription status: ${message}`);
+      cleanup();
+      setState("idle");
+    }
+  } finally {
+    pollInFlight = false;
   }
 }
 

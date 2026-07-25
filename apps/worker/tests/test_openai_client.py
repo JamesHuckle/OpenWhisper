@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -92,6 +94,39 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENWHISPER_MODEL": "gpt-5.4"}):
             with self.assertRaisesRegex(ValueError, "Unsupported transcription model"):
                 OpenWhisperOpenAI()
+
+    def test_sixty_minute_pcm_is_transcribed_in_bounded_ordered_chunks(self) -> None:
+        client = OpenWhisperOpenAI()
+        pcm_bytes = 60 * 60 * 24_000 * 2
+        progress: list[tuple[int, int]] = []
+        uploaded_sizes: list[int] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sixty-minutes.pcm"
+            with path.open("wb") as audio:
+                audio.truncate(pcm_bytes)
+
+            def fake_transcribe(wav: bytes, mime_type: str, prompt: str = "") -> str:
+                self.assertEqual(mime_type, "audio/wav")
+                self.assertLessEqual(len(wav), 24 * 1024 * 1024)
+                self.assertEqual(wav[:4], b"RIFF")
+                uploaded_sizes.append(len(wav))
+                return f"segment-{len(uploaded_sizes)}"
+
+            with patch.object(client, "transcribe_bytes", side_effect=fake_transcribe):
+                transcript = client.transcribe_file(
+                    path,
+                    "audio/pcm;rate=24000",
+                    on_progress=lambda current, total: progress.append((current, total)),
+                )
+
+        self.assertGreater(len(uploaded_sizes), 1)
+        self.assertEqual(sum(size - 44 for size in uploaded_sizes), pcm_bytes)
+        self.assertEqual(
+            transcript,
+            " ".join(f"segment-{index}" for index in range(1, len(uploaded_sizes) + 1)),
+        )
+        self.assertEqual(progress, [(index, len(uploaded_sizes)) for index in range(1, len(uploaded_sizes) + 1)])
 
 
 if __name__ == "__main__":
