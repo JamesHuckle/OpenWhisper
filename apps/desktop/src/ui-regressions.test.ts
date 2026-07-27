@@ -124,4 +124,16 @@ describe("desktop regression contracts", () => {
     expect(main).toContain("await update.downloadAndInstall()");
     expect(main).toContain("await relaunch()");
   });
+
+  it("can retranscribe saved recordings without replacing their raw audio", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+
+    expect(main).toContain('transcribeButton.textContent = "Transcribe"');
+    expect(main).toContain("retranscribeRecording(recording)");
+    expect(main).toContain('"recording_read"');
+    expect(main).toContain('status: "transcribing"');
+    expect(native).toContain("fn recording_read(");
+    expect(native).toContain("STANDARD.encode(bytes)");
+  });
 });

@@ -20,6 +20,9 @@
     <string name="no_saved_recordings">No saved recordings yet. OpenWhisper keeps the latest 10.</string>
     <string name="saved_recording_format">%1$s\n%2$s | %3$s | tap to view raw audio</string>
     <string name="open_raw_recording">Open raw recording: %1$s</string>
+    <string name="quick_transcribe">Transcribe</string>
+    <string name="retranscribe_recording">Transcribe %1$s again</string>
+    <string name="retranscribing_recording">Transcribing %1$s again...</string>
     <string name="transcription_complete">Transcription complete</string>
     <string name="copy_transcript">Copy transcript</string>
     <string name="view_raw_audio">View raw audio</string>

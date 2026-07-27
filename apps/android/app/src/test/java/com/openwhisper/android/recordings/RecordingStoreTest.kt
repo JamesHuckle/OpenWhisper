@@ -46,6 +46,26 @@ class RecordingStoreTest {
         }
     }
 
+    @Test
+    fun retranscriptionStatusUpdatesKeepTheOriginalRawFile() {
+        withStore { store ->
+            val stored = store.import(
+                name = "retry.wav",
+                mimeType = "audio/wav",
+                extension = "wav",
+                input = ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)),
+            )
+            val original = store.file(stored).readBytes()
+
+            store.finish(stored.id, "transcribing")
+            store.finish(stored.id, "complete", transcript = "Retried transcript")
+
+            assertArrayEquals(original, store.file(stored).readBytes())
+            assertEquals("complete", store.get(stored.id)?.status)
+            assertEquals("Retried transcript", store.get(stored.id)?.transcript)
+        }
+    }
+
     private fun withStore(block: (RecordingStore) -> Unit) {
         val root = File(
             System.getProperty("java.io.tmpdir"),

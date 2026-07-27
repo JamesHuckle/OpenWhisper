@@ -1058,6 +1058,13 @@ struct RecordingStartResponse {
     id: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordingAudioResponse {
+    mime_type: String,
+    file_base64: String,
+}
+
 fn recordings_root(app_handle: &AppHandle) -> Result<PathBuf> {
     let mut root = app_handle
         .path()
@@ -1279,6 +1286,24 @@ fn recording_finish(
 fn recording_list(app_handle: AppHandle) -> Result<Vec<RecordingMetadata>, String> {
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
     list_recording_metadata(&root).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn recording_read(
+    app_handle: AppHandle,
+    recording_id: String,
+) -> Result<RecordingAudioResponse, String> {
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
+    let audio_path = root.join(recording_id).join(metadata.file_name);
+    let bytes = fs::read(audio_path).map_err(|e| format!("Could not read saved recording: {e}"))?;
+    if bytes.is_empty() {
+        return Err("The saved recording is empty".to_string());
+    }
+    Ok(RecordingAudioResponse {
+        mime_type: metadata.mime_type,
+        file_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
 }
 
 #[tauri::command]
@@ -2000,6 +2025,7 @@ pub fn run() {
             recording_import,
             recording_finish,
             recording_list,
+            recording_read,
             recording_open,
             recordings_open_folder,
             debug_log,

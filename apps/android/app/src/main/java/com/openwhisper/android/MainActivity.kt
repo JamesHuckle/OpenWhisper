@@ -61,6 +61,7 @@ class MainActivity : Activity() {
     private var promptedVersionCode: Int? = null
     private var pendingUpdateFile: File? = null
     private var waitingForInstallPermission = false
+    private var audioTranscriptionInFlight = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -238,6 +239,8 @@ class MainActivity : Activity() {
     }
 
     private fun importAndTranscribe(uri: Uri) {
+        if (audioTranscriptionInFlight) return
+        audioTranscriptionInFlight = true
         importStatus.text = getString(R.string.saving_audio)
         audioExecutor.execute {
             var stored: StoredRecording? = null
@@ -248,21 +251,7 @@ class MainActivity : Activity() {
                 val input = contentResolver.openInputStream(uri)
                     ?: error("Android could not open the selected audio file")
                 stored = recordingStore.import(name, mimeType, extension, input)
-                val file = recordingStore.file(requireNotNull(stored))
-                val wav = if (mimeType.contains("wav") || name.endsWith(".wav", true)) {
-                    WavEncoder.inspectPcm16Mono(file)
-                } else {
-                    null
-                }
-                val transcript = OpenAiHttpTranscriptionClient(secretStore::load).transcribe(
-                    TranscriptionAudio(
-                        file = file,
-                        mimeType = mimeType,
-                        pcmSampleRate = wav?.sampleRate,
-                        pcmDataOffset = wav?.dataOffset ?: 0,
-                        pcmDataLength = wav?.dataLength ?: file.length(),
-                    ),
-                )
+                val transcript = transcribeRecording(requireNotNull(stored))
                 recordingStore.finish(requireNotNull(stored).id, "complete", transcript = transcript)
                 transcript
             }
@@ -277,6 +266,7 @@ class MainActivity : Activity() {
             }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
+                audioTranscriptionInFlight = false
                 importStatus.text = ""
                 refreshRecordings()
                 result.fold(
@@ -300,7 +290,7 @@ class MainActivity : Activity() {
             return
         }
         recordings.take(10).forEach { recording ->
-            recordingsContainer.addView(Button(this).apply {
+            val openButton = Button(this).apply {
                 text = getString(
                     R.string.saved_recording_format,
                     recording.name,
@@ -311,8 +301,79 @@ class MainActivity : Activity() {
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 contentDescription = getString(R.string.open_raw_recording, recording.name)
                 setOnClickListener { openRawRecording(recording) }
+            }
+            val transcribeButton = Button(this).apply {
+                text = getString(R.string.quick_transcribe)
+                isAllCaps = false
+                contentDescription = getString(R.string.retranscribe_recording, recording.name)
+                isEnabled = !audioTranscriptionInFlight
+                setOnClickListener { retranscribeRecording(recording) }
+            }
+            recordingsContainer.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    openButton,
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+                )
+                addView(transcribeButton)
             })
         }
+    }
+
+    private fun retranscribeRecording(recording: StoredRecording) {
+        if (audioTranscriptionInFlight) return
+        audioTranscriptionInFlight = true
+        recordingStore.finish(recording.id, "transcribing")
+        importStatus.text = getString(R.string.retranscribing_recording, recording.name)
+        refreshRecordings()
+        audioExecutor.execute {
+            val result = runCatching { transcribeRecording(recording) }
+            result.fold(
+                onSuccess = { transcript ->
+                    recordingStore.finish(recording.id, "complete", transcript = transcript)
+                },
+                onFailure = { error ->
+                    recordingStore.finish(
+                        recording.id,
+                        "failed",
+                        error = error.message ?: "Transcription failed",
+                    )
+                },
+            )
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                audioTranscriptionInFlight = false
+                importStatus.text = ""
+                refreshRecordings()
+                val current = recordingStore.get(recording.id) ?: recording
+                result.fold(
+                    onSuccess = { transcript -> showImportedTranscript(transcript, current) },
+                    onFailure = { error -> showAudioFailure(error, current) },
+                )
+            }
+        }
+    }
+
+    private fun transcribeRecording(recording: StoredRecording): String {
+        val file = recordingStore.file(recording)
+        val wav = if (
+            recording.mimeType.contains("wav") ||
+            recording.fileName.endsWith(".wav", true)
+        ) {
+            WavEncoder.inspectPcm16Mono(file)
+        } else {
+            null
+        }
+        return OpenAiHttpTranscriptionClient(secretStore::load).transcribe(
+            TranscriptionAudio(
+                file = file,
+                mimeType = recording.mimeType,
+                pcmSampleRate = wav?.sampleRate,
+                pcmDataOffset = wav?.dataOffset ?: 0,
+                pcmDataLength = wav?.dataLength ?: file.length(),
+            ),
+        )
     }
 
     private fun showImportedTranscript(transcript: String, recording: StoredRecording?) {

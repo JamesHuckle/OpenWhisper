@@ -49,6 +49,10 @@ type RecordingMetadata = {
   transcript: string;
   error: string;
 };
+type RecordingAudio = {
+  mimeType: string;
+  fileBase64: string;
+};
 
 // ---------------------------------------------------------------------------
 // State
@@ -613,6 +617,15 @@ function toBase64(buf: ArrayBuffer): string {
   return btoa(binary);
 }
 
+function fromBase64(value: string): ArrayBuffer {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
 // ---------------------------------------------------------------------------
 // Volume monitor — show wobbly line when mic is silent during recording
 // ---------------------------------------------------------------------------
@@ -756,6 +769,8 @@ async function refreshRecordings() {
     const recordings = await invoke<RecordingMetadata[]>("recording_list");
     recentRecordings.replaceChildren();
     for (const recording of recordings.slice(0, 4)) {
+      const card = document.createElement("div");
+      card.className = "recording-card";
       const button = document.createElement("button");
       button.type = "button";
       button.className = "recording-row";
@@ -778,7 +793,18 @@ async function refreshRecordings() {
           showToast(errorMessage(error, "Could not open recording"));
         });
       });
-      recentRecordings.appendChild(button);
+      const transcribeButton = document.createElement("button");
+      transcribeButton.type = "button";
+      transcribeButton.className = "recording-transcribe";
+      transcribeButton.textContent = "Transcribe";
+      transcribeButton.title = `Transcribe ${recording.name} again`;
+      transcribeButton.setAttribute("aria-label", `Transcribe ${recording.name} again`);
+      transcribeButton.disabled = state !== "idle" || recording.id === currentRecordingId;
+      transcribeButton.addEventListener("click", () => {
+        void retranscribeRecording(recording);
+      });
+      card.append(button, transcribeButton);
+      recentRecordings.appendChild(card);
     }
     if (recordings.length === 0) {
       const empty = document.createElement("div");
@@ -1012,40 +1038,84 @@ async function transcribeImportedFile(file: File) {
       mimeType,
       fileBase64: toBase64(bytes),
     });
-    currentRecordingId = stored.id;
-    lastFailedRecordingId = null;
-    sessionFailure = "";
-    pollFailureCount = 0;
-    shouldPasteFinalTranscript = false;
-    finalTranscript = "";
-    liveTranscript = "";
-    pastedTranscript = "";
-    targetWriteQueue = Promise.resolve();
-    setState("transcribing");
-    closeMenu();
-
-    const session = await invoke<{ session_id: string }>("worker_start_session", {
-      profileId: "file-import",
-    });
-    currentSessionId = session.session_id;
-    startPolling();
-    const chunkSize = 512 * 1024;
-    for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
-      const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + chunkSize));
-      await invoke("worker_append_audio_chunk", {
-        sessionId: currentSessionId,
-        chunkBase64: toBase64(chunk),
-      });
-    }
-    await invoke("worker_finalize_session_audio", {
-      sessionId: currentSessionId,
-      mimeType,
-    });
+    await transcribeStoredAudio(stored.id, bytes, mimeType, "file-import");
   } catch (error) {
     await handleTranscriptionFailure(error);
     cleanup();
     setState("idle");
   }
+}
+
+async function retranscribeRecording(recording: RecordingMetadata) {
+  if (state !== "idle") {
+    showToast("Finish the current recording first");
+    return;
+  }
+  try {
+    const settings = await invoke<AppSettings>("app_get_settings");
+    if (!settings.hasOpenaiApiKey) {
+      throw new Error("Set your OpenAI API key before transcribing saved audio");
+    }
+    if (settings.transcriptionModel === "gpt-realtime-transcribe") {
+      throw new Error("Choose Fast or Accurate transcription for saved audio files");
+    }
+    const audio = await invoke<RecordingAudio>("recording_read", {
+      recordingId: recording.id,
+    });
+    await transcribeStoredAudio(
+      recording.id,
+      fromBase64(audio.fileBase64),
+      audio.mimeType,
+      "recording-retry",
+    );
+  } catch (error) {
+    await handleTranscriptionFailure(error);
+    cleanup();
+    setState("idle");
+  }
+}
+
+async function transcribeStoredAudio(
+  recordingId: string,
+  bytes: ArrayBuffer,
+  mimeType: string,
+  profileId: string,
+) {
+  currentRecordingId = recordingId;
+  lastFailedRecordingId = null;
+  sessionFailure = "";
+  pollFailureCount = 0;
+  shouldPasteFinalTranscript = false;
+  finalTranscript = "";
+  liveTranscript = "";
+  pastedTranscript = "";
+  targetWriteQueue = Promise.resolve();
+  await invoke("recording_finish", {
+    recordingId,
+    status: "transcribing",
+    transcript: "",
+    error: "",
+  });
+  setState("transcribing");
+  closeMenu();
+
+  const session = await invoke<{ session_id: string }>("worker_start_session", {
+    profileId,
+  });
+  currentSessionId = session.session_id;
+  startPolling();
+  const chunkSize = 512 * 1024;
+  for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+    const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + chunkSize));
+    await invoke("worker_append_audio_chunk", {
+      sessionId: currentSessionId,
+      chunkBase64: toBase64(chunk),
+    });
+  }
+  await invoke("worker_finalize_session_audio", {
+    sessionId: currentSessionId,
+    mimeType,
+  });
 }
 
 function mimeTypeForFileName(name: string): string {
