@@ -144,13 +144,15 @@ class DictationOverlayWindow(
             )
             is DictationState.Failed -> styleIcon(
                 R.drawable.ic_error,
-                context.getString(R.string.dictation_error, state.message),
+                context.getString(R.string.dictation_error_action, state.message),
                 palette(
-                    lightBackground = Color.rgb(238, 240, 244),
-                    lightIcon = Color.rgb(91, 92, 110),
-                    darkBackground = Color.rgb(58, 58, 66),
-                    darkIcon = Color.rgb(209, 209, 218),
+                    lightBackground = Color.rgb(179, 38, 30),
+                    lightIcon = Color.WHITE,
+                    darkBackground = Color.rgb(255, 180, 171),
+                    darkIcon = Color.rgb(105, 0, 5),
                 ),
+                tooltip = context.getString(R.string.open_error_settings_hint),
+                emphasized = true,
             )
         }
     }
@@ -162,8 +164,14 @@ class DictationOverlayWindow(
 
     fun destroy() = hide()
 
-    private fun styleIcon(icon: Int, description: String, colors: ControlColors) {
-        prepareControl(description, colors)
+    private fun styleIcon(
+        icon: Int,
+        description: String,
+        colors: ControlColors,
+        tooltip: String = context.getString(R.string.move_microphone_hint),
+        emphasized: Boolean = false,
+    ) {
+        prepareControl(description, colors, tooltip, emphasized)
         control.showIcon(ContextCompat.getDrawable(context, icon)?.mutate(), colors.icon)
     }
 
@@ -176,8 +184,15 @@ class DictationOverlayWindow(
         }
     }
 
-    private fun prepareControl(description: String, colors: ControlColors) {
+    private fun prepareControl(
+        description: String,
+        colors: ControlColors,
+        tooltip: String = context.getString(R.string.move_microphone_hint),
+        emphasized: Boolean = false,
+    ) {
         control.contentDescription = context.getString(R.string.movable_microphone_description, description)
+        control.tooltipText = tooltip
+        control.elevation = dp(if (emphasized) 6 else 2).toFloat()
         control.background = roundedKey(colors)
         control.visibility = View.VISIBLE
     }

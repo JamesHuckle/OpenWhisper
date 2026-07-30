@@ -12,7 +12,13 @@ class DictationCoordinatorTest {
         val backend = FakeDictationBackend()
         val editor = FakeEditorSessionPort()
         val states = mutableListOf<DictationState>()
-        val coordinator = DictationCoordinator(backend, editor, states::add)
+        val copiedTranscripts = mutableListOf<String>()
+        val coordinator = DictationCoordinator(
+            backend,
+            editor,
+            states::add,
+            copiedTranscripts::add,
+        )
 
         coordinator.onMicPressed()
         assertEquals(1, backend.startCount)
@@ -28,6 +34,7 @@ class DictationCoordinatorTest {
 
         backend.listener?.onFinal("Hello world")
         assertEquals("Hello world", editor.committedText)
+        assertEquals(listOf("Hello world"), copiedTranscripts)
         assertEquals(DictationState.Idle, states.last())
     }
 
@@ -49,13 +56,20 @@ class DictationCoordinatorTest {
         val backend = FakeDictationBackend()
         val editor = FakeEditorSessionPort(commitResult = EditorCommitResult.FocusChanged)
         val states = mutableListOf<DictationState>()
-        val coordinator = DictationCoordinator(backend, editor, states::add)
+        val copiedTranscripts = mutableListOf<String>()
+        val coordinator = DictationCoordinator(
+            backend,
+            editor,
+            states::add,
+            copiedTranscripts::add,
+        )
 
         coordinator.onMicPressed()
         coordinator.onMicPressed()
         backend.listener?.onFinal("private words")
 
         assertEquals(1, editor.commitCount)
+        assertEquals(listOf("private words"), copiedTranscripts)
         assertEquals(DictationState.Failed("Focused field changed; transcript was not inserted"), states.last())
     }
 

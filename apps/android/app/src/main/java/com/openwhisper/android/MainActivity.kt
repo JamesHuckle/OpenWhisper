@@ -72,12 +72,14 @@ class MainActivity : Activity() {
         UpdateNotifier.fromIntent(intent)?.let { update ->
             window.decorView.post { showUpdatePrompt(update) }
         }
+        showDictationRecoveryFrom(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         UpdateNotifier.fromIntent(intent)?.let(::showUpdatePrompt)
+        showDictationRecoveryFrom(intent)
     }
 
     override fun onResume() {
@@ -610,10 +612,24 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun showDictationRecoveryFrom(source: Intent) {
+        val error = source.getStringExtra(EXTRA_DICTATION_ERROR) ?: return
+        source.removeExtra(EXTRA_DICTATION_ERROR)
+        window.decorView.post {
+            if (isFinishing || isDestroyed) return@post
+            AlertDialog.Builder(this)
+                .setTitle(R.string.dictation_recovery_title)
+                .setMessage(getString(R.string.dictation_recovery_message, error))
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+        }
+    }
+
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    private companion object {
-        const val REQUEST_AUDIO = 100
+    companion object {
+        const val EXTRA_DICTATION_ERROR = "com.openwhisper.android.extra.DICTATION_ERROR"
+        private const val REQUEST_AUDIO = 100
         const val REQUEST_IMPORT_AUDIO = 101
     }
 }

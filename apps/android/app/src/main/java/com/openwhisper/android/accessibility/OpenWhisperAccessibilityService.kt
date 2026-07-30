@@ -5,17 +5,21 @@ import android.accessibilityservice.InputMethod
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import android.widget.Toast
 import androidx.annotation.RequiresApi
 import com.openwhisper.android.MainActivity
 import com.openwhisper.android.audio.AndroidAudioRecorder
@@ -105,9 +109,19 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             context = this,
             windowManager = getSystemService(WindowManager::class.java),
         ) {
-            coordinator.onMicPressed()
+            val failure = coordinator.currentState as? DictationState.Failed
+            if (failure == null) {
+                coordinator.onMicPressed()
+            } else {
+                openDictationRecovery(failure.message)
+            }
         }
-        coordinator = DictationCoordinator(backend, editorController, ::render)
+        coordinator = DictationCoordinator(
+            backend = backend,
+            editor = editorController,
+            render = ::render,
+            onTranscriptReady = ::copyTranscriptToClipboard,
+        )
         createNotificationChannel()
         UpdateNotifier.checkIfDue(this)
         handler.postDelayed(updateCheck, UPDATE_CHECK_INTERVAL_MS)
@@ -215,6 +229,39 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    private fun copyTranscriptToClipboard(transcript: String) {
+        runCatching {
+            val clipboard = getSystemService(ClipboardManager::class.java)
+            val clip = ClipData.newPlainText(
+                getString(com.openwhisper.android.R.string.clipboard_transcript_label),
+                transcript,
+            )
+            clipboard.setPrimaryClip(clip)
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
+                Toast.makeText(
+                    this,
+                    com.openwhisper.android.R.string.transcript_copied,
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }.onFailure { error ->
+            Log.e("OpenWhisperService", "Unable to copy completed transcript", error)
+        }
+    }
+
+    private fun openDictationRecovery(message: String) {
+        startActivity(
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP,
+                )
+                putExtra(MainActivity.EXTRA_DICTATION_ERROR, message)
+            },
+        )
     }
 
     private fun createNotificationChannel() {

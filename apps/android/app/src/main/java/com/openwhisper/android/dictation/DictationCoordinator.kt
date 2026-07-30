@@ -20,6 +20,7 @@ class DictationCoordinator(
     private val backend: DictationBackend,
     private val editor: EditorSessionPort,
     private val render: (DictationState) -> Unit,
+    private val onTranscriptReady: (String) -> Unit = {},
 ) : DictationBackend.Listener {
     private var state: DictationState = DictationState.Idle
     private var session: EditorSession? = null
@@ -52,6 +53,7 @@ class DictationCoordinator(
 
     override fun onFinal(text: String) {
         if (state !is DictationState.Finalizing) return
+        onTranscriptReady(text)
         transition(DictationState.ReadyToInsert(text))
         val captured = session
         if (captured == null) {

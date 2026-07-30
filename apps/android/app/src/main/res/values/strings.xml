@@ -47,6 +47,12 @@
     <string name="movable_microphone_description">%1$s. Long press and drag to move.</string>
     <string name="transcribing">OpenWhisper is transcribing</string>
     <string name="dictation_error">OpenWhisper error: %1$s</string>
+    <string name="dictation_error_action">OpenWhisper error: %1$s. Tap to open settings.</string>
+    <string name="open_error_settings_hint">Tap to open OpenWhisper settings</string>
+    <string name="clipboard_transcript_label">OpenWhisper transcript</string>
+    <string name="transcript_copied">Transcript copied to clipboard</string>
+    <string name="dictation_recovery_title">Dictation needs attention</string>
+    <string name="dictation_recovery_message">%1$s\n\nReview the settings on this screen, then return to the text field and try again. If transcription completed before insertion failed, the transcript is already on your clipboard.</string>
     <string name="notification_channel_name">Active dictation</string>
     <string name="listening_notification_title">OpenWhisper is listening</string>
     <string name="listening_notification_text">Tap the microphone again to transcribe</string>
