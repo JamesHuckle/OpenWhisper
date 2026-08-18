@@ -151,14 +151,42 @@ describe("desktop regression contracts", () => {
 
   it("promotes saved transcripts over redundant retranscription", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
 
     expect(main).toContain("Recordings &amp; transcripts");
     expect(main).toContain("if (transcript) {");
-    expect(main).toContain("transcriptPreview(transcript)");
     expect(main).toContain('invoke("copy_to_clipboard", { text: transcript })');
-    expect(main.indexOf('copyButton.textContent = "Copy"'))
-      .toBeLessThan(main.indexOf("} else {", main.indexOf('copyButton.textContent = "Copy"')));
-    expect(css).toContain(".recording-transcript-body[hidden]");
+    // A non-empty transcript must render the transcript surface, not Transcribe.
+    expect(main.indexOf("panel.append(surface, transcriptToggle)"))
+      .toBeLessThan(main.indexOf("} else {", main.indexOf("if (transcript) {")));
+  });
+
+  it("renders one accessible transcript surface for both preview and full text", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
+
+    // Single text surface — the same element is clamped when collapsed and
+    // revealed when expanded, never duplicated into a second block.
+    expect(main).toContain("recording-transcript-text");
+    expect(main).toContain("transcriptText.id = `recording-transcript-${recording.id}`");
+    expect(main).toContain('transcriptText.textContent = transcript');
+    expect(main).not.toContain("recording-transcript-body");
+    expect(main).not.toContain("transcriptPreview");
+
+    // Disclosure control drives expansion via aria-expanded/aria-controls and
+    // is a sibling of the copy button (no button nested inside a button).
+    expect(main).toContain('transcriptToggle.setAttribute("aria-expanded", "false")');
+    expect(main).toContain('transcriptToggle.setAttribute("aria-controls", transcriptText.id)');
+    expect(main).toContain('panel.dataset.expanded = String(next)');
+
+    // Compact icon-only copy control: accessible name + title, no "Copy" text.
+    expect(main).toContain('copyButton.setAttribute("aria-label", `Copy transcript for ${recording.name}`)');
+    expect(main).toContain('copyButton.title = "Copy transcript"');
+    expect(main).not.toContain('copyButton.textContent = "Copy"');
+
+    // CSS drives the collapsed preview via line-clamp + fade on one surface.
+    expect(css).toContain("-webkit-line-clamp: 3");
+    expect(css).toContain('.recording-transcript[data-expanded="false"][data-clamped="true"] .recording-transcript-text');
+    expect(css).toContain("mask-image: linear-gradient(to bottom");
+    expect(css).not.toContain(".recording-transcript-body");
   });
 });

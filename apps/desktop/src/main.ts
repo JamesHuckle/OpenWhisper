@@ -15,7 +15,6 @@ import {
   getOverlayLayout,
 } from "./overlay-layout";
 import { captureBeforeSession, SessionAudioQueue } from "./recording-pipeline";
-import { transcriptPreview } from "./recording-transcript";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -814,43 +813,76 @@ async function refreshRecordings() {
 
       card.appendChild(audioButton);
       if (transcript) {
+        // A single transcript surface serves as both the collapsed preview
+        // (CSS line-clamp + fade) and the fully revealed text. Expanding does
+        // not render a second copy — the disclosure toggle only unclamps it.
+        const panel = document.createElement("div");
+        panel.className = "recording-transcript";
+        panel.dataset.expanded = "false";
+        panel.dataset.clamped = "false";
+
+        const surface = document.createElement("div");
+        surface.className = "recording-transcript-surface";
+
+        const transcriptText = document.createElement("div");
+        transcriptText.id = `recording-transcript-${recording.id}`;
+        transcriptText.className = "recording-transcript-text";
+        transcriptText.textContent = transcript;
+
         const copyButton = document.createElement("button");
         copyButton.type = "button";
         copyButton.className = "recording-copy";
-        copyButton.textContent = "Copy";
-        copyButton.title = `Copy transcript for ${recording.name}`;
+        copyButton.title = "Copy transcript";
         copyButton.setAttribute("aria-label", `Copy transcript for ${recording.name}`);
-        copyButton.addEventListener("click", () => {
+        copyButton.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="11" height="11" rx="2.4" />
+            <path d="M6 15H5.4A1.6 1.6 0 0 1 4 13.4V5.4A1.6 1.6 0 0 1 5.4 4h8A1.6 1.6 0 0 1 15 5.4V6" />
+          </svg>`;
+        copyButton.addEventListener("click", (event) => {
+          event.stopPropagation();
           void invoke("copy_to_clipboard", { text: transcript })
             .then(() => showToast("Transcript copied to clipboard"))
             .catch((error) => showToast(errorMessage(error, "Could not copy transcript")));
         });
-        card.appendChild(copyButton);
+        surface.append(transcriptText, copyButton);
 
-        const transcriptPanel = document.createElement("div");
-        transcriptPanel.className = "recording-transcript";
         const transcriptToggle = document.createElement("button");
         transcriptToggle.type = "button";
         transcriptToggle.className = "recording-transcript-toggle";
-        transcriptToggle.textContent = transcriptPreview(transcript);
-        transcriptToggle.title = "Expand transcript";
         transcriptToggle.setAttribute("aria-expanded", "false");
-        const transcriptBody = document.createElement("div");
-        transcriptBody.id = `recording-transcript-${recording.id}`;
-        transcriptBody.className = "recording-transcript-body";
-        transcriptBody.textContent = transcript;
-        transcriptBody.hidden = true;
-        transcriptToggle.setAttribute("aria-controls", transcriptBody.id);
+        transcriptToggle.setAttribute("aria-controls", transcriptText.id);
+        transcriptToggle.title = "Show full transcript";
+        transcriptToggle.hidden = true;
+        const toggleLabel = document.createElement("span");
+        toggleLabel.className = "recording-transcript-toggle-label";
+        toggleLabel.textContent = "Show more";
+        transcriptToggle.append(toggleLabel);
+        transcriptToggle.insertAdjacentHTML(
+          "beforeend",
+          `<svg class="recording-transcript-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 10.5 12 15 16.5 10.5" /></svg>`,
+        );
         transcriptToggle.addEventListener("click", () => {
-          const expanded = transcriptToggle.getAttribute("aria-expanded") === "true";
-          transcriptToggle.setAttribute("aria-expanded", String(!expanded));
-          transcriptToggle.title = expanded ? "Expand transcript" : "Collapse transcript";
-          transcriptBody.hidden = expanded;
-          transcriptPanel.classList.toggle("expanded", !expanded);
+          const expanded = panel.dataset.expanded === "true";
+          const next = !expanded;
+          panel.dataset.expanded = String(next);
+          transcriptToggle.setAttribute("aria-expanded", String(next));
+          toggleLabel.textContent = next ? "Show less" : "Show more";
+          transcriptToggle.title = next ? "Collapse transcript" : "Show full transcript";
           if (menuOpen) void applyOverlayLayout(true);
         });
-        transcriptPanel.append(transcriptToggle, transcriptBody);
-        card.appendChild(transcriptPanel);
+
+        panel.append(surface, transcriptToggle);
+        card.appendChild(panel);
+
+        // Only offer the disclosure when the preview is actually truncated.
+        // Measured after layout so short transcripts read as plain text.
+        requestAnimationFrame(() => {
+          const clamped = transcriptText.scrollHeight - transcriptText.clientHeight > 2;
+          panel.dataset.clamped = String(clamped);
+          transcriptToggle.hidden = !clamped;
+          if (clamped && menuOpen) void applyOverlayLayout(true);
+        });
       } else {
         const transcribeButton = document.createElement("button");
         transcribeButton.type = "button";
