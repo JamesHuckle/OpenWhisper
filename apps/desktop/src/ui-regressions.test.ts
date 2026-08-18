@@ -148,4 +148,17 @@ describe("desktop regression contracts", () => {
     expect(native).toContain("fn recording_read(");
     expect(native).toContain("STANDARD.encode(bytes)");
   });
+
+  it("promotes saved transcripts over redundant retranscription", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
+
+    expect(main).toContain("Recordings &amp; transcripts");
+    expect(main).toContain("if (transcript) {");
+    expect(main).toContain("transcriptPreview(transcript)");
+    expect(main).toContain('invoke("copy_to_clipboard", { text: transcript })');
+    expect(main.indexOf('copyButton.textContent = "Copy"'))
+      .toBeLessThan(main.indexOf("} else {", main.indexOf('copyButton.textContent = "Copy"')));
+    expect(css).toContain(".recording-transcript-body[hidden]");
+  });
 });

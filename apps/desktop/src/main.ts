@@ -15,6 +15,7 @@ import {
   getOverlayLayout,
 } from "./overlay-layout";
 import { captureBeforeSession, SessionAudioQueue } from "./recording-pipeline";
+import { transcriptPreview } from "./recording-transcript";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -188,7 +189,7 @@ app.innerHTML = `
           <button id="failure-dismiss" class="menu-action menu-action-secondary" type="button">Dismiss</button>
         </div>
       </div>
-      <div class="menu-section">Recordings</div>
+      <div class="menu-section">Recordings &amp; transcripts</div>
       <div class="menu-action-row menu-action-row-wide">
         <button id="menu-import-audio" class="menu-action" type="button">Transcribe audio file</button>
         <button id="menu-open-recordings" class="menu-icon-action" type="button" title="Open recordings folder" aria-label="Open recordings folder">
@@ -785,11 +786,12 @@ async function refreshRecordings() {
     const recordings = await invoke<RecordingMetadata[]>("recording_list");
     recentRecordings.replaceChildren();
     for (const recording of recordings.slice(0, 4)) {
+      const transcript = recording.transcript.trim();
       const card = document.createElement("div");
       card.className = "recording-card";
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "recording-row";
+      const audioButton = document.createElement("button");
+      audioButton.type = "button";
+      audioButton.className = "recording-row";
       const when = new Date(recording.createdAtMs).toLocaleString([], {
         month: "short",
         day: "numeric",
@@ -802,24 +804,66 @@ async function refreshRecordings() {
       const meta = document.createElement("span");
       meta.className = "recording-row-meta";
       meta.textContent = `${when} | ${formatRecordingSize(recording.bytes)} | ${recording.status}`;
-      button.append(main, meta);
-      button.title = "Open raw audio";
-      button.addEventListener("click", () => {
+      audioButton.append(main, meta);
+      audioButton.title = "Open raw audio";
+      audioButton.addEventListener("click", () => {
         void invoke("recording_open", { recordingId: recording.id }).catch((error) => {
           showToast(errorMessage(error, "Could not open recording"));
         });
       });
-      const transcribeButton = document.createElement("button");
-      transcribeButton.type = "button";
-      transcribeButton.className = "recording-transcribe";
-      transcribeButton.textContent = "Transcribe";
-      transcribeButton.title = `Transcribe ${recording.name} again`;
-      transcribeButton.setAttribute("aria-label", `Transcribe ${recording.name} again`);
-      transcribeButton.disabled = state !== "idle" || recording.id === currentRecordingId;
-      transcribeButton.addEventListener("click", () => {
-        void retranscribeRecording(recording);
-      });
-      card.append(button, transcribeButton);
+
+      card.appendChild(audioButton);
+      if (transcript) {
+        const copyButton = document.createElement("button");
+        copyButton.type = "button";
+        copyButton.className = "recording-copy";
+        copyButton.textContent = "Copy";
+        copyButton.title = `Copy transcript for ${recording.name}`;
+        copyButton.setAttribute("aria-label", `Copy transcript for ${recording.name}`);
+        copyButton.addEventListener("click", () => {
+          void invoke("copy_to_clipboard", { text: transcript })
+            .then(() => showToast("Transcript copied to clipboard"))
+            .catch((error) => showToast(errorMessage(error, "Could not copy transcript")));
+        });
+        card.appendChild(copyButton);
+
+        const transcriptPanel = document.createElement("div");
+        transcriptPanel.className = "recording-transcript";
+        const transcriptToggle = document.createElement("button");
+        transcriptToggle.type = "button";
+        transcriptToggle.className = "recording-transcript-toggle";
+        transcriptToggle.textContent = transcriptPreview(transcript);
+        transcriptToggle.title = "Expand transcript";
+        transcriptToggle.setAttribute("aria-expanded", "false");
+        const transcriptBody = document.createElement("div");
+        transcriptBody.id = `recording-transcript-${recording.id}`;
+        transcriptBody.className = "recording-transcript-body";
+        transcriptBody.textContent = transcript;
+        transcriptBody.hidden = true;
+        transcriptToggle.setAttribute("aria-controls", transcriptBody.id);
+        transcriptToggle.addEventListener("click", () => {
+          const expanded = transcriptToggle.getAttribute("aria-expanded") === "true";
+          transcriptToggle.setAttribute("aria-expanded", String(!expanded));
+          transcriptToggle.title = expanded ? "Expand transcript" : "Collapse transcript";
+          transcriptBody.hidden = expanded;
+          transcriptPanel.classList.toggle("expanded", !expanded);
+          if (menuOpen) void applyOverlayLayout(true);
+        });
+        transcriptPanel.append(transcriptToggle, transcriptBody);
+        card.appendChild(transcriptPanel);
+      } else {
+        const transcribeButton = document.createElement("button");
+        transcribeButton.type = "button";
+        transcribeButton.className = "recording-transcribe";
+        transcribeButton.textContent = "Transcribe";
+        transcribeButton.title = `Transcribe ${recording.name}`;
+        transcribeButton.setAttribute("aria-label", `Transcribe ${recording.name}`);
+        transcribeButton.disabled = state !== "idle" || recording.id === currentRecordingId;
+        transcribeButton.addEventListener("click", () => {
+          void retranscribeRecording(recording);
+        });
+        card.appendChild(transcribeButton);
+      }
       recentRecordings.appendChild(card);
     }
     if (recordings.length === 0) {
