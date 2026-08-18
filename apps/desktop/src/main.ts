@@ -34,6 +34,7 @@ type AppSettings = {
   refineEnabled: boolean;
   refinePrompt: string;
   showIdlePill: boolean;
+  holdToTalk: boolean;
 };
 type WidgetState = "idle" | "recording" | "transcribing" | "error";
 type MicDevice = { id: string; label: string };
@@ -85,6 +86,8 @@ let sessionFailure = "";
 let shouldPasteFinalTranscript = true;
 let pressToTalkHeld = false;
 let pressToTalkStarting = false;
+let toggleRecordingStarting = false;
+let toggleStopRequestedDuringStart = false;
 const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
   invoke<void>("worker_append_audio_chunk", {
     sessionId,
@@ -209,6 +212,17 @@ app.innerHTML = `
       </div>
       <div class="menu-prompt-hint">Turn this off to completely hide the collapsed pill. Use the tray icon to show it again.</div>
       <div class="menu-divider"></div>
+      <div class="menu-section">Shortcut</div>
+      <div class="menu-toggle-row">
+        <span class="menu-section menu-section-inline">Hold Ctrl+Space to talk</span>
+        <label class="toggle-switch" title="When off, press Ctrl+Space once to start and again to finish">
+          <input id="menu-hold-to-talk-toggle" type="checkbox" aria-label="Hold Ctrl+Space to talk" />
+          <span class="toggle-track"></span>
+          <span class="toggle-thumb"></span>
+        </label>
+      </div>
+      <div class="menu-prompt-hint">Turn this off to press Ctrl+Space once to start listening and again to finish.</div>
+      <div class="menu-divider"></div>
       <div class="menu-section">Microphone</div>
       <div id="mic-list"></div>
       <div class="menu-divider"></div>
@@ -269,6 +283,7 @@ const menuPromptInput = document.getElementById("menu-prompt-input") as HTMLText
 const menuRefineToggle = document.getElementById("menu-refine-toggle") as HTMLInputElement;
 const menuRefinePromptInput = document.getElementById("menu-refine-prompt-input") as HTMLTextAreaElement;
 const menuShowIdlePillToggle = document.getElementById("menu-show-idle-pill-toggle") as HTMLInputElement;
+const menuHoldToTalkToggle = document.getElementById("menu-hold-to-talk-toggle") as HTMLInputElement;
 const menuTargetAppName = document.getElementById("menu-target-app-name")!;
 const failurePanel = document.getElementById("failure-panel")!;
 const failureMessage = document.getElementById("failure-message")!;
@@ -293,6 +308,7 @@ let refineDirty = false;
 let refineSaveInFlight = false;
 let showIdlePill = true;
 let showIdlePillSaveInFlight = false;
+let holdToTalkSaveInFlight = false;
 let manualOverlayReveal = false;
 let widgetHovered = false;
 let expandTimeoutId: number | null = null;
@@ -929,8 +945,14 @@ async function startRecording() {
         startVolumeMonitor(stream);
         logDebug(`capture ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
-        // A shortcut may be released while microphone permission/capture starts.
-        if (pressToTalkStarting && !pressToTalkHeld) await stopRecording();
+        // A hold shortcut may be released, or a toggle shortcut may be pressed
+        // again, while microphone permission/capture is still starting.
+        if (
+          (pressToTalkStarting && !pressToTalkHeld) ||
+          toggleStopRequestedDuringStart
+        ) {
+          await stopRecording();
+        }
       },
       startSession: () => invoke<{ session_id: string }>("worker_start_session", {
         profileId: "default",
@@ -1293,7 +1315,22 @@ if (import.meta.env.DEV) {
 // ---------------------------------------------------------------------------
 async function toggleRecording() {
   if (state === "idle") {
-    await startRecording();
+    if (toggleRecordingStarting) {
+      toggleStopRequestedDuringStart = !toggleStopRequestedDuringStart;
+      return;
+    }
+
+    toggleRecordingStarting = true;
+    toggleStopRequestedDuringStart = false;
+    try {
+      await startRecording();
+      if (toggleStopRequestedDuringStart && state === "recording") {
+        await stopRecording();
+      }
+    } finally {
+      toggleRecordingStarting = false;
+      toggleStopRequestedDuringStart = false;
+    }
   } else if (state === "recording") {
     await stopRecording();
   }
@@ -1395,6 +1432,7 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
   menuModelSelect.value = settings.transcriptionModel ?? "gpt-4o-mini-transcribe";
   showIdlePill = settings.showIdlePill ?? true;
   menuShowIdlePillToggle.checked = showIdlePill;
+  menuHoldToTalkToggle.checked = settings.holdToTalk ?? true;
   syncModelHint();
   if (!promptDirty) {
     menuPromptInput.value = settings.transcriptionPrompt ?? "";
@@ -1457,7 +1495,7 @@ async function loadSettings() {
     const settings = await invoke<AppSettings>("app_get_settings");
     applySettingsUi(settings);
   } catch {
-    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: "gpt-4o-mini-transcribe", transcriptionPrompt: "", refineEnabled: true, refinePrompt: "", showIdlePill: true });
+    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: "gpt-4o-mini-transcribe", transcriptionPrompt: "", refineEnabled: true, refinePrompt: "", showIdlePill: true, holdToTalk: true });
   }
 }
 
@@ -1476,6 +1514,24 @@ menuShowIdlePillToggle.addEventListener("change", async () => {
     await loadSettings();
   } finally {
     showIdlePillSaveInFlight = false;
+  }
+});
+
+menuHoldToTalkToggle.addEventListener("change", async () => {
+  if (holdToTalkSaveInFlight) return;
+
+  holdToTalkSaveInFlight = true;
+  try {
+    const updated = await invoke<AppSettings>("app_save_settings", {
+      holdToTalk: menuHoldToTalkToggle.checked,
+    });
+    applySettingsUi(updated);
+    showToast(updated.holdToTalk ? "Hold to talk enabled" : "Press to start and stop enabled");
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : String(err));
+    await loadSettings();
+  } finally {
+    holdToTalkSaveInFlight = false;
   }
 });
 

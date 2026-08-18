@@ -49,10 +49,12 @@ mod text_inserter {
     static TARGET_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
     static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
     static CTRL_HELD: AtomicBool = AtomicBool::new(false);
+    static HOLD_TO_TALK_ENABLED: AtomicBool = AtomicBool::new(true);
     static PRESS_TO_TALK_ACTIVE: AtomicBool = AtomicBool::new(false);
     static SPACE_SWALLOWED: AtomicBool = AtomicBool::new(false);
     static PRESS_TO_TALK_START: AtomicBool = AtomicBool::new(false);
     static PRESS_TO_TALK_STOP: AtomicBool = AtomicBool::new(false);
+    static TOGGLE_RECORDING: AtomicBool = AtomicBool::new(false);
     static DEBUG_EVENT_BITS: AtomicU32 = AtomicU32::new(0);
 
     const INPUT_KEYBOARD: u32 = 1;
@@ -81,6 +83,7 @@ mod text_inserter {
     const DBG_START_FLAG: u32 = 1 << 5;
     const DBG_STOP_BY_CTRL: u32 = 1 << 6;
     const DBG_STOP_BY_SPACE: u32 = 1 << 7;
+    const DBG_TOGGLE_FLAG: u32 = 1 << 8;
 
     #[repr(C)]
     struct Rect {
@@ -236,6 +239,15 @@ mod text_inserter {
         PRESS_TO_TALK_STOP.swap(false, Ordering::SeqCst)
     }
 
+    /// Returns `true` once when Ctrl+Space should toggle recording.
+    pub fn take_toggle_recording() -> bool {
+        TOGGLE_RECORDING.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn set_hold_to_talk_enabled(enabled: bool) {
+        HOLD_TO_TALK_ENABLED.store(enabled, Ordering::SeqCst);
+    }
+
     pub fn take_debug_events() -> u32 {
         DEBUG_EVENT_BITS.swap(0, Ordering::SeqCst)
     }
@@ -265,6 +277,9 @@ mod text_inserter {
         }
         if bits & DBG_STOP_BY_SPACE != 0 {
             events.push("stop_flag_space_up");
+        }
+        if bits & DBG_TOGGLE_FLAG != 0 {
+            events.push("toggle_flag");
         }
         events.join(",")
     }
@@ -332,11 +347,11 @@ mod text_inserter {
         paste_shortcut();
     }
 
-    // ----- Low-level keyboard hook (Ctrl+Space hold-to-talk) -----
+    // ----- Low-level keyboard hook (Ctrl+Space hold or toggle-to-talk) -----
 
     // The hook proc must stay extremely small to avoid Windows timing
     // it out. It only flips atomics and swallows Space while the
-    // Ctrl+Space press-to-talk gesture is active.
+    // Ctrl+Space gesture is active.
     unsafe extern "system" fn ll_keyboard_proc(
         n_code: i32,
         w_param: usize,
@@ -374,9 +389,14 @@ mod text_inserter {
                         if down && CTRL_HELD.load(Ordering::SeqCst) {
                             SPACE_SWALLOWED.store(true, Ordering::SeqCst);
                             DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_DOWN, Ordering::SeqCst);
-                            if !PRESS_TO_TALK_ACTIVE.swap(true, Ordering::SeqCst) {
-                                PRESS_TO_TALK_START.store(true, Ordering::SeqCst);
-                                DEBUG_EVENT_BITS.fetch_or(DBG_START_FLAG, Ordering::SeqCst);
+                            if HOLD_TO_TALK_ENABLED.load(Ordering::SeqCst) {
+                                if !PRESS_TO_TALK_ACTIVE.swap(true, Ordering::SeqCst) {
+                                    PRESS_TO_TALK_START.store(true, Ordering::SeqCst);
+                                    DEBUG_EVENT_BITS.fetch_or(DBG_START_FLAG, Ordering::SeqCst);
+                                }
+                            } else {
+                                TOGGLE_RECORDING.store(true, Ordering::SeqCst);
+                                DEBUG_EVENT_BITS.fetch_or(DBG_TOGGLE_FLAG, Ordering::SeqCst);
                             }
                             return 1;
                         }
@@ -689,6 +709,10 @@ fn default_show_idle_pill() -> bool {
     true
 }
 
+fn default_hold_to_talk() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
@@ -704,6 +728,8 @@ struct AppSettings {
     refine_prompt: String,
     #[serde(default = "default_show_idle_pill")]
     show_idle_pill: bool,
+    #[serde(default = "default_hold_to_talk")]
+    hold_to_talk: bool,
 }
 
 impl Default for AppSettings {
@@ -715,6 +741,7 @@ impl Default for AppSettings {
             refine_enabled: true,
             refine_prompt: String::new(),
             show_idle_pill: true,
+            hold_to_talk: true,
         }
     }
 }
@@ -729,6 +756,7 @@ struct FrontendSettings {
     refine_enabled: bool,
     refine_prompt: String,
     show_idle_pill: bool,
+    hold_to_talk: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1014,6 +1042,7 @@ fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
         refine_enabled: settings.refine_enabled,
         refine_prompt: settings.refine_prompt.clone(),
         show_idle_pill: settings.show_idle_pill,
+        hold_to_talk: settings.hold_to_talk,
     }
 }
 
@@ -1401,6 +1430,7 @@ async fn app_save_settings(
     refine_enabled: Option<bool>,
     refine_prompt: Option<String>,
     show_idle_pill: Option<bool>,
+    hold_to_talk: Option<bool>,
 ) -> Result<FrontendSettings, String> {
     let updated = {
         let mut current = state
@@ -1429,6 +1459,9 @@ async fn app_save_settings(
         if let Some(show) = show_idle_pill {
             current.show_idle_pill = show;
         }
+        if let Some(enabled) = hold_to_talk {
+            current.hold_to_talk = enabled;
+        }
         current
     };
     save_settings(&app_handle, &updated).map_err(|e| e.to_string())?;
@@ -1440,6 +1473,9 @@ async fn app_save_settings(
             .map_err(|_| "Failed to lock settings".to_string())?;
         *settings = updated.clone();
     }
+
+    #[cfg(target_os = "windows")]
+    text_inserter::set_hold_to_talk_enabled(updated.hold_to_talk);
 
     // Force a fresh worker spawn so new settings are applied.
     let mut worker = state.worker.lock().await;
@@ -1852,7 +1888,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
 
     TrayIconBuilder::new()
         .icon(make_tray_icon())
-        .tooltip("OpenWhisper – hold Ctrl+Space to talk")
+        .tooltip("OpenWhisper – Ctrl+Space to talk")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -1922,6 +1958,8 @@ pub fn run() {
         })
         .setup(|app| {
             let loaded = load_settings(app.handle()).unwrap_or_default();
+            #[cfg(target_os = "windows")]
+            text_inserter::set_hold_to_talk_enabled(loaded.hold_to_talk);
             let state = app.state::<Arc<AppState>>();
             let mut settings = state
                 .settings
@@ -1973,6 +2011,7 @@ pub fn run() {
                         }
                         let should_start = text_inserter::take_press_to_talk_start();
                         let should_stop = text_inserter::take_press_to_talk_stop();
+                        let should_toggle = text_inserter::take_toggle_recording();
                         let debug_events = text_inserter::take_debug_events();
                         if debug_events != 0 {
                             let desc = text_inserter::describe_debug_events(debug_events);
@@ -1983,8 +2022,8 @@ pub fn run() {
                                 debug_log_line(
                                     "hook",
                                     &format!(
-                                        "events={} start_pending={} stop_pending={}",
-                                        desc, should_start, should_stop
+                                        "events={} start_pending={} stop_pending={} toggle_pending={}",
+                                        desc, should_start, should_stop, should_toggle
                                     ),
                                 );
                                 last_hook_log = now;
@@ -2000,6 +2039,12 @@ pub fn run() {
                         if should_stop {
                             debug_log_line("shortcut", "emit press-to-talk-stop");
                             let _ = poll_handle.emit("press-to-talk-stop", ());
+                        }
+                        if should_toggle {
+                            debug_log_line("shortcut", "emit toggle-recording");
+                            text_inserter::save_foreground();
+                            reveal_overlay_window(&poll_handle);
+                            let _ = poll_handle.emit("toggle-recording", ());
                         }
 
                         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2162,6 +2207,14 @@ mod tests {
 
         assert!(settings.show_idle_pill);
         assert!(frontend_settings_from(&settings).show_idle_pill);
+    }
+
+    #[test]
+    fn settings_without_shortcut_preference_keep_hold_to_talk() {
+        let settings: AppSettings = serde_json::from_value(json!({})).unwrap();
+
+        assert!(settings.hold_to_talk);
+        assert!(frontend_settings_from(&settings).hold_to_talk);
     }
 
     #[test]

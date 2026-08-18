@@ -41,6 +41,18 @@ describe("desktop regression contracts", () => {
     expect(native).toContain('MenuItem::with_id(app, "show", "Show Pill"');
   });
 
+  it("offers hold-to-talk and press-to-toggle shortcut modes", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+
+    expect(main).toContain("Hold Ctrl+Space to talk");
+    expect(main).toContain("press Ctrl+Space once to start listening and again to finish");
+    expect(main).toContain("holdToTalk: menuHoldToTalkToggle.checked");
+    expect(native).toContain("HOLD_TO_TALK_ENABLED");
+    expect(native).toContain("TOGGLE_RECORDING.store(true");
+    expect(native).toContain('emit("toggle-recording", ())');
+  });
+
   it("refreshes the stable local installer after every Windows build", () => {
     const buildScript = readFileSync(
       resolve(repositoryRoot, "scripts/build-windows-installer.ps1"),
