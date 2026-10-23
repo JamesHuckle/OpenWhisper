@@ -189,4 +189,20 @@ describe("desktop regression contracts", () => {
     expect(css).toContain("mask-image: linear-gradient(to bottom");
     expect(css).not.toContain(".recording-transcript-body");
   });
+
+  it("reports failures with a brief inline pill notice instead of opening the menu", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
+    const failureHandler = main.slice(
+      main.indexOf("async function handleTranscriptionFailure"),
+      main.indexOf("function showWidgetNotice"),
+    );
+
+    expect(failureHandler).toContain("showWidgetNotice(");
+    expect(failureHandler).not.toContain("openMenu()");
+    expect(failureHandler).not.toContain("showToast(");
+    expect(main).toContain("const NOTICE_DURATION_MS = 5000;");
+    expect(main).toContain('id="widget-notice"');
+    expect(css).toContain('#widget[data-notice="true"] .widget-notice');
+  });
 });

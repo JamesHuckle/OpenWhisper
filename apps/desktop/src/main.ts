@@ -106,6 +106,10 @@ let menuOpen = false;
 
 const HOVER_EXPAND_DELAY_MS = 40;
 const HOVER_COLLAPSE_GRACE_MS = 90;
+const NOTICE_DURATION_MS = 5000;
+// Left inset + status dot + gaps + dropdown button around the notice text.
+const NOTICE_CHROME_WIDTH = 52;
+const NOTICE_MAX_WIDTH = 180;
 const AUDIO_BATCH_BYTES = 16 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -170,6 +174,11 @@ app.innerHTML = `
         <svg class="icon-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
           <path d="M12 2.75A9.25 9.25 0 0 1 21.25 12" stroke-linecap="round" />
         </svg>
+      </span>
+
+      <span id="widget-notice" class="widget-notice" role="status" aria-live="polite">
+        <span class="widget-notice-dot" aria-hidden="true"></span>
+        <span id="widget-notice-text" class="widget-notice-text"></span>
       </span>
 
       <button id="btn-dropdown" class="dropdown-btn" type="button" title="Select microphone and settings">
@@ -293,6 +302,7 @@ const menuImportAudio = document.getElementById("menu-import-audio") as HTMLButt
 const menuOpenRecordings = document.getElementById("menu-open-recordings") as HTMLButtonElement;
 const audioFileInput = document.getElementById("audio-file-input") as HTMLInputElement;
 const recentRecordings = document.getElementById("recent-recordings")!;
+const widgetNoticeText = document.getElementById("widget-notice-text")!;
 
 let hasOpenaiApiKey = false;
 let settingsLoaded = false;
@@ -313,6 +323,8 @@ let manualOverlayReveal = false;
 let widgetHovered = false;
 let expandTimeoutId: number | null = null;
 let collapseTimeoutId: number | null = null;
+let noticeWidth = 0;
+let noticeTimeoutId: number | null = null;
 let lastAppliedLayout: { width: number; height: number; anchorOffsetY: number; visible: boolean } | null = null;
 let overlayLayoutQueue: Promise<void> = Promise.resolve();
 
@@ -322,10 +334,13 @@ function logDebug(message: string) {
 }
 
 function isWidgetExpanded() {
-  return widgetHovered || menuOpen || state !== "idle";
+  return widgetHovered || menuOpen || state !== "idle" || noticeWidth > 0;
 }
 
 function getWidgetSize() {
+  if (noticeWidth > 0) {
+    return { width: noticeWidth, height: EXPANDED_HEIGHT };
+  }
   if (isWidgetExpanded()) {
     return { width: EXPANDED_WIDTH, height: EXPANDED_HEIGHT };
   }
@@ -341,6 +356,7 @@ function syncWidgetFrame() {
   widget.dataset.expanded = String(isWidgetExpanded());
   widget.dataset.hovered = String(widgetHovered);
   widget.dataset.menuOpen = String(menuOpen);
+  widget.dataset.notice = String(noticeWidth > 0);
   widget.dataset.hasLastTranscript = String(lastTranscript.length > 0);
 }
 
@@ -365,6 +381,7 @@ function getWindowLayout() {
   const menuRect = menuVisible ? micMenu.getBoundingClientRect() : undefined;
   const layout = getOverlayLayout({
     expanded: isWidgetExpanded(),
+    noticeWidth,
     settingsLoaded,
     hasOpenaiApiKey: hasOpenaiApiKey || state !== "idle",
     menuVisible,
@@ -373,7 +390,7 @@ function getWindowLayout() {
   });
   return {
     ...layout,
-    visible: showIdlePill || state !== "idle" || menuOpen || manualOverlayReveal,
+    visible: showIdlePill || state !== "idle" || menuOpen || manualOverlayReveal || noticeWidth > 0,
   };
 }
 
@@ -468,6 +485,8 @@ async function collapseOverlay() {
   setWidgetHovered(false);
   stopAppPoll();
   micMenu.classList.add("hidden");
+  // A failure panel only lingers while its widget notice is still showing.
+  if (noticeWidth === 0) failurePanel.classList.add("hidden");
   await applyOverlayLayout();
 }
 
@@ -765,14 +784,42 @@ async function handleTranscriptionFailure(error: unknown) {
     lastFailedRecordingId = recordingId;
     await finishCurrentRecording("failed", "", message);
   }
+  const sentence = /[.!?]$/.test(message) ? message : `${message}.`;
   failureMessage.textContent = recordingId
-    ? `${message} The raw audio was saved locally and can be opened below.`
+    ? `${sentence} The raw audio was saved locally and can be opened below.`
     : message;
   failureOpenRecording.disabled = !lastFailedRecordingId;
   failurePanel.classList.remove("hidden");
-  showToast(message, 8000);
-  await openMenu();
-  await applyOverlayLayout(true);
+  // Failures never open the menu or steal the flow: the pill briefly shows a
+  // short notice in place, and the menu (with the raw audio) stays one click
+  // away on its dropdown until the notice fades.
+  showWidgetNotice(message.length <= 24 ? message : "Transcription failed", message);
+}
+
+function showWidgetNotice(text: string, detail: string) {
+  widgetNoticeText.textContent = text;
+  widget.title = detail;
+  // scrollWidth is the text's natural width even while the collapsed pill
+  // squeezes the clipped label.
+  noticeWidth = Math.min(
+    NOTICE_MAX_WIDTH,
+    Math.max(EXPANDED_WIDTH, widgetNoticeText.scrollWidth + NOTICE_CHROME_WIDTH),
+  );
+  if (noticeTimeoutId !== null) clearTimeout(noticeTimeoutId);
+  noticeTimeoutId = window.setTimeout(() => clearWidgetNotice(), NOTICE_DURATION_MS);
+  void applyOverlayLayout(true);
+}
+
+function clearWidgetNotice() {
+  if (noticeTimeoutId !== null) {
+    clearTimeout(noticeTimeoutId);
+    noticeTimeoutId = null;
+  }
+  if (noticeWidth === 0) return;
+  noticeWidth = 0;
+  widget.removeAttribute("title");
+  if (!menuOpen) failurePanel.classList.add("hidden");
+  void applyOverlayLayout(true);
 }
 
 function formatRecordingSize(bytes: number): string {
@@ -974,6 +1021,7 @@ async function startRecording() {
     `startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
   );
   if (state !== "idle") return;
+  clearWidgetNotice();
 
   try {
     await invoke("capture_paste_target");
@@ -1179,6 +1227,7 @@ async function transcribeStoredAudio(
   mimeType: string,
   profileId: string,
 ) {
+  clearWidgetNotice();
   currentRecordingId = recordingId;
   lastFailedRecordingId = null;
   sessionFailure = "";

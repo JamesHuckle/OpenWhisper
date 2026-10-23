@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import sys
 import tempfile
 import uuid
+from array import array
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +32,54 @@ class Session:
 
 
 _REALTIME_ROTATE_BYTES = 24_000 * 2 * 25 * 60
+_NO_AUDIO_MESSAGE = "No audio found"
+# A quick tap of the shortcut captures a fraction of a second of PCM. Uploading
+# it either fails (the API rejects clips under 0.1 s) or makes the model echo
+# the dictionary prompt back, so treat anything this short as no audio.
+_MIN_PCM_SECONDS = 0.3
+# A muted or disconnected microphone produces near-digital silence. Real speech
+# peaks far above this, even on quiet microphones.
+_SILENT_PCM_PEAK = 100
+_PCM_SCAN_BYTES = 1024 * 1024
+
+
+def _normalize_words(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _echoes_prompt(text: str, prompt: str) -> bool:
+    """Transcription models answer silent or near-silent audio by repeating
+    the vocabulary prompt. Such a transcript is no speech, not dictation."""
+    spoken = _normalize_words(text)
+    hints = _normalize_words(prompt)
+    if not spoken or not hints:
+        return False
+    return spoken in hints and len(spoken) >= len(hints) / 2
+
+
+def _pcm_is_silent(path: str) -> bool:
+    peak = 0
+    with open(path, "rb") as source:
+        while True:
+            block = source.read(_PCM_SCAN_BYTES)
+            if not block:
+                return True
+            usable = len(block) - (len(block) % 2)
+            if usable:
+                samples = array("h")
+                samples.frombytes(block[:usable])
+                if sys.byteorder == "big":
+                    samples.byteswap()
+                peak = max(peak, max(samples), -min(samples))
+                if peak >= _SILENT_PCM_PEAK:
+                    return False
+
+
+def _pcm_rate(mime_type: str) -> int | None:
+    if not mime_type.startswith("audio/pcm"):
+        return None
+    match = re.search(r"(?:rate|samplerate)=(\d+)", mime_type, re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 class WorkerServer:
@@ -180,10 +230,15 @@ class WorkerServer:
 
         session = self._sessions[session_id]
         if session.audio_bytes == 0:
-            session.events.append({"type": "error", "text": "No audio captured"})
-            session.finalized = True
-            self._remove_audio_file(session)
-            return self._ok(request.id, {"final_text": ""})
+            return self._finish_without_audio(request.id, session, "no_bytes")
+
+        sample_rate = _pcm_rate(mime_type)
+        if sample_rate and not session.realtime_segments:
+            seconds = session.audio_bytes / (sample_rate * 2)
+            if seconds < _MIN_PCM_SECONDS:
+                return self._finish_without_audio(request.id, session, f"too_short={seconds:.2f}s")
+            if _pcm_is_silent(session.audio_path):
+                return self._finish_without_audio(request.id, session, "silent")
 
         try:
             if session.realtime_stream:
@@ -212,14 +267,9 @@ class WorkerServer:
             return self._ok(request.id, {"final_text": ""})
 
         if not text.strip():
-            sys.stderr.write(
-                f"[worker] finalize_session_audio session_id={session_id!r} empty_transcript=True\n"
-            )
-            sys.stderr.flush()
-            session.events.append({"type": "error", "text": "No speech detected"})
-            session.finalized = True
-            self._remove_audio_file(session)
-            return self._ok(request.id, {"final_text": ""})
+            return self._finish_without_audio(request.id, session, "empty_transcript")
+        if _echoes_prompt(text, session.prompt):
+            return self._finish_without_audio(request.id, session, "prompt_echo")
 
         if session.refine_enabled:
             sys.stderr.write(
@@ -255,6 +305,22 @@ class WorkerServer:
         session.finalized = True
         self._remove_audio_file(session)
         return self._ok(request.id, {"final_text": text})
+
+    def _finish_without_audio(
+        self, request_id: str, session: Session, reason: str
+    ) -> WorkerResponse:
+        sys.stderr.write(
+            f"[worker] finalize_session_audio session_id={session.session_id!r} "
+            f"no_audio={reason}\n"
+        )
+        sys.stderr.flush()
+        if session.realtime_stream:
+            session.realtime_stream.close()
+            session.realtime_stream = None
+        session.events.append({"type": "error", "text": _NO_AUDIO_MESSAGE})
+        session.finalized = True
+        self._remove_audio_file(session)
+        return self._ok(request_id, {"final_text": ""})
 
     @staticmethod
     def _remove_audio_file(session: Session) -> None:

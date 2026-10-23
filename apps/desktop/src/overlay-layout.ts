@@ -9,6 +9,8 @@ export const API_KEY_BUBBLE_STACK_HEIGHT = 44;
 
 export type OverlayLayoutInput = {
   expanded: boolean;
+  /** Width of the pill while it shows a short inline notice such as "No audio found". */
+  noticeWidth?: number;
   settingsLoaded: boolean;
   hasOpenaiApiKey: boolean;
   menuVisible: boolean;
@@ -32,9 +34,10 @@ export function getOverlayLayout(input: OverlayLayoutInput): OverlayLayout {
   // per-transition resize+reposition jitter (and no pointer-enter/leave
   // feedback loop, since the window never moves out from under the cursor).
   //
-  // Only three things ever change the native window: the mic menu opening, the
-  // onboarding bubble appearing, or the cursor moving to another monitor.
-  const frameWidth = EXPANDED_WIDTH;
+  // Only four things ever change the native window: the mic menu opening, the
+  // onboarding bubble appearing, a brief inline notice widening the pill, or
+  // the cursor moving to another monitor.
+  const frameWidth = Math.max(EXPANDED_WIDTH, Math.ceil(input.noticeWidth ?? 0));
   const frameHeight = EXPANDED_HEIGHT;
   // A constant anchor offset keeps the window's pinned bottom edge fixed across
   // every state. Combined with the CSS pill being bottom-anchored, the pill's

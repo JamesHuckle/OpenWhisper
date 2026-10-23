@@ -75,4 +75,22 @@ describe("overlay startup layout", () => {
       bubbleVisible: true,
     });
   });
+
+  it("widens only for an inline notice and keeps the pinned bottom edge", () => {
+    const pill = getOverlayLayout({
+      expanded: true,
+      settingsLoaded: true,
+      hasOpenaiApiKey: true,
+      menuVisible: false,
+    });
+    const notice = getOverlayLayout({
+      expanded: true,
+      noticeWidth: 131.4,
+      settingsLoaded: true,
+      hasOpenaiApiKey: true,
+      menuVisible: false,
+    });
+
+    expect(notice).toEqual({ ...pill, width: 132 });
+  });
 });

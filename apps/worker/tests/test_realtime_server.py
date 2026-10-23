@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import math
+import struct
 import unittest
 from unittest.mock import patch
 
@@ -42,8 +44,48 @@ class FakeRealtimeOpenAI:
         return text
 
 
+class FakeFileOpenAI:
+    model = "gpt-4o-mini-transcribe"
+
+    def __init__(self, transcript: str) -> None:
+        self.transcript = transcript
+        self.transcribed = 0
+
+    def transcribe_file(self, _path, mime_type: str, prompt: str = "", on_progress=None) -> str:
+        self.transcribed += 1
+        return self.transcript
+
+    def polish(self, text: str, _prompt: str) -> str:
+        return text
+
+
 def request(method: str, **params) -> WorkerRequest:
     return WorkerRequest(id=method, method=method, params=params)
+
+
+def pcm_tone(seconds: float, amplitude: int = 6000, rate: int = 24_000) -> bytes:
+    frames = int(seconds * rate)
+    return b"".join(
+        struct.pack("<h", int(amplitude * math.sin(2 * math.pi * 220 * i / rate)))
+        for i in range(frames)
+    )
+
+
+def dictate(server: WorkerServer, audio: bytes, prompt: str = "") -> list[dict]:
+    session_id = server.handle(
+        request("start_session", prompt=prompt, refine_enabled=False)
+    ).result["session_id"]
+    server.handle(
+        request(
+            "append_audio_chunk",
+            session_id=session_id,
+            chunk_base64=base64.b64encode(audio).decode("ascii"),
+        )
+    )
+    server.handle(
+        request("finalize_session_audio", session_id=session_id, mime_type="audio/pcm;rate=24000")
+    )
+    return server.handle(request("poll_session_events", session_id=session_id)).result["events"]
 
 
 class RealtimeWorkerServerTests(unittest.TestCase):
@@ -61,7 +103,7 @@ class RealtimeWorkerServerTests(unittest.TestCase):
 
         # Consume the initial Listening status, then stream one PCM chunk.
         self.server.handle(request("poll_session_events", session_id=session_id))
-        audio = b"\x01\x02\x03\x04"
+        audio = pcm_tone(0.5)
         appended = self.server.handle(
             request(
                 "append_audio_chunk",
@@ -117,6 +159,31 @@ class RealtimeWorkerServerTests(unittest.TestCase):
             )
         )
         self.assertEqual(finalized.result["final_text"], "hello world hello world")
+
+
+class NoAudioWorkerServerTests(unittest.TestCase):
+    PROMPT = "Glossary:\nZoon\nZoon Robotics\nEuphoric"
+
+    def server_returning(self, transcript: str) -> tuple[WorkerServer, FakeFileOpenAI]:
+        server = WorkerServer()
+        server._openai = FakeFileOpenAI(transcript)
+        return server, server._openai
+
+    def test_quick_tap_and_silence_report_no_audio_without_transcribing(self) -> None:
+        for audio in (pcm_tone(0.1), bytes(24_000 * 2)):
+            server, openai = self.server_returning("Glossary: Zoon Zoon Robotics Euphoric")
+            events = dictate(server, audio, self.PROMPT)
+            self.assertEqual(events[-1], {"type": "error", "text": "No audio found"})
+            self.assertEqual(openai.transcribed, 0)
+
+    def test_dictionary_echo_is_not_pasted_but_real_speech_is(self) -> None:
+        server, _ = self.server_returning("Glossary: Zoon Zoon Robotics Euphoric")
+        events = dictate(server, pcm_tone(1.0), self.PROMPT)
+        self.assertEqual(events[-1], {"type": "error", "text": "No audio found"})
+
+        server, _ = self.server_returning("Zoon Robotics is hiring.")
+        events = dictate(server, pcm_tone(1.0), self.PROMPT)
+        self.assertEqual(events[-1], {"type": "final", "text": "Zoon Robotics is hiring."})
 
 
 if __name__ == "__main__":
