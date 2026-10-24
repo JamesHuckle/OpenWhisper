@@ -23,9 +23,8 @@ import "./styles.css";
 type TranscriptEvent = { type: "partial" | "final" | "warning" | "error"; text: string };
 type PollResponse = { events: TranscriptEvent[]; done?: boolean };
 type TranscriptionModel =
-  | "gpt-4o-mini-transcribe"
-  | "gpt-4o-transcribe"
-  | "gpt-realtime-transcribe";
+  | "gpt-transcribe"
+  | "gpt-live-transcribe";
 type AppSettings = {
   hasOpenaiApiKey: boolean;
   openaiApiKeyPreview: string | null;
@@ -237,9 +236,8 @@ app.innerHTML = `
       <div class="menu-divider"></div>
       <div class="menu-section">Transcription model</div>
       <select id="menu-model-select" class="menu-select" aria-label="Transcription model">
-        <option value="gpt-4o-mini-transcribe">Fast — GPT-4o mini ($1.25/$5 per 1M tokens)</option>
-        <option value="gpt-4o-transcribe">Accurate — GPT-4o ($2.50/$10 per 1M tokens)</option>
-        <option value="gpt-realtime-transcribe">Realtime — GPT-Realtime-Whisper ($0.017/min)</option>
+        <option value="gpt-transcribe">Standard — GPT-Transcribe ($0.0045/min)</option>
+        <option value="gpt-live-transcribe">Live — GPT-Live-Transcribe ($0.017/min)</option>
       </select>
       <div id="menu-model-hint" class="menu-prompt-hint"></div>
       <div class="menu-divider"></div>
@@ -1086,7 +1084,7 @@ async function startRecording() {
     audioQueue.attachSession(currentSessionId);
     finalTranscript = "";
     liveTranscript = "";
-    streamTextToTarget = settings.transcriptionModel === "gpt-realtime-transcribe";
+    streamTextToTarget = settings.transcriptionModel === "gpt-live-transcribe";
     pastedTranscript = "";
     targetWriteQueue = Promise.resolve();
     startPolling();
@@ -1174,8 +1172,8 @@ async function transcribeImportedFile(file: File) {
     if (!settings.hasOpenaiApiKey) {
       throw new Error("Set your OpenAI API key before importing audio");
     }
-    if (settings.transcriptionModel === "gpt-realtime-transcribe") {
-      throw new Error("Choose Fast or Accurate transcription for imported audio files");
+    if (settings.transcriptionModel === "gpt-live-transcribe") {
+      throw new Error("Choose Standard transcription for imported audio files");
     }
     const bytes = await file.arrayBuffer();
     const mimeType = file.type || mimeTypeForFileName(file.name);
@@ -1202,8 +1200,8 @@ async function retranscribeRecording(recording: RecordingMetadata) {
     if (!settings.hasOpenaiApiKey) {
       throw new Error("Set your OpenAI API key before transcribing saved audio");
     }
-    if (settings.transcriptionModel === "gpt-realtime-transcribe") {
-      throw new Error("Choose Fast or Accurate transcription for saved audio files");
+    if (settings.transcriptionModel === "gpt-live-transcribe") {
+      throw new Error("Choose Standard transcription for saved audio files");
     }
     const audio = await invoke<RecordingAudio>("recording_read", {
       recordingId: recording.id,
@@ -1532,12 +1530,10 @@ function syncRefinePromptVisibility() {
 }
 
 const MODEL_HINTS: Record<TranscriptionModel, string> = {
-  "gpt-4o-mini-transcribe":
-    "Lowest-cost everyday choice. Fast, accurate dictation. API input/output rates: $1.25/$5 per 1M tokens.",
-  "gpt-4o-transcribe":
-    "Best accuracy for accents, noise, and difficult audio. API input/output rates: $2.50/$10 per 1M tokens.",
-  "gpt-realtime-transcribe":
-    "Lowest-latency streaming model (official API model: GPT-Realtime-Whisper). $0.017 per audio minute.",
+  "gpt-transcribe":
+    "OpenAI's most accurate transcription model. Transcribes when you finish speaking. $0.0045 per audio minute.",
+  "gpt-live-transcribe":
+    "Types as you speak, so text is ready the moment you stop. $0.017 per audio minute.",
 };
 
 function syncModelHint() {
@@ -1554,7 +1550,7 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
   applyStoredKeyPreview(settings.openaiApiKeyPreview);
   menuKeyStatus.textContent = settings.hasOpenaiApiKey ? configuredLabel : "Not configured";
   menuKeyStatus.className = `menu-item ${settings.hasOpenaiApiKey ? "key-ok" : "key-missing"}`;
-  menuModelSelect.value = settings.transcriptionModel ?? "gpt-4o-mini-transcribe";
+  menuModelSelect.value = settings.transcriptionModel ?? "gpt-transcribe";
   showIdlePill = settings.showIdlePill ?? true;
   menuShowIdlePillToggle.checked = showIdlePill;
   menuHoldToTalkToggle.checked = settings.holdToTalk ?? true;
@@ -1620,7 +1616,7 @@ async function loadSettings() {
     const settings = await invoke<AppSettings>("app_get_settings");
     applySettingsUi(settings);
   } catch {
-    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: "gpt-4o-mini-transcribe", transcriptionPrompt: "", refineEnabled: true, refinePrompt: "", showIdlePill: true, holdToTalk: true });
+    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: "gpt-transcribe", transcriptionPrompt: "", refineEnabled: true, refinePrompt: "", showIdlePill: true, holdToTalk: true });
   }
 }
 

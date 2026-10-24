@@ -47,33 +47,34 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         self.assertNotIn("output_modalities", session)
         self.assertEqual(
             session["audio"]["input"]["transcription"]["model"],
-            "gpt-realtime-whisper",
+            "gpt-live-transcribe",
         )
         self.assertEqual(deltas, ["hello"])
 
-    def test_mini_transcribe_is_the_default(self) -> None:
+    def test_gpt_transcribe_is_the_default(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             client = OpenWhisperOpenAI()
-        self.assertEqual(client.model, "gpt-4o-mini-transcribe")
+        self.assertEqual(client.model, "gpt-transcribe")
+        self.assertFalse(client.is_live)
 
     def test_available_models_only_contains_transcription_models(self) -> None:
         client = OpenWhisperOpenAI()
         self.assertEqual(
             client.available_models(),
-            [
-                "gpt-4o-mini-transcribe",
-                "gpt-4o-transcribe",
-                "gpt-realtime-transcribe",
-            ],
+            ["gpt-transcribe", "gpt-live-transcribe"],
         )
 
-    def test_realtime_transcribe_alias_is_supported(self) -> None:
-        with patch.dict(os.environ, {"OPENWHISPER_MODEL": "gpt-realtime-transcribe"}):
-            client = OpenWhisperOpenAI()
-        self.assertEqual(client.model, "gpt-realtime-transcribe")
+    def test_legacy_saved_models_map_to_current_models(self) -> None:
+        for legacy, current in (
+            ("gpt-4o-mini-transcribe", "gpt-transcribe"),
+            ("gpt-4o-transcribe", "gpt-transcribe"),
+            ("gpt-realtime-transcribe", "gpt-live-transcribe"),
+        ):
+            with patch.dict(os.environ, {"OPENWHISPER_MODEL": legacy}):
+                self.assertEqual(OpenWhisperOpenAI().model, current)
 
-    def test_realtime_transcribe_routes_pcm_to_realtime_api(self) -> None:
-        with patch.dict(os.environ, {"OPENWHISPER_MODEL": "gpt-realtime-transcribe"}):
+    def test_live_transcribe_routes_pcm_to_realtime_api(self) -> None:
+        with patch.dict(os.environ, {"OPENWHISPER_MODEL": "gpt-live-transcribe"}):
             client = OpenWhisperOpenAI()
         stream = Mock()
         stream.finalize.return_value = "hello"
@@ -84,8 +85,8 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         stream.append.assert_called_once_with(b"\x00\x00")
         stream.finalize.assert_called_once_with()
 
-    def test_realtime_transcribe_rejects_compressed_audio(self) -> None:
-        with patch.dict(os.environ, {"OPENWHISPER_MODEL": "gpt-realtime-transcribe"}):
+    def test_live_transcribe_rejects_compressed_audio(self) -> None:
+        with patch.dict(os.environ, {"OPENWHISPER_MODEL": "gpt-live-transcribe"}):
             client = OpenWhisperOpenAI()
         with self.assertRaisesRegex(RuntimeError, "requires 24 kHz PCM"):
             client.transcribe_bytes(b"webm", "audio/webm")

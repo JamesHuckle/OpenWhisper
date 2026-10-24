@@ -19,7 +19,7 @@ This package documents the canonical local IPC contract between desktop and work
   "id": "uuid",
   "ok": true,
   "result": {
-    "models": ["gpt-4o-mini-transcribe"]
+    "models": ["gpt-transcribe"]
   }
 }
 ```

@@ -23,11 +23,12 @@ _MIN_SENTENCES_PER_POLISH_CHUNK = 4
 _MAX_PARALLEL_POLISH_CHUNKS = 5
 _MAX_POLISH_CHUNK_CHARS = 12_000
 _MAX_AUDIO_UPLOAD_BYTES = 24 * 1024 * 1024
-_REALTIME_TRANSCRIBE_ALIAS = "gpt-realtime-transcribe"
-_REALTIME_TRANSCRIBE_MODEL = "gpt-realtime-whisper"
+_LIVE_TRANSCRIBE_MODEL = "gpt-live-transcribe"
+_DEFAULT_TRANSCRIBE_MODEL = "gpt-transcribe"
 _REALTIME_FINAL_TIMEOUT_SECONDS = 120.0
 
 _STREAMING_MODELS = frozenset({
+    "gpt-transcribe",
     "gpt-4o-transcribe",
     "gpt-4o-mini-transcribe",
     "gpt-4o-mini-transcribe-2025-12-15",
@@ -35,6 +36,7 @@ _STREAMING_MODELS = frozenset({
 })
 
 _PROMPT_SUPPORTED_MODELS = frozenset({
+    "gpt-transcribe",
     "whisper-1",
     "gpt-4o-transcribe",
     "gpt-4o-mini-transcribe",
@@ -42,10 +44,16 @@ _PROMPT_SUPPORTED_MODELS = frozenset({
 })
 
 _TRANSCRIPTION_MODELS = (
-    "gpt-4o-mini-transcribe",
-    "gpt-4o-transcribe",
-    _REALTIME_TRANSCRIBE_ALIAS,
+    _DEFAULT_TRANSCRIBE_MODEL,
+    _LIVE_TRANSCRIBE_MODEL,
 )
+
+# Settings saved before the gpt-transcribe family keep working after upgrade.
+_LEGACY_MODEL_ALIASES = {
+    "gpt-4o-mini-transcribe": _DEFAULT_TRANSCRIBE_MODEL,
+    "gpt-4o-transcribe": _DEFAULT_TRANSCRIBE_MODEL,
+    "gpt-realtime-transcribe": _LIVE_TRANSCRIBE_MODEL,
+}
 
 
 class RealtimeTranscriptionStream:
@@ -78,7 +86,7 @@ class RealtimeTranscriptionStream:
                     "input": {
                         "format": {"type": "audio/pcm", "rate": 24000},
                         "transcription": {
-                            "model": _REALTIME_TRANSCRIBE_MODEL,
+                            "model": _LIVE_TRANSCRIBE_MODEL,
                             "delay": "minimal",
                         },
                         "turn_detection": None,
@@ -171,7 +179,8 @@ kind of, basically, literally, right (at sentence ends), so (as a standalone sen
 
 class OpenWhisperOpenAI:
     def __init__(self) -> None:
-        self._model = os.getenv("OPENWHISPER_MODEL", "gpt-4o-mini-transcribe").strip()
+        model = os.getenv("OPENWHISPER_MODEL", _DEFAULT_TRANSCRIBE_MODEL).strip()
+        self._model = _LEGACY_MODEL_ALIASES.get(model, model)
         if self._model not in _TRANSCRIPTION_MODELS:
             raise ValueError(f"Unsupported transcription model: {self._model}")
         self._polish_model = os.getenv("OPENWHISPER_POLISH_MODEL", "gpt-5.4").strip()
@@ -180,6 +189,10 @@ class OpenWhisperOpenAI:
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def is_live(self) -> bool:
+        return self._model == _LIVE_TRANSCRIBE_MODEL
 
     def _get_client(self) -> OpenAI:
         if self._client is None:
@@ -198,7 +211,7 @@ class OpenWhisperOpenAI:
     def start_realtime_transcription(
         self, on_delta: Callable[[str], None]
     ) -> RealtimeTranscriptionStream:
-        if self._model != _REALTIME_TRANSCRIBE_ALIAS:
+        if not self.is_live:
             raise RuntimeError("The selected model is not a realtime transcription model")
         return RealtimeTranscriptionStream(self._get_client(), on_delta)
 
@@ -335,9 +348,9 @@ class OpenWhisperOpenAI:
         if not audio_bytes:
             raise RuntimeError("No audio bytes provided")
 
-        if self._model == _REALTIME_TRANSCRIBE_ALIAS:
+        if self.is_live:
             if not mime_type.startswith("audio/pcm"):
-                raise RuntimeError("Realtime Transcribe requires 24 kHz PCM audio")
+                raise RuntimeError("Live transcription requires 24 kHz PCM audio")
             stream = self.start_realtime_transcription(lambda _delta: None)
             try:
                 stream.append(audio_bytes)

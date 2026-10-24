@@ -106,7 +106,7 @@ Recommended tooling:
 
 Environment variables:
 - `OPENAI_API_KEY`: required for live transcription calls
-- `WHISPERFLOW_MODEL`: optional override (default: `gpt-4o-mini-transcribe`)
+- `WHISPERFLOW_MODEL`: optional override (default: `gpt-transcribe`)
 
 ### Desktop
 

@@ -691,14 +691,20 @@ fn default_transcription_prompt() -> String {
 }
 
 fn default_transcription_model() -> String {
-    "gpt-4o-mini-transcribe".to_string()
+    "gpt-transcribe".to_string()
 }
 
 fn is_supported_transcription_model(model: &str) -> bool {
-    matches!(
-        model,
-        "gpt-4o-mini-transcribe" | "gpt-4o-transcribe" | "gpt-realtime-transcribe"
-    )
+    matches!(model, "gpt-transcribe" | "gpt-live-transcribe")
+}
+
+/// Settings saved before the gpt-transcribe family move to its replacement.
+fn migrate_transcription_model(model: &str) -> String {
+    match model {
+        "gpt-realtime-transcribe" => "gpt-live-transcribe".to_string(),
+        model if is_supported_transcription_model(model) => model.to_string(),
+        _ => default_transcription_model(),
+    }
 }
 
 fn default_refine_enabled() -> bool {
@@ -1789,7 +1795,8 @@ fn load_settings(app_handle: &AppHandle) -> Result<AppSettings> {
         return Ok(AppSettings::default());
     }
     let raw = fs::read_to_string(&path)?;
-    let settings: AppSettings = serde_json::from_str(&raw)?;
+    let mut settings: AppSettings = serde_json::from_str(&raw)?;
+    settings.transcription_model = migrate_transcription_model(&settings.transcription_model);
     Ok(settings)
 }
 
@@ -2195,10 +2202,24 @@ mod tests {
 
     #[test]
     fn transcription_model_allowlist_matches_settings_ui() {
-        assert!(is_supported_transcription_model("gpt-4o-mini-transcribe"));
-        assert!(is_supported_transcription_model("gpt-4o-transcribe"));
-        assert!(is_supported_transcription_model("gpt-realtime-transcribe"));
+        assert!(is_supported_transcription_model("gpt-transcribe"));
+        assert!(is_supported_transcription_model("gpt-live-transcribe"));
+        assert!(!is_supported_transcription_model("gpt-4o-mini-transcribe"));
         assert!(!is_supported_transcription_model("gpt-5.4"));
+    }
+
+    #[test]
+    fn saved_legacy_transcription_models_migrate() {
+        assert_eq!(migrate_transcription_model("gpt-4o-mini-transcribe"), "gpt-transcribe");
+        assert_eq!(migrate_transcription_model("gpt-4o-transcribe"), "gpt-transcribe");
+        assert_eq!(
+            migrate_transcription_model("gpt-realtime-transcribe"),
+            "gpt-live-transcribe"
+        );
+        assert_eq!(
+            migrate_transcription_model("gpt-live-transcribe"),
+            "gpt-live-transcribe"
+        );
     }
 
     #[test]

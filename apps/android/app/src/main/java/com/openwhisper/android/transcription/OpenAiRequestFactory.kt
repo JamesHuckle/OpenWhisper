@@ -32,7 +32,7 @@ class OpenAiRequestFactory(
     fun create(
         apiKey: String,
         wav: ByteArray,
-        model: String = "gpt-4o-mini-transcribe",
+        model: String = "gpt-transcribe",
         prompt: String = "",
     ): TranscriptionHttpRequest {
         require(apiKey.isNotBlank()) { "API key is required" }

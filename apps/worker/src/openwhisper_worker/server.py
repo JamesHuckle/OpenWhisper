@@ -139,7 +139,7 @@ class WorkerServer:
             realtime_segments=[],
         )
         self._sessions[session_id] = session
-        if self._openai.model == "gpt-realtime-transcribe":
+        if self._openai.is_live:
             try:
                 session.realtime_stream = self._openai.start_realtime_transcription(
                     lambda delta: session.events.append({"type": "partial", "text": delta})

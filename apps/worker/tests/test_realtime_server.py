@@ -29,7 +29,8 @@ class FakeRealtimeStream:
 
 
 class FakeRealtimeOpenAI:
-    model = "gpt-realtime-transcribe"
+    model = "gpt-live-transcribe"
+    is_live = True
 
     def __init__(self) -> None:
         self.stream: FakeRealtimeStream | None = None
@@ -45,7 +46,8 @@ class FakeRealtimeOpenAI:
 
 
 class FakeFileOpenAI:
-    model = "gpt-4o-mini-transcribe"
+    model = "gpt-transcribe"
+    is_live = False
 
     def __init__(self, transcript: str) -> None:
         self.transcript = transcript

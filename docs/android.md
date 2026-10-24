@@ -44,7 +44,7 @@ during dictation still cancel insertion.
 - `AndroidAudioRecorder` captures mono 16 kHz PCM and `WavEncoder` creates a WAV
   payload.
 - `OpenAiHttpTranscriptionClient` sends multipart form data directly to
-  `POST /v1/audio/transcriptions` using `gpt-4o-mini-transcribe`. This request
+  `POST /v1/audio/transcriptions` using `gpt-transcribe`. This request
   shape and model are supported by the current
   [OpenAI transcription API reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
 - `SecureApiKeyStore` encrypts a user-supplied API key with AES-256-GCM using a

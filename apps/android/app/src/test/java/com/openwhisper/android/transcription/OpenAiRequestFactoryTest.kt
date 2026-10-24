@@ -12,7 +12,7 @@ class OpenAiRequestFactoryTest {
         val request = OpenAiRequestFactory(boundaryFactory = { "test-boundary" }).create(
             apiKey = "sk-test-secret",
             wav = wav,
-            model = "gpt-4o-mini-transcribe",
+            model = "gpt-transcribe",
         )
 
         assertEquals("https://api.openai.com/v1/audio/transcriptions", request.url)
@@ -23,7 +23,7 @@ class OpenAiRequestFactoryTest {
         )
 
         val body = request.body
-        val modelMarker = "name=\"model\"\r\n\r\ngpt-4o-mini-transcribe".encodeToByteArray()
+        val modelMarker = "name=\"model\"\r\n\r\ngpt-transcribe".encodeToByteArray()
         val fileHeader = (
             "name=\"file\"; filename=\"dictation.wav\"\r\n" +
                 "Content-Type: audio/wav\r\n\r\n"
