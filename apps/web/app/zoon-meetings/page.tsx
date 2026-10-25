@@ -36,6 +36,10 @@ const STEPS = [
     body: "Android restricts these settings for apps installed outside the Play Store. Open App info, tap ⋮, choose Allow restricted settings, then try again.",
   },
   {
+    title: "Both sides of WhatsApp and other app calls",
+    body: "Install Shizuku from the Play Store. Turn on Developer options (Settings → About phone → Software information → tap Build number seven times), pair Shizuku once through Wireless debugging, then tap Start. In Zoon Meetings, tap Allow. The other person is then recorded too, on speaker or earbuds. After a restart, open Shizuku and tap Start again.",
+  },
+  {
     title: "Phone calls with both sides (optional)",
     body: "In Samsung's Phone app, turn on Settings → Record calls → Auto record calls, then tap Allow in Zoon Meetings. Calls you choose to record then upload Samsung's recording, which has both sides.",
   },
@@ -64,8 +68,8 @@ export default function ZoonMeetingsPage() {
 
           <p className="mt-8 text-lg leading-relaxed text-text-muted">
             When a WhatsApp, Teams, Meet, Zoom or phone call connects, Zoon Meetings asks{" "}
-            <span className="text-text">“Record this call?”</span>. Tap Record and the call is transcribed, summarised and
-            filed in your calendar, like the desktop app does.
+            <span className="text-text">“Record this call?”</span>. Tap Record and both sides of the call are transcribed,
+            summarised and filed in your calendar, like the desktop app does.
           </p>
 
           <a
