@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Metadata } from "next";
-import Link from "next/link";
+import { AppIcon } from "@/components/app-icon";
 import { Footer } from "@/components/footer";
+import { Nav } from "@/components/nav";
 import { AndroidIcon, DownloadIcon } from "@/components/icons";
 
 // Zoon Meetings for Android: built in JamesHuckle/zoon-meetings (android/release.sh), published
@@ -49,17 +50,11 @@ export default function ZoonMeetingsPage() {
   const r = release();
   return (
     <>
-      <main className="px-6 pb-24 pt-20">
+      <Nav current="zoon-meetings" />
+      <main className="px-6 pb-24 pt-32">
         <div className="mx-auto max-w-2xl">
-          <Link href="/" className="text-sm text-text-muted transition-colors hover:text-text">
-            ← OpenWhisper
-          </Link>
-
-          <div className="mt-10 flex items-center gap-4">
-            <svg viewBox="0 0 512 512" className="h-14 w-14 shrink-0" aria-hidden="true">
-              <rect width="512" height="512" rx="112" fill="#1d1d1f" />
-              <circle cx="256" cy="256" r="104" fill="#ff3b30" />
-            </svg>
+          <div className="flex items-center gap-4">
+            <AppIcon id="zoon-meetings" className="h-14 w-14 shrink-0" />
             <div>
               <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Zoon Meetings for Android</h1>
               <p className="mt-1 text-text-muted">Version {r.versionName} · Android 13 or later</p>
