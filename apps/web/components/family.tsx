@@ -1,4 +1,4 @@
-import { APPS, FAMILY } from "@/lib/apps";
+import { APPS } from "@/lib/apps";
 import { AppIcon } from "./app-icon";
 
 /** The three apps together, on OpenWhisper's page. */
@@ -9,7 +9,7 @@ export function Family() {
       <div className="mx-auto max-w-5xl">
         <div className="mb-14 text-center">
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">{APPS.map((a) => a.verb).join(" · ")}</h2>
-          <p className="mx-auto mt-4 max-w-xl text-lg text-text-muted">{FAMILY}</p>
+          <p className="mx-auto mt-4 max-w-xl text-lg text-text-muted">Three small apps that work together.</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           {APPS.map((app) => (

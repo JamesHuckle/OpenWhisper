@@ -67,7 +67,7 @@ export function AppsMenu({ current }: { current: AppId }) {
           id={panelId}
           role="dialog"
           aria-label="Apps"
-          className="animate-menu-in absolute right-0 top-full z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] origin-top-right rounded-2xl border border-border bg-bg-elevated/95 p-2 shadow-[0_18px_50px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+          className="animate-menu-in absolute right-0 top-full z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] origin-top-right rounded-2xl border border-border bg-bg-elevated p-2 shadow-[0_18px_50px_rgba(0,0,0,0.55)]"
         >
           <p className="px-3 pb-1 pt-2 text-xs font-medium uppercase tracking-wider text-text-muted">Apps</p>
           <ul>
