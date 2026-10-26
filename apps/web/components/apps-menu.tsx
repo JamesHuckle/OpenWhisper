@@ -25,6 +25,8 @@ export function AppsMenu({ current }: { current: AppId }) {
         e.preventDefault();
         close(true);
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        const focused = document.activeElement;
+        if (!panel.current?.contains(focused) && focused !== button.current) return;
         e.preventDefault();
         const list = items();
         const i = list.indexOf(document.activeElement as HTMLAnchorElement);
