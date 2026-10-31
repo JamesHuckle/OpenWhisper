@@ -10,8 +10,8 @@ android {
         applicationId = "com.openwhisper.android"
         minSdk = 28
         targetSdk = 36
-        versionCode = 28
-        versionName = "0.2.26"
+        versionCode = 29
+        versionName = "0.2.27"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

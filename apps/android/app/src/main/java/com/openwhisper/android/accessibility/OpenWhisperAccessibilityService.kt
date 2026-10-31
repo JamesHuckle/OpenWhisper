@@ -187,6 +187,11 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                 controlHeightPx = overlay.controlHeightPx,
                 marginPx = (OverlayKeyGeometry.GUTTER_MARGIN_DP * density).toInt()
                     .coerceAtLeast(1),
+                dictationActive = coordinator.currentState.let {
+                    it is DictationState.Listening ||
+                        it is DictationState.Finalizing ||
+                        it is DictationState.ReadyToInsert
+                },
             ),
         )
         when (decision) {
@@ -196,6 +201,9 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             }
             is OverlayDecision.Show -> {
                 if (!overlay.show(decision.topLeft, display.toScreenRect())) scheduleRefresh(250)
+            }
+            OverlayDecision.Float -> {
+                if (!overlay.showFloating(display.toScreenRect())) scheduleRefresh(250)
             }
         }
     }

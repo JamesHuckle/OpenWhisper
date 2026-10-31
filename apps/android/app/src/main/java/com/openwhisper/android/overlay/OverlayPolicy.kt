@@ -23,18 +23,23 @@ data class OverlayContext(
     val controlWidthPx: Int = 64,
     val controlHeightPx: Int = 128,
     val marginPx: Int = 24,
+    /** Dictation is recording or transcribing, so the control must stay reachable. */
+    val dictationActive: Boolean = false,
 )
 
 sealed interface OverlayDecision {
     data object Hidden : OverlayDecision
     data class Show(val topLeft: ScreenPoint) : OverlayDecision
+
+    /** No safe keyboard to dock beside, but dictation is running: keep floating where it is. */
+    data object Float : OverlayDecision
 }
 
 class OverlayPolicy {
     fun decide(context: OverlayContext): OverlayDecision {
-        val keyboard = context.keyboardBounds ?: return OverlayDecision.Hidden
-        if (!context.hasEditableFocus || context.isPassword || context.isSensitive) {
-            return OverlayDecision.Hidden
+        val keyboard = context.keyboardBounds
+        if (keyboard == null || !context.hasEditableFocus || context.isPassword || context.isSensitive) {
+            return if (context.dictationActive) OverlayDecision.Float else OverlayDecision.Hidden
         }
 
         val minX = context.displayBounds.left + context.marginPx

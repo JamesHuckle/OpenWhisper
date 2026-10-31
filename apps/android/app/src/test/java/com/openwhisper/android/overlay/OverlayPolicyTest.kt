@@ -71,4 +71,45 @@ class OverlayPolicyTest {
 
         assertEquals(OverlayDecision.Show(ScreenPoint(-476, 160)), decision)
     }
+
+    @Test
+    fun floatsWhileDictatingWithTheKeyboardClosed() {
+        assertEquals(
+            OverlayDecision.Float,
+            policy.decide(
+                OverlayContext(keyboardBounds = null, hasEditableFocus = false, dictationActive = true),
+            ),
+        )
+    }
+
+    @Test
+    fun floatsWhileDictatingOverAPasswordKeyboard() {
+        assertEquals(
+            OverlayDecision.Float,
+            policy.decide(
+                OverlayContext(
+                    keyboardBounds = ScreenRect(0, 1400, 1080, 2400),
+                    hasEditableFocus = true,
+                    isPassword = true,
+                    dictationActive = true,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun docksBesideTheKeyboardWhenItReopensDuringDictation() {
+        val decision = policy.decide(
+            OverlayContext(
+                keyboardBounds = ScreenRect(0, 1400, 1080, 2400),
+                hasEditableFocus = true,
+                controlWidthPx = 64,
+                controlHeightPx = 128,
+                marginPx = 24,
+                dictationActive = true,
+            ),
+        )
+
+        assertEquals(OverlayDecision.Show(ScreenPoint(24, 1736)), decision)
+    }
 }

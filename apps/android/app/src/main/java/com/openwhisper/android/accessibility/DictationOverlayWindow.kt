@@ -36,7 +36,12 @@ class DictationOverlayWindow(
     val controlHeightPx = dp(OverlayKeyGeometry.HEIGHT_DP)
     private var attached = false
     private var movementBounds: OverlayMovementBounds? = null
+    // Home is where the key sits while the keyboard is open; it survives restarts.
     private var customPosition = loadCustomPosition()
+    // While dictation continues with the keyboard closed the key floats; moving it
+    // there never changes home, so reopening the keyboard snaps it back.
+    private var floating = false
+    private var floatingPosition: NormalizedOverlayPosition? = null
     private var touchDown = false
     private var dragActive = false
     private var gestureCancelled = false
@@ -75,17 +80,42 @@ class DictationOverlayWindow(
         render(DictationState.Idle)
     }
 
+    /** Dock the key at its home position beside the open keyboard. */
     fun show(position: ScreenPoint, displayBounds: ScreenRect): Boolean {
-        val bounds = OverlayMovementBounds.within(
-            displayBounds = displayBounds,
-            controlWidthPx = controlWidthPx,
-            controlHeightPx = controlHeightPx,
-            marginPx = dp(OverlayKeyGeometry.GUTTER_MARGIN_DP).coerceAtLeast(1),
-        )
+        val bounds = boundsWithin(displayBounds)
+        if (floating) cancelTouch()
+        floating = false
+        floatingPosition = null
+        return place(customPosition?.resolve(bounds) ?: bounds.clamp(position), bounds)
+    }
+
+    /** Keep the key on screen while dictation runs with the keyboard closed. */
+    fun showFloating(displayBounds: ScreenRect): Boolean {
+        val bounds = boundsWithin(displayBounds)
+        if (!floating) {
+            // Float from wherever the key was docked, so it does not jump.
+            floating = true
+            floatingPosition = NormalizedOverlayPosition.from(
+                ScreenPoint(layout.x, layout.y),
+                movementBounds ?: bounds,
+            )
+        }
+        if (dragActive) return true
+        val position = floatingPosition?.resolve(bounds) ?: bounds.clamp(ScreenPoint(layout.x, layout.y))
+        return place(position, bounds)
+    }
+
+    private fun boundsWithin(displayBounds: ScreenRect) = OverlayMovementBounds.within(
+        displayBounds = displayBounds,
+        controlWidthPx = controlWidthPx,
+        controlHeightPx = controlHeightPx,
+        marginPx = dp(OverlayKeyGeometry.GUTTER_MARGIN_DP).coerceAtLeast(1),
+    )
+
+    private fun place(position: ScreenPoint, bounds: OverlayMovementBounds): Boolean {
         movementBounds = bounds
-        val resolvedPosition = customPosition?.resolve(bounds) ?: bounds.clamp(position)
-        layout.x = resolvedPosition.x
-        layout.y = resolvedPosition.y
+        layout.x = position.x
+        layout.y = position.y
         return runCatching {
             if (attached) {
                 windowManager.updateViewLayout(control, layout)
@@ -102,6 +132,8 @@ class DictationOverlayWindow(
     }
 
     fun hide() {
+        floating = false
+        floatingPosition = null
         if (!attached) return
         cancelTouch()
         runCatching { windowManager.removeView(control) }
@@ -244,10 +276,15 @@ class DictationOverlayWindow(
             }
             MotionEvent.ACTION_MOVE -> {
                 val distance = hypot(event.rawX - downRawX, event.rawY - downRawY)
-                if (!dragActive && distance > touchSlop) {
-                    gestureCancelled = true
+                if (!dragActive && !gestureCancelled && distance > touchSlop) {
                     control.removeCallbacks(activateDrag)
                     control.isPressed = false
+                    if (floating) {
+                        // Nothing underneath to type on, so a plain drag moves the key.
+                        dragActive = true
+                    } else {
+                        gestureCancelled = true
+                    }
                 }
                 if (dragActive) {
                     moveTo(
@@ -281,7 +318,8 @@ class DictationOverlayWindow(
         val clamped = bounds.clamp(position)
         layout.x = clamped.x
         layout.y = clamped.y
-        customPosition = NormalizedOverlayPosition.from(clamped, bounds)
+        val normalized = NormalizedOverlayPosition.from(clamped, bounds)
+        if (floating) floatingPosition = normalized else customPosition = normalized
         if (attached) {
             runCatching { windowManager.updateViewLayout(control, layout) }
                 .onFailure { Log.e("OpenWhisperOverlay", "Unable to move accessibility overlay", it) }
@@ -289,6 +327,7 @@ class DictationOverlayWindow(
     }
 
     private fun persistCustomPosition() {
+        if (floating) return
         val position = customPosition ?: return
         preferences.edit()
             .putFloat(PREFERENCE_X, position.xFraction)
