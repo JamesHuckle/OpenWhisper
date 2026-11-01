@@ -299,7 +299,8 @@ class DictationOverlayWindow(
                 control.removeCallbacks(activateDrag)
                 if (dragActive) {
                     persistCustomPosition()
-                } else if (!gestureCancelled) {
+                } else if (touchDown && !gestureCancelled) {
+                    // A gesture cancelled mid-way (docking during a drag) is not a tap.
                     control.performClick()
                 }
                 resetTouchState()
