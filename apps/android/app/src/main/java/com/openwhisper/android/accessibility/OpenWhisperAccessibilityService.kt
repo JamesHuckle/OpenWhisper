@@ -114,6 +114,8 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                 coordinator.onMicPressed()
             } else {
                 openDictationRecovery(failure.message)
+                // With the keyboard closed, opening recovery acknowledges the failure.
+                if (overlay.isFloating) coordinator.cancel()
             }
         }
         coordinator = DictationCoordinator(
@@ -190,7 +192,9 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                 dictationActive = coordinator.currentState.let {
                     it is DictationState.Listening ||
                         it is DictationState.Finalizing ||
-                        it is DictationState.ReadyToInsert
+                        it is DictationState.ReadyToInsert ||
+                        // A failure while floating stays until the user opens recovery.
+                        (it is DictationState.Failed && overlay.isFloating)
                 },
             ),
         )

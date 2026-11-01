@@ -42,6 +42,8 @@ class DictationOverlayWindow(
     // there never changes home, so reopening the keyboard snaps it back.
     private var floating = false
     private var floatingPosition: NormalizedOverlayPosition? = null
+    val isFloating: Boolean
+        get() = floating
     private var touchDown = false
     private var dragActive = false
     private var gestureCancelled = false
