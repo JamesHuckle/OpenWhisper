@@ -13,6 +13,12 @@ WhisperFlow is split into three runtime layers:
    - app focus and target detection
    - insertion engine (Unicode keystrokes for live text, clipboard paste and
      restore for the final text, UI Automation password check)
+   - settings: `settings.json` in the app config folder holds the ordinary
+     settings; the OpenAI API key is kept in the OS credential store (Windows
+     Credential Manager, macOS Keychain, Linux Secret Service), never in the
+     file. On start, a plain key left by an older version is moved into the
+     credential store and removed from the file only after the move succeeds
+     (`src-tauri/src/api_key_store.rs`).
 3. Model worker (`apps/worker`, Python):
    - OpenAI model catalog and routing
    - speech session orchestration
@@ -151,6 +157,9 @@ Environment variables:
 ### Desktop
 
 Use your package manager (`npm`, `pnpm`, or `bun`) and run Tauri dev mode.
+On Linux (including WSL), saving the API key in the app needs a running
+Secret Service such as GNOME Keyring (`gnome-keyring-daemon`). Without one,
+the app reports that it could not save the key securely.
 
 ## Definition of done for production
 

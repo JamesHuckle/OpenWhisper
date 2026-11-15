@@ -26,6 +26,15 @@ uuid = { version = "1.10.0", features = ["v4"] }
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 
+# The OpenAI API key is kept in the OS credential store, never in settings.json
+# (Windows Credential Manager is set up in the windows table below).
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["async-secret-service", "crypto-rust", "async-io"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = "5.4"
+keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.61", features = ["Win32_System_Com", "Win32_UI_Accessibility"] }

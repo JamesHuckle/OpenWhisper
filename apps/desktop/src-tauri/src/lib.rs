@@ -1,3 +1,4 @@
+mod api_key_store;
 // Parts of the insertion rules are used only by the Windows writer.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod paste_target;
@@ -1199,8 +1200,19 @@ fn default_hold_to_talk() -> bool {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct AppSettings {
-    #[serde(default)]
+    /// The key in use. It is kept in the OS credential store, never written
+    /// to the settings file.
+    #[serde(skip)]
     openai_api_key: String,
+    /// A plain-text key in the settings file, from versions before the
+    /// credential store. It is moved out on start and stays only while that
+    /// move keeps failing.
+    #[serde(
+        default,
+        rename = "openaiApiKey",
+        skip_serializing_if = "String::is_empty"
+    )]
+    plain_openai_api_key: String,
     #[serde(default = "default_transcription_model")]
     transcription_model: String,
     #[serde(default = "default_transcription_prompt")]
@@ -1219,6 +1231,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             openai_api_key: String::new(),
+            plain_openai_api_key: String::new(),
             transcription_model: default_transcription_model(),
             transcription_prompt: default_transcription_prompt(),
             refine_enabled: true,
@@ -1927,9 +1940,6 @@ async fn app_save_settings(
             .lock()
             .map_err(|_| "Failed to lock settings".to_string())?
             .clone();
-        if let Some(key) = openai_api_key {
-            current.openai_api_key = key.trim().to_string();
-        }
         if let Some(model) = transcription_model {
             if !is_supported_transcription_model(&model) {
                 return Err(format!("Unsupported transcription model: {model}"));
@@ -1950,6 +1960,13 @@ async fn app_save_settings(
         }
         if let Some(enabled) = hold_to_talk {
             current.hold_to_talk = enabled;
+        }
+        // Last, after every check above, so a rejected save leaves the stored
+        // key untouched.
+        if let Some(key) = openai_api_key {
+            current.openai_api_key = api_key_store::replace(&CredentialStore, &key)
+                .map_err(|e| format!("Could not save the API key securely: {e}"))?;
+            current.plain_openai_api_key.clear();
         }
         current
     };
@@ -2312,6 +2329,77 @@ fn load_settings(app_handle: &AppHandle) -> Result<AppSettings> {
     Ok(settings)
 }
 
+/// Loads the settings and the API key, moving a plain-text key from the
+/// settings file into the OS credential store.
+fn load_settings_and_api_key(app_handle: &AppHandle) -> AppSettings {
+    let mut settings = load_settings(app_handle).unwrap_or_else(|e| {
+        debug_log_line("settings", &format!("load failed, using defaults: {e}"));
+        AppSettings::default()
+    });
+    let loaded = api_key_store::load(&CredentialStore, &settings.plain_openai_api_key);
+    settings.openai_api_key = loaded.key;
+    if !loaded.keep_plain_copy {
+        settings.plain_openai_api_key.clear();
+    }
+    match loaded.outcome {
+        api_key_store::LoadOutcome::Ready => {}
+        api_key_store::LoadOutcome::Migrated => {
+            // The key is safe in the credential store, so the plain copy can
+            // go. If this write fails, the move is repeated on the next start.
+            match save_settings(app_handle, &settings) {
+                Ok(()) => debug_log_line("settings", "moved API key to credential store"),
+                Err(e) => debug_log_line(
+                    "settings",
+                    &format!("API key stored securely, plain copy not yet removed: {e}"),
+                ),
+            }
+        }
+        api_key_store::LoadOutcome::MigrationFailed(e) => debug_log_line(
+            "settings",
+            &format!("could not move API key to credential store, keeping it: {e}"),
+        ),
+        api_key_store::LoadOutcome::ReadFailed(e) => {
+            debug_log_line("settings", &format!("could not read API key: {e}"))
+        }
+    }
+    settings
+}
+
+const API_KEY_CREDENTIAL_SERVICE: &str = "com.openwhisper.app";
+const API_KEY_CREDENTIAL_USER: &str = "openai-api-key";
+
+/// The OS credential store: Windows Credential Manager, the macOS Keychain or
+/// the Linux Secret Service.
+struct CredentialStore;
+
+impl CredentialStore {
+    fn entry() -> Result<keyring::Entry, String> {
+        keyring::Entry::new(API_KEY_CREDENTIAL_SERVICE, API_KEY_CREDENTIAL_USER)
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl api_key_store::SecretStore for CredentialStore {
+    fn read(&self) -> Result<Option<String>, String> {
+        match Self::entry()?.get_password() {
+            Ok(key) => Ok(Some(key)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn write(&self, key: &str) -> Result<(), String> {
+        Self::entry()?.set_password(key).map_err(|e| e.to_string())
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        match Self::entry()?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
 fn save_settings(app_handle: &AppHandle, settings: &AppSettings) -> Result<()> {
     let path = settings_path(app_handle)?;
     if let Some(parent) = path.parent() {
@@ -2476,7 +2564,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let loaded = load_settings(app.handle()).unwrap_or_default();
+            let loaded = load_settings_and_api_key(app.handle());
             #[cfg(target_os = "windows")]
             text_inserter::set_hold_to_talk_enabled(loaded.hold_to_talk);
             let state = app.state::<Arc<AppState>>();
@@ -2615,6 +2703,28 @@ mod tests {
             bottom_y,
             dpi,
         }
+    }
+
+    #[test]
+    fn settings_file_never_contains_the_api_key() {
+        let settings = AppSettings {
+            openai_api_key: "sk-secret".into(),
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains("sk-secret"));
+        assert!(!json.contains("openaiApiKey"));
+    }
+
+    #[test]
+    fn plain_key_from_older_versions_is_read_and_kept_until_moved() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"openaiApiKey":"sk-legacy","holdToTalk":false}"#).unwrap();
+        assert_eq!(settings.plain_openai_api_key, "sk-legacy");
+        assert_eq!(settings.openai_api_key, "");
+        assert!(!settings.hold_to_talk);
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains(r#""openaiApiKey":"sk-legacy""#));
     }
 
     #[test]
