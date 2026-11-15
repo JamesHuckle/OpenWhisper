@@ -2,6 +2,12 @@ plugins {
     id("com.android.application")
 }
 
+// The dictation rules the desktop worker also follows: the shortest recording
+// worth sending, the silence level, the prompt-echo check, the largest upload
+// and the "No audio found" text. See packages/protocol/README.md.
+val audioRules = groovy.json.JsonSlurper()
+    .parse(rootProject.file("../../packages/protocol/audio-rules.json")) as Map<*, *>
+
 android {
     namespace = "com.openwhisper.android"
     compileSdk = 36
@@ -14,6 +20,16 @@ android {
         versionName = "0.2.27"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("double", "MIN_SPEECH_SECONDS", "${audioRules["min_speech_seconds"]}")
+        buildConfigField("int", "SILENT_PCM_PEAK", "${audioRules["silent_pcm_peak"]}")
+        buildConfigField(
+            "double",
+            "PROMPT_ECHO_MIN_SHARE",
+            "${audioRules["prompt_echo_min_share"]}",
+        )
+        buildConfigField("long", "MAX_UPLOAD_BYTES", "${audioRules["max_upload_bytes"]}L")
+        buildConfigField("String", "NO_AUDIO_MESSAGE", "\"${audioRules["no_audio_message"]}\"")
     }
 
     buildFeatures {

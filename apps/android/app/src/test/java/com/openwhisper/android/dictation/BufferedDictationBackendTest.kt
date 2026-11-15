@@ -3,6 +3,8 @@ package com.openwhisper.android.dictation
 import com.openwhisper.android.audio.PcmRecording
 import com.openwhisper.android.audio.PcmRecorder
 import com.openwhisper.android.audio.WavEncoder
+import com.openwhisper.android.transcription.AudioRules
+import com.openwhisper.android.transcription.NoSpeechException
 import com.openwhisper.android.transcription.TranscriptionAudio
 import com.openwhisper.android.transcription.TranscriptionClient
 import java.io.File
@@ -82,6 +84,39 @@ class BufferedDictationBackendTest {
 
         assertEquals("No audio. Raw audio is available in OpenWhisper.", listener.error)
     }
+
+    @Test
+    fun aRecordingWithoutSpeechShowsNoAudioFoundLikeTheDesktop() {
+        val recorder = FakePcmRecorder(pcmRecording(byteArrayOf(1, 2)))
+        val client = FakeTranscriptionClient("unused", error = NoSpeechException("too_short"))
+        val runner = QueuedRunner()
+        val listener = CapturingListener()
+        val backend = BufferedDictationBackend(recorder, client, runner, DirectDispatcher)
+
+        backend.start(listener)
+        backend.finish()
+        runner.runNext()
+
+        assertEquals("No audio found", listener.error)
+        assertEquals(AudioRules.NO_AUDIO_MESSAGE, listener.error)
+        assertNull(listener.final)
+    }
+
+    @Test
+    fun aRecordingWithNoBytesIsNotSentForTranscription() {
+        val recorder = FakePcmRecorder(pcmRecording(byteArrayOf()))
+        val client = FakeTranscriptionClient("unused")
+        val runner = QueuedRunner()
+        val listener = CapturingListener()
+        val backend = BufferedDictationBackend(recorder, client, runner, DirectDispatcher)
+
+        backend.start(listener)
+        backend.finish()
+        runner.runNext()
+
+        assertNull(client.lastWav)
+        assertEquals(AudioRules.NO_AUDIO_MESSAGE, listener.error)
+    }
 }
 
 private class FakePcmRecorder(
@@ -107,7 +142,10 @@ private class FakePcmRecorder(
     }
 }
 
-private class FakeTranscriptionClient(private val response: String) : TranscriptionClient {
+private class FakeTranscriptionClient(
+    private val response: String,
+    private val error: Exception? = null,
+) : TranscriptionClient {
     var lastWav: ByteArray? = null
     var cancelCount = 0
 
@@ -117,6 +155,7 @@ private class FakeTranscriptionClient(private val response: String) : Transcript
 
     override fun transcribe(audio: TranscriptionAudio): String {
         lastWav = audio.file.readBytes()
+        error?.let { throw it }
         return response
     }
 }

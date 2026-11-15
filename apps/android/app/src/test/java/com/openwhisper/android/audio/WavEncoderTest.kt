@@ -2,6 +2,7 @@ package com.openwhisper.android.audio
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class WavEncoderTest {
@@ -19,6 +20,20 @@ class WavEncoderTest {
         assertEquals(16, littleEndianShort(wav, 34))
         assertEquals(4, littleEndianInt(wav, 40))
         assertArrayEquals(pcm, wav.copyOfRange(44, 48))
+    }
+
+    @Test
+    fun headerOfARecordingOverTwoGigabytesKeepsItsUnsignedSizes() {
+        // A long recording in progress rewrites this header as it grows.
+        val pcmBytes = 3_000_000_000L
+        val header = WavEncoder.header(pcmBytes, sampleRate = 16_000)
+
+        assertEquals(WavEncoder.HEADER_BYTES, header.size)
+        assertEquals(36 + pcmBytes, littleEndianInt(header, 4).toLong() and 0xffffffffL)
+        assertEquals(pcmBytes, littleEndianInt(header, 40).toLong() and 0xffffffffL)
+        assertThrows(IllegalArgumentException::class.java) {
+            WavEncoder.header(0xffffffffL, sampleRate = 16_000)
+        }
     }
 
     private fun littleEndianInt(value: ByteArray, offset: Int): Int =

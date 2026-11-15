@@ -11,7 +11,7 @@ data class TranscriptionHttpRequest(
     val body: ByteArray,
 )
 
-class TranscriptionException(message: String, cause: Throwable? = null) :
+open class TranscriptionException(message: String, cause: Throwable? = null) :
     Exception(message, cause)
 
 data class TranscriptionAudio(
@@ -87,9 +87,8 @@ object OpenAiResponseParser {
             throw TranscriptionException(message)
         }
 
-        val text = runCatching { JSONObject(body).getString("text") }
+        // An empty text is a valid answer: a silent part of a long recording.
+        return runCatching { JSONObject(body).getString("text") }
             .getOrElse { throw TranscriptionException("Transcription response did not contain text", it) }
-        if (text.isBlank()) throw TranscriptionException("Transcription was empty")
-        return text
     }
 }

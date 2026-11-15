@@ -1,7 +1,9 @@
 package com.openwhisper.android.dictation
 
 import com.openwhisper.android.audio.PcmRecorder
+import com.openwhisper.android.audio.WavEncoder
 import com.openwhisper.android.recordings.RecordingStore
+import com.openwhisper.android.transcription.NoSpeechException
 import com.openwhisper.android.transcription.TranscriptionAudio
 import com.openwhisper.android.transcription.TranscriptionClient
 import java.util.concurrent.atomic.AtomicLong
@@ -44,13 +46,13 @@ class BufferedDictationBackend(
             try {
                 val recording = recorder.stop()
                 recordingId = recording.id
-                if (recording.byteCount == 0L) throw IllegalStateException("No audio was captured")
+                if (recording.byteCount == 0L) throw NoSpeechException("no_bytes")
                 val transcript = client.transcribe(
                     TranscriptionAudio(
                         file = recording.file,
                         mimeType = "audio/wav",
                         pcmSampleRate = recording.sampleRate,
-                        pcmDataOffset = 44,
+                        pcmDataOffset = WavEncoder.HEADER_BYTES.toLong(),
                         pcmDataLength = recording.byteCount,
                     ),
                 )
@@ -77,7 +79,9 @@ class BufferedDictationBackend(
                     if (generation.get() == expectedGeneration && listener === expectedListener) {
                         val message = error.safeMessage("Dictation failed")
                         expectedListener.onError(
-                            if (message.contains("raw audio", ignoreCase = true)) message
+                            // "No audio found" is all there is to say about a tap.
+                            if (error is NoSpeechException) message
+                            else if (message.contains("raw audio", ignoreCase = true)) message
                             else "$message. Raw audio is available in OpenWhisper.",
                         )
                     }

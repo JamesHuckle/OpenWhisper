@@ -35,31 +35,42 @@ class OpenAiHttpTranscriptionClient(
             throw TranscriptionException("The saved audio file is empty")
         }
         if (audio.pcmSampleRate != null) return transcribePcm(key, audio, started)
-        if (audio.file.length() > MAX_UPLOAD_BYTES) {
+        if (audio.file.length() > AudioRules.MAX_UPLOAD_BYTES) {
             throw TranscriptionException(
-                "This audio file is larger than 24 MB. Use a smaller MP3/M4A, " +
-                    "split the file, or import a PCM WAV file.",
+                "This audio file is larger than ${AudioRules.MAX_UPLOAD_BYTES / (1024 * 1024)} MB. " +
+                    "Use a smaller MP3/M4A, split the file, or import a PCM WAV file.",
             )
         }
-        return transcribeRequest(key, audio.file.readBytes(), "", started)
+        return transcribeRequest(key, audio.file.readBytes(), "", started).trim()
+            .ifBlank { throw NoSpeechException("empty_transcript") }
     }
 
     private fun transcribePcm(key: String, audio: TranscriptionAudio, started: Long): String {
         val sampleRate = requireNotNull(audio.pcmSampleRate)
+        // A tap or a muted microphone is never uploaded: it costs money and
+        // the service rejects it or answers with the prompt.
+        AudioRules.noSpeechReason(
+            audio.file,
+            sampleRate,
+            audio.pcmDataOffset,
+            audio.pcmDataLength,
+        )?.let { throw NoSpeechException(it) }
         val transcripts = mutableListOf<String>()
-        val bytesPerChunk = MAX_PCM_CHUNK_BYTES - (MAX_PCM_CHUNK_BYTES % 2)
         RandomAccessFile(audio.file, "r").use { source ->
             source.seek(audio.pcmDataOffset)
-            for (count in pcmChunkSizes(audio.pcmDataLength, bytesPerChunk)) {
+            for (count in pcmChunkSizes(audio.pcmDataLength, AudioRules.MAX_PCM_BYTES_PER_UPLOAD)) {
                 val pcm = ByteArray(count)
                 source.readFully(pcm)
                 val wav = WavEncoder.encodePcm16Mono(pcm, sampleRate)
-                val prompt = transcripts.lastOrNull()?.takeLast(1_200).orEmpty()
-                transcripts += transcribeRequest(key, wav, prompt, started)
+                val prompt = transcripts.lastOrNull(String::isNotBlank)?.takeLast(1_200).orEmpty()
+                val text = transcribeRequest(key, wav, prompt, started).trim()
+                // Each later part is sent with the previous part's text as its
+                // prompt; a silent part makes the model repeat it.
+                transcripts += if (AudioRules.echoesPrompt(text, prompt)) "" else text
             }
         }
         return transcripts.filter(String::isNotBlank).joinToString(" ").trim()
-            .ifBlank { throw TranscriptionException("Transcription was empty") }
+            .ifBlank { throw NoSpeechException("empty_transcript") }
     }
 
     private fun transcribeRequest(
@@ -109,8 +120,6 @@ class OpenAiHttpTranscriptionClient(
 
     companion object {
         const val CANCELLED_MESSAGE = "Transcription cancelled"
-        private const val MAX_UPLOAD_BYTES = 24L * 1024L * 1024L
-        private const val MAX_PCM_CHUNK_BYTES = 20 * 1024 * 1024
     }
 }
 

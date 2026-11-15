@@ -10,29 +10,39 @@ data class PcmWavInfo(
 )
 
 object WavEncoder {
-    fun encodePcm16Mono(pcm: ByteArray, sampleRate: Int): ByteArray {
+    /** The size of the header [header] writes, before the PCM samples. */
+    const val HEADER_BYTES = 44
+
+    fun encodePcm16Mono(pcm: ByteArray, sampleRate: Int): ByteArray =
+        header(pcm.size.toLong(), sampleRate) + pcm
+
+    /**
+     * The header of a 16-bit mono PCM WAV file holding [pcmBytes] of samples.
+     * A recording in progress writes it again as it grows.
+     */
+    fun header(pcmBytes: Long, sampleRate: Int): ByteArray {
         require(sampleRate > 0) { "sampleRate must be positive" }
-        val result = ByteArray(44 + pcm.size)
+        require(pcmBytes in 0..UInt.MAX_VALUE.toLong() - 36) { "Recording is too large for WAV" }
+        val result = ByteArray(HEADER_BYTES)
         writeAscii(result, 0, "RIFF")
-        writeInt(result, 4, 36 + pcm.size)
+        writeUInt(result, 4, 36 + pcmBytes)
         writeAscii(result, 8, "WAVE")
         writeAscii(result, 12, "fmt ")
-        writeInt(result, 16, 16)
+        writeUInt(result, 16, 16)
         writeShort(result, 20, 1)
         writeShort(result, 22, 1)
-        writeInt(result, 24, sampleRate)
-        writeInt(result, 28, sampleRate * 2)
+        writeUInt(result, 24, sampleRate.toLong())
+        writeUInt(result, 28, sampleRate.toLong() * 2)
         writeShort(result, 32, 2)
         writeShort(result, 34, 16)
         writeAscii(result, 36, "data")
-        writeInt(result, 40, pcm.size)
-        pcm.copyInto(result, destinationOffset = 44)
+        writeUInt(result, 40, pcmBytes)
         return result
     }
 
     fun inspectPcm16Mono(file: File): PcmWavInfo? = runCatching {
         RandomAccessFile(file, "r").use { wav ->
-            if (wav.length() < 44 || wav.readAscii(4) != "RIFF") return null
+            if (wav.length() < HEADER_BYTES || wav.readAscii(4) != "RIFF") return null
             wav.skipBytes(4)
             if (wav.readAscii(4) != "WAVE") return null
             var sampleRate: Int? = null
@@ -69,7 +79,7 @@ object WavEncoder {
         value.encodeToByteArray().copyInto(target, destinationOffset = offset)
     }
 
-    private fun writeInt(target: ByteArray, offset: Int, value: Int) {
+    private fun writeUInt(target: ByteArray, offset: Int, value: Long) {
         target[offset] = value.toByte()
         target[offset + 1] = (value ushr 8).toByte()
         target[offset + 2] = (value ushr 16).toByte()

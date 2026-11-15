@@ -45,12 +45,19 @@ during dictation still cancel insertion.
 - `EditorSessionController` snapshots stable editor identity, text, selection,
   password state, and sensitivity. Commit is refused if focus or content
   changed during dictation.
-- `AndroidAudioRecorder` captures mono 16 kHz PCM and `WavEncoder` creates a WAV
-  payload.
+- `AndroidAudioRecorder` captures mono 16 kHz PCM and `WavEncoder` writes every
+  WAV header: the saved recording's and each upload's.
 - `OpenAiHttpTranscriptionClient` sends multipart form data directly to
   `POST /v1/audio/transcriptions` using `gpt-transcribe`. This request
   shape and model are supported by the current
   [OpenAI transcription API reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
+- `AudioRules` follows the same dictation rules as the desktop, from
+  `packages/protocol/audio-rules.json` (see `packages/protocol/README.md`). An
+  accidental tap or a muted microphone is never uploaded, and the user sees
+  "No audio found", as on the desktop; so do an empty transcript and a part
+  that only repeats its prompt. Long recordings are split at the same upload
+  size as the desktop. `AudioRulesTest` and the worker's tests run the same
+  example recordings in `packages/protocol/audio-examples`.
 - `SecureApiKeyStore` encrypts a user-supplied API key with AES-256-GCM using a
   non-exportable Android Keystore key. App backup and device transfer are
   disabled. This protects the key at rest, but a rooted/compromised phone is

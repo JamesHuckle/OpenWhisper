@@ -1,6 +1,7 @@
 package com.openwhisper.android.recordings
 
 import android.content.Context
+import com.openwhisper.android.audio.WavEncoder
 import java.io.File
 import java.io.InputStream
 import java.io.RandomAccessFile
@@ -37,7 +38,7 @@ class RecordingStore private constructor(private val root: File) {
         val directory = File(root, id).apply { mkdirs() }
         val file = File(directory, "audio.wav")
         RandomAccessFile(file, "rw").use { wav ->
-            wav.write(wavHeader(0, sampleRate))
+            wav.write(WavEncoder.header(0, sampleRate))
         }
         writeMetadata(
             StoredRecording(
@@ -48,7 +49,7 @@ class RecordingStore private constructor(private val root: File) {
                 mimeType = "audio/wav",
                 fileName = file.name,
                 status = "recording",
-                bytes = WAV_HEADER_BYTES.toLong(),
+                bytes = WavEncoder.HEADER_BYTES.toLong(),
                 transcript = "",
                 error = "",
             ),
@@ -124,7 +125,7 @@ class RecordingStore private constructor(private val root: File) {
     internal fun updateCapturedBytes(id: String, bytes: Long) {
         synchronized(this) {
             val current = get(id) ?: return
-            writeMetadata(current.copy(bytes = bytes + WAV_HEADER_BYTES))
+            writeMetadata(current.copy(bytes = bytes + WavEncoder.HEADER_BYTES))
         }
     }
 
@@ -170,48 +171,11 @@ class RecordingStore private constructor(private val root: File) {
 
     companion object {
         const val RETAIN_COUNT = 10
-        const val WAV_HEADER_BYTES = 44
         private const val METADATA_FILE = "metadata.json"
         private val SUPPORTED_EXTENSIONS =
             setOf("wav", "mp3", "m4a", "mp4", "mpeg", "mpga", "webm", "ogg")
 
         internal fun forDirectory(root: File): RecordingStore = RecordingStore(root)
-
-        internal fun wavHeader(pcmBytes: Long, sampleRate: Int): ByteArray {
-            require(sampleRate > 0) { "sampleRate must be positive" }
-            require(pcmBytes in 0..UInt.MAX_VALUE.toLong()) { "Recording is too large for WAV" }
-            val result = ByteArray(WAV_HEADER_BYTES)
-            writeAscii(result, 0, "RIFF")
-            writeUInt(result, 4, 36 + pcmBytes)
-            writeAscii(result, 8, "WAVE")
-            writeAscii(result, 12, "fmt ")
-            writeUInt(result, 16, 16)
-            writeShort(result, 20, 1)
-            writeShort(result, 22, 1)
-            writeUInt(result, 24, sampleRate.toLong())
-            writeUInt(result, 28, sampleRate.toLong() * 2)
-            writeShort(result, 32, 2)
-            writeShort(result, 34, 16)
-            writeAscii(result, 36, "data")
-            writeUInt(result, 40, pcmBytes)
-            return result
-        }
-
-        private fun writeAscii(target: ByteArray, offset: Int, value: String) {
-            value.encodeToByteArray().copyInto(target, destinationOffset = offset)
-        }
-
-        private fun writeUInt(target: ByteArray, offset: Int, value: Long) {
-            target[offset] = value.toByte()
-            target[offset + 1] = (value ushr 8).toByte()
-            target[offset + 2] = (value ushr 16).toByte()
-            target[offset + 3] = (value ushr 24).toByte()
-        }
-
-        private fun writeShort(target: ByteArray, offset: Int, value: Int) {
-            target[offset] = value.toByte()
-            target[offset + 1] = (value ushr 8).toByte()
-        }
     }
 }
 
@@ -222,7 +186,7 @@ class PcmRecordingWriter internal constructor(
     private val sampleRate: Int,
 ) {
     private val wav = RandomAccessFile(file, "rw").apply {
-        seek(RecordingStore.WAV_HEADER_BYTES.toLong())
+        seek(WavEncoder.HEADER_BYTES.toLong())
     }
     private var pcmBytes = 0L
     private var bytesSinceCheckpoint = 0L
@@ -249,9 +213,9 @@ class PcmRecordingWriter internal constructor(
     }
 
     private fun checkpoint() {
-        val end = RecordingStore.WAV_HEADER_BYTES + pcmBytes
+        val end = WavEncoder.HEADER_BYTES + pcmBytes
         wav.seek(0)
-        wav.write(RecordingStore.wavHeader(pcmBytes, sampleRate))
+        wav.write(WavEncoder.header(pcmBytes, sampleRate))
         wav.seek(end)
         wav.fd.sync()
         store.updateCapturedBytes(id, pcmBytes)

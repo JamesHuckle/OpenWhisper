@@ -18,7 +18,8 @@ its own code.
 
 `audio-rules.json` holds the rules every app follows before and after it
 sends a recording to OpenAI. The worker (`apps/worker/src/openwhisper_worker/audio_rules.py`)
-reads it at run time; the Android build turns it into `BuildConfig` values.
+reads it at run time; the Android build (`apps/android/app/build.gradle.kts`)
+turns it into `BuildConfig` values for `AudioRules`.
 
 - `min_speech_seconds`: a recording shorter than this is an accidental tap.
   It is not sent, and the user sees `no_audio_message`.
