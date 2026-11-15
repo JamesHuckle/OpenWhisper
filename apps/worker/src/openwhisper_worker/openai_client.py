@@ -16,6 +16,7 @@ from typing import Any
 from httpx import Timeout
 from openai import OpenAI
 
+from .audio_rules import MAX_UPLOAD_BYTES
 from .models import (
     DEFAULT_POLISH_MODEL,
     DEFAULT_TRANSCRIBE_MODEL as _DEFAULT_TRANSCRIBE_MODEL,
@@ -33,7 +34,6 @@ _MAX_PARALLEL_POLISH_CHUNKS = 5
 _MAX_POLISH_CHUNK_CHARS = 12_000
 # Transcripts this short that already read cleanly are pasted without a polish call.
 _MAX_SKIP_POLISH_WORDS = 11
-_MAX_AUDIO_UPLOAD_BYTES = 24 * 1024 * 1024
 _REALTIME_FINAL_TIMEOUT_SECONDS = 120.0
 
 _STREAMING_MODELS = frozenset({
@@ -460,11 +460,11 @@ class OpenWhisperOpenAI:
             )
 
         size = audio_path.stat().st_size
-        if mime_type in {"audio/wav", "audio/x-wav"} and size > _MAX_AUDIO_UPLOAD_BYTES:
+        if mime_type in {"audio/wav", "audio/x-wav"} and size > MAX_UPLOAD_BYTES:
             return self._transcribe_wav_file(audio_path, prompt, on_progress)
-        if size > _MAX_AUDIO_UPLOAD_BYTES:
+        if size > MAX_UPLOAD_BYTES:
             raise RuntimeError(
-                "This compressed audio file is larger than 24 MB. "
+                f"This compressed audio file is larger than {MAX_UPLOAD_BYTES // 2**20} MB. "
                 "Convert it to a smaller MP3/M4A or split it before importing."
             )
         return self.transcribe_bytes(audio_path.read_bytes(), mime_type, prompt)
@@ -483,7 +483,7 @@ class OpenWhisperOpenAI:
             frame_bytes = channels * sample_width
             if channels <= 0 or sample_width <= 0 or sample_rate <= 0:
                 raise RuntimeError("The WAV file has an invalid audio format")
-            frames_per_chunk = max(1, (_MAX_AUDIO_UPLOAD_BYTES - 128) // frame_bytes)
+            frames_per_chunk = max(1, (MAX_UPLOAD_BYTES - 128) // frame_bytes)
             total_chunks = max(1, (total_frames + frames_per_chunk - 1) // frames_per_chunk)
             transcripts: list[str] = []
             for chunk_index in range(total_chunks):
@@ -516,7 +516,7 @@ class OpenWhisperOpenAI:
         on_progress: Callable[[int, int], None] | None,
     ) -> str:
         bytes_per_frame = 2
-        max_pcm_bytes = _MAX_AUDIO_UPLOAD_BYTES - 44
+        max_pcm_bytes = MAX_UPLOAD_BYTES - 44
         max_pcm_bytes -= max_pcm_bytes % bytes_per_frame
         total_bytes = path.stat().st_size
         total_chunks = max(1, (total_bytes + max_pcm_bytes - 1) // max_pcm_bytes)

@@ -1,0 +1,7 @@
+{
+  "min_speech_seconds": 0.3,
+  "silent_pcm_peak": 100,
+  "prompt_echo_min_share": 0.5,
+  "max_upload_bytes": 25165824,
+  "no_audio_message": "No audio found"
+}

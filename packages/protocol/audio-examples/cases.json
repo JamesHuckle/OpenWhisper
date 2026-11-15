@@ -1,0 +1,48 @@
+{
+  "audio": [
+    { "file": "empty.wav", "expected": "too_short", "about": "A recording with no audio at all" },
+    { "file": "tap.wav", "expected": "too_short", "about": "0.2 seconds of sound: an accidental tap" },
+    { "file": "shortest-speech.wav", "expected": "speech", "about": "Exactly the shortest length that is sent" },
+    { "file": "muted.wav", "expected": "silent", "about": "One second that never rises above the silence level" },
+    { "file": "quiet-speech.wav", "expected": "speech", "about": "One sample that reaches the silence level" },
+    { "file": "late-speech.wav", "expected": "speech", "about": "Silence, then sound at the end, after a LIST chunk" }
+  ],
+  "prompt_echo": [
+    {
+      "text": "OpenWhisper, Tauri, Kotlin.",
+      "prompt": "Glossary: OpenWhisper, Tauri, Kotlin",
+      "expected": true,
+      "about": "Most of the prompt said back"
+    },
+    {
+      "text": "openwhisper TAURI kotlin!!!",
+      "prompt": "Glossary: OpenWhisper, Tauri, Kotlin",
+      "expected": true,
+      "about": "Case and punctuation do not count"
+    },
+    {
+      "text": "Kotlin.",
+      "prompt": "Glossary: OpenWhisper, Tauri, Kotlin",
+      "expected": false,
+      "about": "Under half of the prompt: a real one-word dictation"
+    },
+    {
+      "text": "Send the Tauri build to Kotlin",
+      "prompt": "Glossary: OpenWhisper, Tauri, Kotlin",
+      "expected": false,
+      "about": "Words the prompt does not hold"
+    },
+    {
+      "text": "Hello there.",
+      "prompt": "",
+      "expected": false,
+      "about": "No prompt was sent"
+    },
+    {
+      "text": "",
+      "prompt": "Glossary: OpenWhisper",
+      "expected": false,
+      "about": "An empty transcript is handled on its own"
+    }
+  ]
+}

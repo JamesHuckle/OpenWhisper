@@ -5,7 +5,10 @@ a = Analysis(
     ['src\\openwhisper_worker\\__main__.py'],
     pathex=['src'],
     binaries=[],
-    datas=[('../../packages/protocol/models.json', 'openwhisper_worker')],
+    datas=[
+        ('../../packages/protocol/models.json', 'openwhisper_worker'),
+        ('../../packages/protocol/audio-rules.json', 'openwhisper_worker'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

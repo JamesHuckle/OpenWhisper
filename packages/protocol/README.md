@@ -14,6 +14,33 @@ here only; the packaged worker carries a copy that the Windows build adds.
 The Android app talks to OpenAI directly and still names `gpt-transcribe` in
 its own code.
 
+## Dictation rules
+
+`audio-rules.json` holds the rules every app follows before and after it
+sends a recording to OpenAI. The worker (`apps/worker/src/openwhisper_worker/audio_rules.py`)
+reads it at run time; the Android build turns it into `BuildConfig` values.
+
+- `min_speech_seconds`: a recording shorter than this is an accidental tap.
+  It is not sent, and the user sees `no_audio_message`.
+- `silent_pcm_peak`: 16-bit audio whose loudest sample stays below this is a
+  muted microphone. It is not sent either.
+- `prompt_echo_min_share`: the models answer near-silent audio by repeating
+  the prompt they were given. A transcript whose words (lower case, letters
+  and digits only) appear in that order inside the prompt's words, and that
+  is at least this share of the prompt's length, is treated as no speech.
+  The desktop compares the whole transcript with the user's vocabulary
+  prompt; Android, which sends only the previous part's text as a prompt,
+  compares each part with that.
+- `max_upload_bytes`: the largest file sent in one request. Longer PCM and
+  WAV recordings are split into parts this size or smaller.
+- `no_audio_message`: what the user sees for any of the cases above, or for
+  an empty transcript.
+
+`audio-examples/` holds WAV files and transcripts with the expected answer
+for each rule; the worker's and Android's tests both run them. See
+[`audio-examples/README.md`](audio-examples/README.md). The packaged worker
+carries a copy of `audio-rules.json` that the Windows build adds.
+
 ## Example messages
 
 `examples/` holds real request, reply and event messages. The worker's tests

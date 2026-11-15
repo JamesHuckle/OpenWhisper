@@ -13,6 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import IO, Any, Callable
 
+from openwhisper_worker.audio_rules import (
+    MIN_SPEECH_SECONDS,
+    NO_AUDIO_MESSAGE,
+    PROMPT_ECHO_MIN_SHARE,
+    SILENT_PCM_PEAK,
+)
 from openwhisper_worker.openai_client import (
     OpenWhisperOpenAI,
     RealtimeTranscriptionStream,
@@ -60,14 +66,6 @@ _REALTIME_ROTATE_BYTES = 24_000 * 2 * 25 * 60
 # Requests run side by side so a long transcription never holds up a cancel,
 # a ping or the next session. One session's requests still arrive one by one.
 _MAX_PARALLEL_REQUESTS = 4
-_NO_AUDIO_MESSAGE = "No audio found"
-# A quick tap of the shortcut captures a fraction of a second of PCM. Uploading
-# it either fails (the API rejects clips under 0.1 s) or makes the model echo
-# the dictionary prompt back, so treat anything this short as no audio.
-_MIN_PCM_SECONDS = 0.3
-# A muted or disconnected microphone produces near-digital silence. Real speech
-# peaks far above this, even on quiet microphones.
-_SILENT_PCM_PEAK = 100
 _PCM_SCAN_BYTES = 1024 * 1024
 # Shorter prompt fragments are too common to remove from an error message
 # without mangling it.
@@ -97,7 +95,7 @@ def _echoes_prompt(text: str, prompt: str) -> bool:
     hints = _normalize_words(prompt)
     if not spoken or not hints:
         return False
-    return spoken in hints and len(spoken) >= len(hints) / 2
+    return spoken in hints and len(spoken) >= len(hints) * PROMPT_ECHO_MIN_SHARE
 
 
 def _pcm_is_silent(read: Callable[[int], bytes]) -> bool:
@@ -114,7 +112,7 @@ def _pcm_is_silent(read: Callable[[int], bytes]) -> bool:
             if sys.byteorder == "big":
                 samples.byteswap()
             peak = max(peak, max(samples), -min(samples))
-            if peak >= _SILENT_PCM_PEAK:
+            if peak >= SILENT_PCM_PEAK:
                 return False
 
 
@@ -134,7 +132,7 @@ def _no_speech_reason(path: str, mime_type: str, size: int) -> str | None:
     rate = _pcm_rate(mime_type)
     if rate:
         seconds = size / (rate * 2)
-        if seconds < _MIN_PCM_SECONDS:
+        if seconds < MIN_SPEECH_SECONDS:
             return f"too_short={seconds:.2f}s"
         with open(path, "rb") as source:
             return "silent" if _pcm_is_silent(source.read) else None
@@ -146,7 +144,7 @@ def _no_speech_reason(path: str, mime_type: str, size: int) -> str | None:
             if source.getsampwidth() != 2 or source.getframerate() <= 0:
                 return None
             seconds = source.getnframes() / source.getframerate()
-            if seconds < _MIN_PCM_SECONDS:
+            if seconds < MIN_SPEECH_SECONDS:
                 return f"too_short={seconds:.2f}s"
             silent = _pcm_is_silent(lambda n: source.readframes(max(1, n // frame_bytes)))
             return "silent" if silent else None
@@ -515,7 +513,7 @@ class WorkerServer:
         if session.realtime_stream:
             session.realtime_stream.close()
             session.realtime_stream = None
-        self._emit(session, {"type": "error", "text": _NO_AUDIO_MESSAGE})
+        self._emit(session, {"type": "error", "text": NO_AUDIO_MESSAGE})
         return self._ok(request_id, {"final_text": ""})
 
     @staticmethod

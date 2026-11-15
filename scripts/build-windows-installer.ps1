@@ -180,8 +180,9 @@ Write-Host "==> Build standalone worker folder"
 # _internal libraries) starts at once. A single-file build unpacks Python and
 # its libraries into TEMP on every start, which made each worker start slow.
 # Clear old output first so a stale single-file worker is never bundled.
-# The shared model list (packages/protocol/models.json) goes beside the
-# worker's models module, where the packaged worker looks for it.
+# The shared model list and dictation rules (packages/protocol/models.json
+# and audio-rules.json) go beside the worker's modules, where the packaged
+# worker looks for them.
 if (Test-Path -LiteralPath $BinariesDir) {
   Remove-Item -LiteralPath $BinariesDir -Recurse -Force
 }
@@ -191,6 +192,7 @@ uv run pyinstaller `
   --name openwhisper-worker `
   --paths src `
   --add-data "../../packages/protocol/models.json;openwhisper_worker" `
+  --add-data "../../packages/protocol/audio-rules.json;openwhisper_worker" `
   --distpath $BinariesDir `
   src/openwhisper_worker/__main__.py
 $WorkerExe = Join-Path $BinariesDir "openwhisper-worker/openwhisper-worker.exe"

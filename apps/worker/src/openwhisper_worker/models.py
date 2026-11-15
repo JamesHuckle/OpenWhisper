@@ -7,26 +7,18 @@ build adds it); a worker run from the repository reads the shared file.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
+
+from openwhisper_worker.shared_files import load_shared_json, shared_file_path
 
 _FILE_NAME = "models.json"
 
 
 def shared_models_path() -> Path:
-    bundled = Path(__file__).with_name(_FILE_NAME)
-    if bundled.is_file():
-        return bundled
-    return Path(__file__).resolve().parents[4] / "packages" / "protocol" / _FILE_NAME
+    return shared_file_path(_FILE_NAME)
 
 
-def _load() -> dict[str, Any]:
-    with shared_models_path().open(encoding="utf-8") as file:
-        return json.load(file)
-
-
-_SHARED = _load()
+_SHARED = load_shared_json(_FILE_NAME)
 
 DEFAULT_TRANSCRIBE_MODEL: str = _SHARED["default_transcription_model"]
 LIVE_TRANSCRIBE_MODEL: str = _SHARED["live_transcription_model"]

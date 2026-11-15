@@ -32,9 +32,10 @@ $env:OPENAI_API_KEY="..."
 `--onedir` into `apps/desktop/src-tauri/binaries/openwhisper-worker/`, and the
 installer ships that whole folder. The worker starts without unpacking Python
 and its libraries first, as a single-file build did on every start. The build
-also copies the shared model list, `packages/protocol/models.json`, into the
-folder beside the worker's `models` module; a worker run from the repository
-reads the shared file itself.
+also copies the shared model list, `packages/protocol/models.json`, and the
+shared dictation rules, `packages/protocol/audio-rules.json`, into the folder
+beside the worker's modules; a worker run from the repository reads the shared
+files themselves.
 
 ## Refine with AI
 
