@@ -1552,6 +1552,20 @@ fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
     }
 }
 
+/// The worker's `start_session` request. It names the key and model as well
+/// as the prompts, so the running worker uses the settings saved at that
+/// moment. An empty key lets the worker fall back to its `OPENAI_API_KEY`.
+fn start_session_params(settings: &AppSettings, profile_id: &str) -> serde_json::Value {
+    json!({
+        "profile_id": profile_id,
+        "openai_api_key": settings.openai_api_key.trim(),
+        "transcription_model": settings.transcription_model,
+        "prompt": settings.transcription_prompt,
+        "refine_enabled": settings.refine_enabled,
+        "refine_prompt": settings.refine_prompt,
+    })
+}
+
 fn masked_api_key_preview(api_key: &str) -> Option<String> {
     let trimmed = api_key.trim();
     if trimmed.is_empty() {
@@ -1910,26 +1924,16 @@ async fn with_worker_request(
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     // Hold the lock only to find or start the worker, never while a request
-    // runs, so a cancel or a settings save is not stuck behind a transcription.
+    // runs, so a cancel is not stuck behind a transcription. The worker is
+    // started again only after it stops; settings changes travel with each
+    // dictation instead.
     let worker = {
         let mut guard = state.worker.lock().await;
         match guard.as_ref() {
             Some(worker) if worker.is_alive() => worker.clone(),
             _ => {
-                let (openai_api_key, transcription_model) = {
-                    let settings = state
-                        .settings
-                        .lock()
-                        .map_err(|_| "Failed to lock settings".to_string())?;
-                    let key = if settings.openai_api_key.trim().is_empty() {
-                        None
-                    } else {
-                        Some(settings.openai_api_key.clone())
-                    };
-                    (key, settings.transcription_model.clone())
-                };
                 let worker = Arc::new(
-                    WorkerClient::spawn(app_handle, openai_api_key, transcription_model)
+                    WorkerClient::spawn(app_handle)
                         .await
                         .map_err(|e| e.to_string())?,
                 );
@@ -2026,11 +2030,8 @@ async fn app_save_settings(
     #[cfg(target_os = "windows")]
     text_inserter::set_hold_to_talk_enabled(updated.hold_to_talk);
 
-    // Force a fresh worker spawn so new settings are applied. A request still
-    // running keeps the old worker until it finishes.
-    let mut worker = state.worker.lock().await;
-    *worker = None;
-
+    // The worker keeps running: the next dictation sends the new settings
+    // with its start_session request, so it does not wait for a cold start.
     Ok(frontend_settings_from(&updated))
 }
 
@@ -2056,30 +2057,17 @@ async fn worker_start_session(
     state: State<'_, Arc<AppState>>,
     profile_id: String,
 ) -> Result<SessionStartResponse, String> {
-    let (prompt, refine_enabled, refine_prompt) = {
+    // Every setting the worker uses travels with the session, so a saved
+    // change applies to the next dictation without restarting the worker.
+    let params = {
         let s = state
             .settings
             .lock()
             .map_err(|_| "Failed to lock settings".to_string())?;
-        (
-            s.transcription_prompt.clone(),
-            s.refine_enabled,
-            s.refine_prompt.clone(),
-        )
+        start_session_params(&s, &profile_id)
     };
 
-    let response = with_worker_request(
-        &app_handle,
-        &state,
-        "start_session",
-        json!({
-            "profile_id": profile_id,
-            "prompt": prompt,
-            "refine_enabled": refine_enabled,
-            "refine_prompt": refine_prompt,
-        }),
-    )
-    .await?;
+    let response = with_worker_request(&app_handle, &state, "start_session", params).await?;
 
     let session_id = response
         .get("session_id")
@@ -2759,6 +2747,31 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         assert!(!json.contains("sk-secret"));
         assert!(!json.contains("openaiApiKey"));
+    }
+
+    #[test]
+    fn each_dictation_sends_the_saved_key_model_and_prompts() {
+        let settings = AppSettings {
+            openai_api_key: " sk-saved \n".into(),
+            transcription_model: "gpt-live-transcribe".into(),
+            transcription_prompt: "Glossary: Zoon".into(),
+            refine_enabled: false,
+            refine_prompt: "Use British spelling.".into(),
+            ..AppSettings::default()
+        };
+        assert_eq!(
+            start_session_params(&settings, "default"),
+            json!({
+                "profile_id": "default",
+                "openai_api_key": "sk-saved",
+                "transcription_model": "gpt-live-transcribe",
+                "prompt": "Glossary: Zoon",
+                "refine_enabled": false,
+                "refine_prompt": "Use British spelling.",
+            })
+        );
+        let without_key = start_session_params(&AppSettings::default(), "default");
+        assert_eq!(without_key["openai_api_key"], "");
     }
 
     #[test]

@@ -55,6 +55,15 @@ Each request from desktop to worker:
 { "id": "uuid", "method": "list_models", "params": {} }
 ```
 
+Each dictation starts a session that names every setting it uses, so the
+desktop never restarts the worker when settings are saved. The worker keeps
+one OpenAI client for the last key and model and replaces it only when they
+change; an empty key falls back to the worker's `OPENAI_API_KEY`:
+
+```json
+{ "id": "uuid", "method": "start_session", "params": { "profile_id": "default", "openai_api_key": "sk-...", "transcription_model": "gpt-transcribe", "prompt": "...", "refine_enabled": true, "refine_prompt": "..." } }
+```
+
 Audio pipeline methods:
 
 ```json
@@ -83,8 +92,8 @@ Error response:
 
 Requests run side by side in the worker, so replies can arrive in a different
 order than the requests; each reply carries its request's `id`. The desktop
-waits for each reply within a time limit per method and restarts a worker that
-stops. `stop_session` is answered at once even while that session is being
+waits for each reply within a time limit per method and starts the worker
+again only after it stops. `stop_session` is answered at once even while that session is being
 transcribed, and the transcription stops before its next audio part or the
 tidy pass.
 
@@ -163,9 +172,10 @@ Recommended tooling:
 - `uv sync`
 - `uv run python -m whisperflow_worker`
 
-Environment variables:
-- `OPENAI_API_KEY`: required for live transcription calls
-- `WHISPERFLOW_MODEL`: optional override (default: `gpt-transcribe`)
+Environment variables (used when a `start_session` request names no key or
+model, as when the worker runs on its own):
+- `OPENAI_API_KEY`: required for transcription calls
+- `OPENWHISPER_MODEL`: optional override (default: `gpt-transcribe`)
 
 ### Desktop
 

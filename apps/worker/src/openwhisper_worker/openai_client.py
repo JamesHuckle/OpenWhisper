@@ -246,14 +246,17 @@ kind of, basically, literally, right (at sentence ends), so (as a standalone sen
 
 
 class OpenWhisperOpenAI:
-    def __init__(self) -> None:
-        model = os.getenv("OPENWHISPER_MODEL", _DEFAULT_TRANSCRIBE_MODEL).strip()
+    def __init__(self, api_key: str = "", model: str = "") -> None:
+        """A key or model left empty falls back to `OPENAI_API_KEY` or
+        `OPENWHISPER_MODEL`, as when the worker is run on its own."""
+        model = (model or os.getenv("OPENWHISPER_MODEL", _DEFAULT_TRANSCRIBE_MODEL)).strip()
         self._model = _LEGACY_MODEL_ALIASES.get(model, model)
         if self._model not in _TRANSCRIPTION_MODELS:
             raise ValueError(f"Unsupported transcription model: {self._model}")
         self._polish_model = (
             os.getenv("OPENWHISPER_POLISH_MODEL", "").strip() or DEFAULT_POLISH_MODEL
         )
+        self._api_key = api_key.strip()
         self._client: OpenAI | None = None
 
     @property
@@ -266,7 +269,7 @@ class OpenWhisperOpenAI:
 
     def _get_client(self) -> OpenAI:
         if self._client is None:
-            api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+            api_key = self._api_key or (os.getenv("OPENAI_API_KEY") or "").strip()
             if not api_key:
                 raise RuntimeError("OPENAI_API_KEY is not set")
             self._client = OpenAI(api_key=api_key)

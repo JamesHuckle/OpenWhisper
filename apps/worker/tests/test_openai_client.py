@@ -156,6 +156,24 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "requires 24 kHz PCM"):
             client.transcribe_bytes(b"webm", "audio/webm")
 
+    def test_a_given_key_and_model_win_over_the_environment(self) -> None:
+        environment = {"OPENAI_API_KEY": "env-key", "OPENWHISPER_MODEL": "gpt-transcribe"}
+        with patch.dict(os.environ, environment, clear=True):
+            client = OpenWhisperOpenAI(api_key=" saved-key ", model="gpt-live-transcribe")
+            with patch("openwhisper_worker.openai_client.OpenAI") as make_client:
+                client._get_client()
+        self.assertEqual(client.model, "gpt-live-transcribe")
+        make_client.assert_called_once_with(api_key="saved-key")
+
+    def test_an_empty_key_and_model_fall_back_to_the_environment(self) -> None:
+        environment = {"OPENAI_API_KEY": "env-key", "OPENWHISPER_MODEL": "gpt-4o-transcribe"}
+        with patch.dict(os.environ, environment, clear=True):
+            client = OpenWhisperOpenAI(api_key="", model="")
+            with patch("openwhisper_worker.openai_client.OpenAI") as make_client:
+                client._get_client()
+        self.assertEqual(client.model, "gpt-transcribe")
+        make_client.assert_called_once_with(api_key="env-key")
+
     def test_unknown_transcription_model_is_rejected(self) -> None:
         with patch.dict(os.environ, {"OPENWHISPER_MODEL": "gpt-5.4"}):
             with self.assertRaisesRegex(ValueError, "Unsupported transcription model"):

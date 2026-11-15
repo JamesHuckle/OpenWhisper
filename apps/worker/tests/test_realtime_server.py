@@ -213,6 +213,110 @@ class RealtimeWorkerServerTests(unittest.TestCase):
         self.assertEqual(finalized.result["final_text"], "hello world hello world")
 
 
+class SessionSettingsWorkerServerTests(unittest.TestCase):
+    """Each dictation names its key and model, so saving settings needs no restart."""
+
+    def setUp(self) -> None:
+        self.made: list[tuple[str, str, object]] = []
+
+        def make(api_key: str, model: str):
+            openai = FakeRealtimeOpenAI() if model == "gpt-live-transcribe" else FakeFileOpenAI(
+                f"Said with {api_key}."
+            )
+            self.made.append((api_key, model, openai))
+            return openai
+
+        self.log = EventLog()
+        self.server = WorkerServer(emit=self.log, openai_factory=make)
+        self.server._openai = FakeFileOpenAI("Said with the environment key.")
+
+    def start(self, api_key: str, model: str) -> str:
+        return self.server.handle(
+            request(
+                "start_session",
+                refine_enabled=False,
+                openai_api_key=api_key,
+                transcription_model=model,
+            )
+        ).result["session_id"]
+
+    def finalize(self, session_id: str) -> None:
+        self.server.handle(
+            request(
+                "append_audio_chunk",
+                session_id=session_id,
+                chunk_base64=base64.b64encode(pcm_tone(1.0)).decode("ascii"),
+            )
+        )
+        self.server.handle(
+            request("finalize_session_audio", session_id=session_id, mime_type="audio/pcm;rate=24000")
+        )
+
+    def test_dictations_with_the_same_settings_share_one_client(self) -> None:
+        first = self.start("key-1", "gpt-transcribe")
+        self.finalize(first)
+        second = self.start("key-1", "gpt-transcribe")
+        self.finalize(second)
+
+        self.assertEqual([(key, model) for key, model, _ in self.made], [("key-1", "gpt-transcribe")])
+        self.assertEqual(self.made[0][2].transcribed, 2)
+        self.assertEqual(self.log.events(second)[-1], {"type": "final", "text": "Said with key-1."})
+
+    def test_new_settings_apply_to_the_next_dictation_only(self) -> None:
+        running = self.start("old-key", "gpt-transcribe")
+        changed = self.start("new-key", "gpt-transcribe")
+        self.finalize(running)
+        self.finalize(changed)
+
+        self.assertEqual(self.log.events(running)[-1], {"type": "final", "text": "Said with old-key."})
+        self.assertEqual(self.log.events(changed)[-1], {"type": "final", "text": "Said with new-key."})
+
+    def test_choosing_live_transcription_starts_a_live_session_at_once(self) -> None:
+        session_id = self.start("key-1", "gpt-live-transcribe")
+        live = self.made[-1][2]
+
+        self.assertIsNotNone(live.stream)
+        self.server.handle(
+            request(
+                "append_audio_chunk",
+                session_id=session_id,
+                chunk_base64=base64.b64encode(pcm_tone(0.5)).decode("ascii"),
+            )
+        )
+        self.assertEqual(self.log.events(session_id), [{"type": "partial", "text": "hello"}])
+
+    def test_a_dictation_without_settings_uses_the_environment(self) -> None:
+        session_id = self.start("", "")
+        self.finalize(session_id)
+
+        self.assertEqual(self.made, [])
+        self.assertEqual(
+            self.log.events(session_id)[-1],
+            {"type": "final", "text": "Said with the environment key."},
+        )
+
+    def test_an_unknown_model_is_refused_and_the_key_is_not_logged(self) -> None:
+        server = WorkerServer(emit=EventLog())
+        stderr = io.StringIO()
+        with patch("sys.stderr", stderr):
+            refused = server.handle(
+                request("start_session", openai_api_key="sk-secret", transcription_model="gpt-5.4")
+            )
+            started = server.handle(
+                request(
+                    "start_session",
+                    openai_api_key="sk-secret",
+                    transcription_model="gpt-transcribe",
+                )
+            )
+
+        self.assertFalse(refused.ok)
+        self.assertEqual(refused.error.code, "bad_request")
+        self.assertIn("Unsupported transcription model", refused.error.message)
+        self.assertTrue(started.ok)
+        self.assertNotIn("sk-secret", stderr.getvalue())
+
+
 class NoAudioWorkerServerTests(unittest.TestCase):
     PROMPT = "Glossary:\nZoon\nZoon Robotics\nEuphoric"
 

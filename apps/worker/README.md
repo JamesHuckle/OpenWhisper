@@ -12,7 +12,9 @@ uv sync
 uv run python -m whisperflow_worker
 ```
 
-Set your key before running:
+The desktop app sends the OpenAI key and transcription model with each
+`start_session` request, so it never restarts the worker when settings change.
+When run on its own, set your key before running:
 
 ```bash
 export OPENAI_API_KEY=...

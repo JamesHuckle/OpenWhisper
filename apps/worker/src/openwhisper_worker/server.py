@@ -34,6 +34,9 @@ class Session:
     prompt: str
     refine_enabled: bool
     refine_prompt: str
+    # The OpenAI client for the key and model this session started with. A
+    # later dictation with other settings never changes it.
+    openai: OpenWhisperOpenAI
     # The worker's own copy of appended chunks, created by the first chunk.
     # A session finalized from a saved file never appends and never has one.
     audio_path: str = ""
@@ -153,12 +156,25 @@ def _no_speech_reason(path: str, mime_type: str, size: int) -> str | None:
 
 
 EventSink = Callable[[SessionEvent], None]
+OpenAIFactory = Callable[[str, str], OpenWhisperOpenAI]
 _TERMINAL_EVENTS = {"final", "error"}
 
 
 class WorkerServer:
-    def __init__(self, emit: EventSink | None = None) -> None:
+    def __init__(
+        self,
+        emit: EventSink | None = None,
+        openai_factory: OpenAIFactory = OpenWhisperOpenAI,
+    ) -> None:
+        # Used by ping and list_models, and by a session that names no key or
+        # model (the worker run on its own, with its environment variables).
         self._openai = OpenWhisperOpenAI()
+        self._openai_factory = openai_factory
+        # The client for the key and model the last dictation named. It is
+        # kept while they stay the same, so its connection stays warm, and
+        # replaced when the user changes them; the worker never restarts.
+        self._configured: tuple[tuple[str, str], OpenWhisperOpenAI] | None = None
+        self._configured_lock = threading.Lock()
         self._sessions: dict[str, Session] = {}
         self._sessions_lock = threading.Lock()
         self._emit_sink: EventSink = emit or (lambda _event: None)
@@ -189,6 +205,18 @@ class WorkerServer:
         for session in sessions:
             self._cancel(session)
 
+    def _openai_for(self, params: dict[str, Any]) -> OpenWhisperOpenAI:
+        """The client for the key and model a start_session request names."""
+        api_key = str(params.get("openai_api_key") or "").strip()
+        model = str(params.get("transcription_model") or "").strip()
+        if not api_key and not model:
+            return self._openai
+        settings = (api_key, model)
+        with self._configured_lock:
+            if self._configured is None or self._configured[0] != settings:
+                self._configured = (settings, self._openai_factory(api_key, model))
+            return self._configured[1]
+
     def _session(self, request: WorkerRequest) -> Session | None:
         session_id = str(request.params.get("session_id", ""))
         with self._sessions_lock:
@@ -213,9 +241,15 @@ class WorkerServer:
         prompt = str(request.params.get("prompt", ""))
         refine_enabled = bool(request.params.get("refine_enabled", True))
         refine_prompt = str(request.params.get("refine_prompt", ""))
+        try:
+            openai = self._openai_for(request.params)
+        except ValueError as exc:
+            return self._err(request.id, "bad_request", str(exc))
+        # Never log the key, the prompts or the dictated text.
         sys.stderr.write(
             "[worker] start_session "
             f"profile_id={profile_id!r} "
+            f"model={openai.model} "
             f"transcription_prompt_chars={len(prompt)} "
             f"refine_enabled={refine_enabled} "
             f"refine_prompt_chars={len(refine_prompt)}\n"
@@ -228,16 +262,17 @@ class WorkerServer:
             prompt=prompt,
             refine_enabled=refine_enabled,
             refine_prompt=refine_prompt,
+            openai=openai,
             realtime_segments=[],
         )
-        if self._openai.is_live:
+        if openai.is_live:
             session.realtime_stream = self._start_realtime(session)
         with self._sessions_lock:
             self._sessions[session_id] = session
         return self._ok(request.id, {"session_id": session_id, "profile_id": profile_id})
 
     def _start_realtime(self, session: Session) -> RealtimeTranscriptionStream:
-        return self._openai.start_realtime_transcription(
+        return session.openai.start_realtime_transcription(
             lambda delta: self._emit(session, {"type": "partial", "text": delta})
         )
 
@@ -391,7 +426,7 @@ class WorkerServer:
                     [*(session.realtime_segments or []), final_segment]
                 ).strip()
             else:
-                text = self._openai.transcribe_file(
+                text = session.openai.transcribe_file(
                     source_path,
                     mime_type=mime_type,
                     prompt=session.prompt,
@@ -429,7 +464,7 @@ class WorkerServer:
             sys.stderr.flush()
             self._emit(session, {"type": "partial", "text": "Refining transcript..."})
             try:
-                text = self._openai.polish(text, session.refine_prompt)
+                text = session.openai.polish(text, session.refine_prompt)
             except Exception as exc:  # noqa: BLE001
                 # The error text can quote the transcript or custom prompt that
                 # was sent, so report only its type and codes.

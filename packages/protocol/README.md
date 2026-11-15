@@ -37,6 +37,28 @@ This package documents the canonical local IPC contract between desktop and work
 }
 ```
 
+## Sessions
+
+Each dictation starts a session that carries every setting the worker uses.
+Saving settings in the desktop therefore never restarts the worker. An empty
+`openai_api_key` or `transcription_model` falls back to the worker's
+`OPENAI_API_KEY` or `OPENWHISPER_MODEL`.
+
+```json
+{
+  "id": "uuid",
+  "method": "start_session",
+  "params": {
+    "profile_id": "default",
+    "openai_api_key": "sk-...",
+    "transcription_model": "gpt-transcribe",
+    "prompt": "Glossary: ...",
+    "refine_enabled": true,
+    "refine_prompt": ""
+  }
+}
+```
+
 ## Audio Commands
 
 ```json
