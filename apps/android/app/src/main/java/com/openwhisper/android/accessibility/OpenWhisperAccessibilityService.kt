@@ -31,8 +31,10 @@ import com.openwhisper.android.dictation.ExecutorBackgroundRunner
 import com.openwhisper.android.dictation.MainThreadCallbackDispatcher
 import com.openwhisper.android.dictation.SelectingDictationBackend
 import com.openwhisper.android.editor.EditorSessionController
+import com.openwhisper.android.editor.InputConnectionEditorProvider
 import com.openwhisper.android.editor.InputConnectionEditorSessionController
 import com.openwhisper.android.editor.RoutingEditorSessionPort
+import com.openwhisper.android.overlay.FocusedField
 import com.openwhisper.android.overlay.OverlayContext
 import com.openwhisper.android.overlay.OverlayDecision
 import com.openwhisper.android.overlay.OverlayKeyGeometry
@@ -52,8 +54,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
     }
     private lateinit var settings: SettingsRepository
     private lateinit var editorProvider: AccessibilityEditorProvider
-    private var accessibilityInputMethod: OpenWhisperInputMethod? = null
-    private var inputConnectionEditor: InputConnectionEditorSessionController? = null
+    private var accessibilityInputMethod: InputConnectionEditorProvider? = null
     private lateinit var coordinator: DictationCoordinator
     private lateinit var overlay: DictationOverlayWindow
     private var refreshQueued = false
@@ -84,8 +85,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                         null
                     }
                 },
-            ).also { inputConnectionEditor = it }
-                .let { RoutingEditorSessionPort(it, accessibilityEditor) }
+            ).let { RoutingEditorSessionPort(it, accessibilityEditor) }
         } else {
             accessibilityEditor
         }
@@ -163,41 +163,30 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun refreshOverlay() {
-        val editor = editorProvider.focusedEditor()
-        val snapshot = editor?.snapshot()
-        val inputAvailability = if (editor == null) {
-            inputConnectionEditor?.currentAvailability()
-        } else {
-            null
-        }
         val keyboard = windows
             .firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
             ?.let { window -> Rect().also(window::getBoundsInScreen) }
             ?.takeIf { it.width() > 0 && it.height() > 0 }
         val display = displayBounds()
         val density = resources.displayMetrics.density
-        val decision = OverlayPolicy().decide(
-            OverlayContext(
-                keyboardBounds = keyboard?.toScreenRect(),
-                hasEditableFocus = editor != null || inputAvailability != null,
-                isPassword = snapshot?.isPassword == true ||
-                    inputAvailability?.isPassword == true,
-                isSensitive = snapshot?.isSensitive == true ||
-                    inputAvailability?.isSensitive == true,
-                displayBounds = display.toScreenRect(),
-                controlWidthPx = overlay.controlWidthPx,
-                controlHeightPx = overlay.controlHeightPx,
-                marginPx = (OverlayKeyGeometry.GUTTER_MARGIN_DP * density).toInt()
-                    .coerceAtLeast(1),
-                dictationActive = coordinator.currentState.let {
-                    it is DictationState.Listening ||
-                        it is DictationState.Finalizing ||
-                        it is DictationState.ReadyToInsert ||
-                        // A failure while floating stays until the user opens recovery.
-                        (it is DictationState.Failed && overlay.isFloating)
-                },
-            ),
+        val context = OverlayContext(
+            keyboardBounds = keyboard?.toScreenRect(),
+            displayBounds = display.toScreenRect(),
+            controlWidthPx = overlay.controlWidthPx,
+            controlHeightPx = overlay.controlHeightPx,
+            marginPx = (OverlayKeyGeometry.GUTTER_MARGIN_DP * density).toInt()
+                .coerceAtLeast(1),
+            dictationActive = coordinator.currentState.let {
+                it is DictationState.Listening ||
+                    it is DictationState.Finalizing ||
+                    it is DictationState.ReadyToInsert ||
+                    // A failure while floating stays until the user opens recovery.
+                    (it is DictationState.Failed && overlay.isFloating)
+            },
         )
+        // The policy looks for the focused field only while a keyboard is open, so
+        // browsing without one never walks the other app's accessibility tree.
+        val decision = OverlayPolicy().decide(context, ::focusedField)
         when (decision) {
             OverlayDecision.Hidden -> {
                 if (coordinator.currentState !is DictationState.Idle) coordinator.cancel()
@@ -209,6 +198,16 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             OverlayDecision.Float -> {
                 if (!overlay.showFloating(display.toScreenRect())) scheduleRefresh(250)
             }
+        }
+    }
+
+    private fun focusedField(): FocusedField? {
+        editorProvider.focusedEditor()?.snapshot()?.let {
+            return FocusedField(isPassword = it.isPassword, isSensitive = it.isSensitive)
+        }
+        // Rich-text editors without an editable node may still hold the input connection.
+        return accessibilityInputMethod?.currentEditor()?.availability?.let {
+            FocusedField(isPassword = it.isPassword, isSensitive = it.isSensitive)
         }
     }
 

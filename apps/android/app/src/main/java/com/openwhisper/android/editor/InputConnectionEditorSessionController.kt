@@ -20,9 +20,6 @@ class InputConnectionEditorSessionController(
     private val provider: InputConnectionEditorProvider,
     private val planner: EditorInsertionPlanner = EditorInsertionPlanner(),
 ) : EditorSessionPort {
-    fun currentAvailability(): EditorAvailability? =
-        provider.currentEditor()?.availability
-
     override fun begin(): EditorSession? {
         val editor = provider.currentEditor() ?: return null
         if (editor.availability.isPassword || editor.availability.isSensitive) return null

@@ -16,7 +16,7 @@ data class ScreenRect(
 
 data class OverlayContext(
     val keyboardBounds: ScreenRect?,
-    val hasEditableFocus: Boolean,
+    val hasEditableFocus: Boolean = false,
     val isPassword: Boolean = false,
     val isSensitive: Boolean = false,
     val displayBounds: ScreenRect = ScreenRect(0, 0, 1080, 2400),
@@ -25,6 +25,12 @@ data class OverlayContext(
     val marginPx: Int = 24,
     /** Dictation is recording or transcribing, so the control must stay reachable. */
     val dictationActive: Boolean = false,
+)
+
+/** What the overlay needs to know about the field that has input focus. */
+data class FocusedField(
+    val isPassword: Boolean = false,
+    val isSensitive: Boolean = false,
 )
 
 sealed interface OverlayDecision {
@@ -36,6 +42,25 @@ sealed interface OverlayDecision {
 }
 
 class OverlayPolicy {
+    /**
+     * Decides from [context] and the field that has focus, looking for the field only
+     * while a keyboard is open. Without a keyboard the control is hidden, or floats
+     * during dictation, whatever has focus; finding the field can walk every window's
+     * accessibility tree, so [focusedField] is not called then. The focus fields of
+     * [context] are replaced by what [focusedField] returns (null: no editable field).
+     */
+    fun decide(context: OverlayContext, focusedField: () -> FocusedField?): OverlayDecision {
+        if (context.keyboardBounds == null) return decide(context)
+        val field = focusedField()
+        return decide(
+            context.copy(
+                hasEditableFocus = field != null,
+                isPassword = field?.isPassword == true,
+                isSensitive = field?.isSensitive == true,
+            ),
+        )
+    }
+
     fun decide(context: OverlayContext): OverlayDecision {
         val keyboard = context.keyboardBounds
         if (keyboard == null || !context.hasEditableFocus || context.isPassword || context.isSensitive) {

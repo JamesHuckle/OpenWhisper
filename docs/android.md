@@ -25,7 +25,11 @@ virtual view hierarchy. Android's direct input-focus lookup can return `null`
 for those hierarchies even while the keyboard is visible. OpenWhisper falls
 back to traversing the interactive application windows for the focused editor
 and also accepts custom editors that expose the platform's set-text action
-without setting the redundant editable flag.
+without setting the redundant editable flag. Each overlay refresh checks for
+the keyboard first and looks for the focused editor only while a keyboard is
+open, because the control is hidden (or floats during dictation) without one
+whatever has focus. The window traversal visits at most 2,000 nodes, since
+each node is a slow call into the other app.
 
 On Android 13 and newer, OpenWhisper also registers as an accessibility input
 method editor. If a rich-text app provides a real keyboard `InputConnection`

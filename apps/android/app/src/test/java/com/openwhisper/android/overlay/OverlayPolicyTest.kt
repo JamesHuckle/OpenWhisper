@@ -1,6 +1,7 @@
 package com.openwhisper.android.overlay
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.fail
 import org.junit.Test
 
 class OverlayPolicyTest {
@@ -111,5 +112,45 @@ class OverlayPolicyTest {
         )
 
         assertEquals(OverlayDecision.Show(ScreenPoint(24, 1736)), decision)
+    }
+
+    @Test
+    fun skipsTheFocusedFieldLookupWhileTheKeyboardIsClosed() {
+        val lookup: () -> FocusedField? = { fail("focused field looked up without a keyboard"); null }
+
+        assertEquals(
+            OverlayDecision.Hidden,
+            policy.decide(OverlayContext(keyboardBounds = null), lookup),
+        )
+        assertEquals(
+            OverlayDecision.Float,
+            policy.decide(OverlayContext(keyboardBounds = null, dictationActive = true), lookup),
+        )
+    }
+
+    @Test
+    fun usesTheFocusedFieldOnceWhileTheKeyboardIsOpen() {
+        val keyboard = OverlayContext(
+            keyboardBounds = ScreenRect(0, 1400, 1080, 2400),
+            controlWidthPx = 64,
+            controlHeightPx = 128,
+            marginPx = 24,
+        )
+        var lookups = 0
+
+        assertEquals(
+            OverlayDecision.Show(ScreenPoint(24, 1736)),
+            policy.decide(keyboard) { lookups += 1; FocusedField() },
+        )
+        assertEquals(1, lookups)
+        assertEquals(OverlayDecision.Hidden, policy.decide(keyboard) { null })
+        assertEquals(
+            OverlayDecision.Hidden,
+            policy.decide(keyboard) { FocusedField(isPassword = true) },
+        )
+        assertEquals(
+            OverlayDecision.Hidden,
+            policy.decide(keyboard) { FocusedField(isSensitive = true) },
+        )
     }
 }

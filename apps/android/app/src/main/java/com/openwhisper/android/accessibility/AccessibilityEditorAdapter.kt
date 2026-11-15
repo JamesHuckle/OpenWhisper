@@ -47,9 +47,10 @@ class AccessibilityEditorProvider(
     }
 
     private companion object {
-        // Accessibility trees are expected to be finite, but a defensive limit
-        // keeps a malformed third-party virtual hierarchy off the main thread.
-        const val MAX_TRAVERSED_NODES = 10_000
+        // Each visited node is a slow cross-process call into the other app.
+        // Real screens hold a few hundred nodes, so this limit still finds the
+        // editor while keeping a huge or malformed hierarchy off the main thread.
+        const val MAX_TRAVERSED_NODES = 2_000
     }
 }
 
