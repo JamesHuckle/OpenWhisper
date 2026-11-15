@@ -15,6 +15,7 @@ import {
   getOverlayLayout,
 } from "./overlay-layout";
 import { captureBeforeSession, SessionAudioQueue } from "./recording-pipeline";
+import { finalWriteNotice, type TargetWrite } from "./target-write";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -64,7 +65,6 @@ let sessionEventTail: Promise<void> = Promise.resolve();
 let finalTranscript = "";
 let liveTranscript = "";
 let streamTextToTarget = false;
-let pastedTranscript = "";
 let targetWriteQueue: Promise<void> = Promise.resolve();
 let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
 let mediaRecorder: MediaRecorder | null = null;
@@ -1085,7 +1085,6 @@ async function startRecording() {
     finalTranscript = "";
     liveTranscript = "";
     streamTextToTarget = settings.transcriptionModel === "gpt-live-transcribe";
-    pastedTranscript = "";
     targetWriteQueue = Promise.resolve();
     logDebug(`session ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
@@ -1236,7 +1235,6 @@ async function transcribeStoredAudio(
   shouldPasteFinalTranscript = false;
   finalTranscript = "";
   liveTranscript = "";
-  pastedTranscript = "";
   targetWriteQueue = Promise.resolve();
   await invoke("recording_finish", {
     recordingId,
@@ -1360,8 +1358,15 @@ async function applyTranscriptEvent(ev: TranscriptEvent) {
     if (streamTextToTarget) {
       const delta = ev.text;
       targetWriteQueue = targetWriteQueue.then(async () => {
-        await invoke("paste_to_target", { text: delta });
-        pastedTranscript += delta;
+        if (!streamTextToTarget) return;
+        // The native side checks the field before each piece. Once it stops
+        // (field changed, cursor moved, password field), the final text is
+        // pasted without deleting what the user did.
+        const write = await invoke<TargetWrite>("type_to_target", { text: delta });
+        if (write.outcome !== "typed") {
+          streamTextToTarget = false;
+          logDebug(`live target typing stopped reason=${write.reason ?? "unknown"}`);
+        }
       }).catch((err) => {
         logDebug(`live target write failed=${err instanceof Error ? err.message : String(err)}`);
       });
@@ -1383,17 +1388,9 @@ async function completeSession() {
     if (!shouldPasteFinalTranscript) {
       await invoke("copy_to_clipboard", { text: finalTranscript });
       showToast("Transcript copied to clipboard", 3000);
-    } else if (pastedTranscript) {
-      if (pastedTranscript.trim() !== finalTranscript.trim()) {
-        await invoke("replace_streamed_target", {
-          streamedText: pastedTranscript,
-          finalText: finalTranscript,
-        });
-      }
-      showToast("Transcribed live", 2000);
     } else {
-      await invoke("paste_to_target", { text: finalTranscript });
-      showToast("Transcribed and pasted", 2000);
+      const write = await invoke<TargetWrite>("insert_final_text", { text: finalTranscript });
+      showToast(finalWriteNotice(write), write.outcome === "copied" ? 5000 : 2000);
     }
     await finishCurrentRecording("complete", finalTranscript, "");
   } else if (sessionFailure) {
@@ -1431,7 +1428,6 @@ if (import.meta.env.DEV) {
     finalTranscript = "";
     liveTranscript = "";
     streamTextToTarget = true;
-    pastedTranscript = "";
     targetWriteQueue = Promise.resolve();
     setState("recording");
     for (const chunkBase64 of chunks) {

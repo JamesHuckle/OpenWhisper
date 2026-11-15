@@ -135,11 +135,31 @@ describe("desktop regression contracts", () => {
     const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
 
     expect(main).not.toContain('id="live-transcript"');
-    expect(main).toContain('invoke("paste_to_target", { text: delta })');
-    expect(main).toContain('invoke("replace_streamed_target"');
+    expect(main).toContain('invoke<TargetWrite>("type_to_target", { text: delta })');
+    expect(main).toContain('invoke<TargetWrite>("insert_final_text", { text: finalTranscript })');
     expect(main).toContain("import.meta.env.DEV");
     expect(main).toContain("__openwhisperRealtimeSmoke");
     expect(css).not.toMatch(/\.live-transcript\s*\{/);
+  });
+
+  it("writes into the field locked at the start without clipboard-pasting live pieces", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const lib = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+
+    // The clipboard is no longer used for live pieces or blind Backspaces.
+    expect(main).not.toContain("paste_to_target");
+    expect(main).not.toContain("replace_streamed_target");
+    expect(lib).not.toContain("fn paste_to_target(");
+    expect(lib).not.toContain("fn replace_streamed_target(");
+    // Live typing ends for the recording once the native side stops it.
+    expect(main).toContain('if (write.outcome !== "typed") {');
+    // The 20 ms loop only tracks; a recording's target is locked separately.
+    expect(lib).toContain("text_inserter::track_foreground();");
+    expect(lib).toContain("text_inserter::capture_target();");
+    expect(lib).toContain("KEYEVENTF_UNICODE");
+    expect(lib).toContain("fn paste_restoring_clipboard(");
+    expect(lib).toContain('"CanIncludeInClipboardHistory"');
+    expect(lib).toContain("CurrentIsPassword()");
   });
 
   it("receives worker progress as pushed events instead of polling behind a transcription", () => {

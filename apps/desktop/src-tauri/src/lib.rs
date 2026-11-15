@@ -1,3 +1,6 @@
+// Parts of the insertion rules are used only by the Windows writer.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod paste_target;
 mod worker_client;
 mod worker_connection;
 
@@ -40,15 +43,29 @@ fn overlay_bottom_anchor(monitor_bottom: i32, work_bottom: i32, is_primary: bool
 }
 
 // ---------------------------------------------------------------------------
-// Platform: text insertion via clipboard + simulated Ctrl+V
+// Platform: writing dictated text into the field focused when recording began
 // ---------------------------------------------------------------------------
+//
+// A background loop tracks the last focused window outside OpenWhisper, so
+// that clicking the pill still knows where the user was. When a recording
+// starts, `capture_target` locks that window and its focused control for the
+// whole recording; the loop never changes a locked target. Before every write
+// the target is checked again (same window and control, not a password field,
+// no key press or click since the last write) and `paste_target` decides what
+// may be written. Live pieces are typed as Unicode keystrokes. The final text
+// is pasted through the clipboard, which is put back afterwards; the temporary
+// text is kept out of clipboard history and cloud sync.
 #[cfg(target_os = "windows")]
 mod text_inserter {
+    use crate::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
     use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+    use std::sync::Mutex;
+    use std::time::Duration;
 
-    static TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
-    static TARGET_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
+    static TRACKED_HWND: AtomicIsize = AtomicIsize::new(0);
+    static TRACKED_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
     static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
+    static MOUSE_HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
     static CTRL_HELD: AtomicBool = AtomicBool::new(false);
     static HOLD_TO_TALK_ENABLED: AtomicBool = AtomicBool::new(true);
     static PRESS_TO_TALK_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -57,23 +74,65 @@ mod text_inserter {
     static PRESS_TO_TALK_STOP: AtomicBool = AtomicBool::new(false);
     static TOGGLE_RECORDING: AtomicBool = AtomicBool::new(false);
     static DEBUG_EVENT_BITS: AtomicU32 = AtomicU32::new(0);
+    /// Set by the input hooks when the user presses a key or clicks outside
+    /// OpenWhisper; cleared when a recording starts and after every write.
+    static USER_INPUT_SINCE_WRITE: AtomicBool = AtomicBool::new(false);
+    static SESSION: Mutex<Option<PasteSession>> = Mutex::new(None);
+
+    /// The target locked for one recording and the live draft typed into it.
+    struct PasteSession {
+        hwnd: isize,
+        focus_hwnd: isize,
+        draft: String,
+        live_stopped: Option<Blocked>,
+    }
+
+    /// How a write ended, for the frontend.
+    pub enum WriteOutcome {
+        Typed,
+        Replaced,
+        Pasted,
+        Kept,
+        Stopped(Blocked),
+        Copied(Blocked),
+    }
 
     const INPUT_KEYBOARD: u32 = 1;
     const KEYEVENTF_KEYUP: u32 = 0x0002;
+    const KEYEVENTF_UNICODE: u32 = 0x0004;
     const VK_BACK: u16 = 0x08;
     const VK_CONTROL: u16 = 0x11;
     const VK_V: u16 = 0x56;
+    const VK_LCONTROL: u16 = 0xA2;
+    const VK_RCONTROL: u16 = 0xA3;
+    const VK_LMENU: i32 = 0xA4;
+    const VK_RMENU: i32 = 0xA5;
+    const VK_LWIN: i32 = 0x5B;
+    const VK_RWIN: i32 = 0x5C;
 
     const WH_KEYBOARD_LL: i32 = 13;
+    const WH_MOUSE_LL: i32 = 14;
+    const WM_NULL: u32 = 0x0000;
     const WM_KEYDOWN: u32 = 0x0100;
     const WM_KEYUP: u32 = 0x0101;
     const WM_SYSKEYDOWN: u32 = 0x0104;
     const WM_SYSKEYUP: u32 = 0x0105;
+    const WM_LBUTTONDOWN: u32 = 0x0201;
+    const WM_RBUTTONDOWN: u32 = 0x0204;
+    const WM_MBUTTONDOWN: u32 = 0x0207;
+    const WM_XBUTTONDOWN: u32 = 0x020B;
+    const VK_SHIFT_CODE: u32 = 0x10;
+    const VK_LSHIFT_CODE: u32 = 0xA0;
+    const VK_RSHIFT_CODE: u32 = 0xA1;
     const VK_CONTROL_CODE: u32 = 0x11;
     const VK_LCONTROL_CODE: u32 = 0xA2;
     const VK_RCONTROL_CODE: u32 = 0xA3;
     const VK_SPACE: u32 = 0x20;
     const LLKHF_INJECTED: u32 = 0x10;
+    const LLMHF_INJECTED: u32 = 0x01;
+    const SMTO_ABORTIFHUNG: u32 = 0x0002;
+    const GWL_STYLE: i32 = -16;
+    const ES_PASSWORD: i32 = 0x0020;
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     const MAX_PATH: usize = 260;
     const DBG_CTRL_DOWN: u32 = 1 << 0;
@@ -86,12 +145,25 @@ mod text_inserter {
     const DBG_STOP_BY_SPACE: u32 = 1 << 7;
     const DBG_TOGGLE_FLAG: u32 = 1 << 8;
 
+    /// Ctrl+V is only queued: the target reads the clipboard when it handles
+    /// the key, and browsers read it on another thread a moment later.
+    const PASTE_HANDLED_TIMEOUT_MS: u32 = 1000;
+    const PASTE_SETTLE: Duration = Duration::from_millis(300);
+    const CLIPBOARD_OPEN_ATTEMPTS: usize = 10;
+
     #[repr(C)]
     struct Rect {
         left: i32,
         top: i32,
         right: i32,
         bottom: i32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Point {
+        x: i32,
+        y: i32,
     }
 
     #[repr(C)]
@@ -129,6 +201,15 @@ mod text_inserter {
         dw_extra_info: usize,
     }
 
+    #[repr(C)]
+    struct MsLlHookStruct {
+        pt: Point,
+        mouse_data: u32,
+        flags: u32,
+        time: u32,
+        dw_extra_info: usize,
+    }
+
     #[link(name = "user32")]
     extern "system" {
         fn SendInput(c_inputs: u32, p_inputs: *const KbdInput, cb_size: i32) -> u32;
@@ -139,6 +220,19 @@ mod text_inserter {
         fn GetGUIThreadInfo(id_thread: u32, pgui: *mut GuiThreadInfo) -> i32;
         fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
         fn GetWindowThreadProcessId(h_wnd: isize, lp_process_id: *mut u32) -> u32;
+        fn GetAsyncKeyState(v_key: i32) -> i16;
+        fn GetWindowLongW(h_wnd: isize, n_index: i32) -> i32;
+        fn GetClassNameW(h_wnd: isize, lp_class_name: *mut u16, n_max_count: i32) -> i32;
+        fn WindowFromPoint(point: Point) -> isize;
+        fn SendMessageTimeoutW(
+            h_wnd: isize,
+            msg: u32,
+            w_param: usize,
+            l_param: isize,
+            fu_flags: u32,
+            u_timeout: u32,
+            lpdw_result: *mut usize,
+        ) -> isize;
         fn SetWindowsHookExW(
             id_hook: i32,
             lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize,
@@ -174,37 +268,58 @@ mod text_inserter {
         pid == std::process::id()
     }
 
-    /// Snapshot the current foreground window, ignoring our own process.
-    pub fn save_foreground() {
-        let hwnd = unsafe { GetForegroundWindow() };
-        if hwnd != 0 && !is_own_process(hwnd) {
-            TARGET_HWND.store(hwnd, Ordering::Relaxed);
-            let thread_id = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
-            let mut info = GuiThreadInfo {
-                cb_size: std::mem::size_of::<GuiThreadInfo>() as u32,
-                flags: 0,
-                hwnd_active: 0,
-                hwnd_focus: 0,
-                hwnd_capture: 0,
-                hwnd_menu_owner: 0,
-                hwnd_move_size: 0,
-                hwnd_caret: 0,
-                rc_caret: Rect {
-                    left: 0,
-                    top: 0,
-                    right: 0,
-                    bottom: 0,
-                },
-            };
-            if thread_id != 0 && unsafe { GetGUIThreadInfo(thread_id, &mut info) } != 0 {
-                TARGET_FOCUS_HWND.store(info.hwnd_focus, Ordering::Relaxed);
-            }
+    /// The control with keyboard focus inside `hwnd`'s UI thread, or 0.
+    fn focused_control(hwnd: isize) -> isize {
+        let thread_id = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
+        let mut info = GuiThreadInfo {
+            cb_size: std::mem::size_of::<GuiThreadInfo>() as u32,
+            flags: 0,
+            hwnd_active: 0,
+            hwnd_focus: 0,
+            hwnd_capture: 0,
+            hwnd_menu_owner: 0,
+            hwnd_move_size: 0,
+            hwnd_caret: 0,
+            rc_caret: Rect {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+        };
+        if thread_id != 0 && unsafe { GetGUIThreadInfo(thread_id, &mut info) } != 0 {
+            info.hwnd_focus
+        } else {
+            0
         }
     }
 
-    /// Returns the executable name (without `.exe`) of the saved foreground window.
+    /// Follow the current foreground window, ignoring our own process. Runs
+    /// every 20 ms; it never changes the target locked for a recording.
+    pub fn track_foreground() {
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd != 0 && !is_own_process(hwnd) {
+            TRACKED_HWND.store(hwnd, Ordering::Relaxed);
+            TRACKED_FOCUS_HWND.store(focused_control(hwnd), Ordering::Relaxed);
+        }
+    }
+
+    /// Lock the window and control the user was in for this recording.
+    pub fn capture_target() {
+        track_foreground();
+        let session = PasteSession {
+            hwnd: TRACKED_HWND.load(Ordering::Relaxed),
+            focus_hwnd: TRACKED_FOCUS_HWND.load(Ordering::Relaxed),
+            draft: String::new(),
+            live_stopped: None,
+        };
+        *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
+        USER_INPUT_SINCE_WRITE.store(false, Ordering::SeqCst);
+    }
+
+    /// Returns the executable name (without `.exe`) of the tracked foreground window.
     pub fn foreground_app_name() -> Option<String> {
-        let hwnd = TARGET_HWND.load(Ordering::Relaxed);
+        let hwnd = TRACKED_HWND.load(Ordering::Relaxed);
         if hwnd == 0 {
             return None;
         }
@@ -285,50 +400,201 @@ mod text_inserter {
         events.join(",")
     }
 
-    fn restore_target_focus() {
-        let hwnd = TARGET_HWND.load(Ordering::Relaxed);
-        if hwnd != 0 {
-            unsafe { SetForegroundWindow(hwnd) };
-            let focus_hwnd = TARGET_FOCUS_HWND.load(Ordering::Relaxed);
-            if focus_hwnd != 0 && unsafe { IsWindow(focus_hwnd) } != 0 {
-                let target_thread = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
-                let current_thread = unsafe { GetCurrentThreadId() };
-                let attached = target_thread != 0
-                    && target_thread != current_thread
-                    && unsafe { AttachThreadInput(current_thread, target_thread, 1) } != 0;
-                unsafe { SetFocus(focus_hwnd) };
-                if attached {
-                    unsafe { AttachThreadInput(current_thread, target_thread, 0) };
-                }
+    // ----- Checking the locked target before a write -----
+
+    fn key_held(vk: i32) -> bool {
+        let state = unsafe { GetAsyncKeyState(vk) };
+        state < 0
+    }
+
+    fn restore_target_focus(session: &PasteSession) {
+        unsafe { SetForegroundWindow(session.hwnd) };
+        let focus_hwnd = session.focus_hwnd;
+        if focus_hwnd != 0 && unsafe { IsWindow(focus_hwnd) } != 0 {
+            let target_thread =
+                unsafe { GetWindowThreadProcessId(session.hwnd, std::ptr::null_mut()) };
+            let current_thread = unsafe { GetCurrentThreadId() };
+            let attached = target_thread != 0
+                && target_thread != current_thread
+                && unsafe { AttachThreadInput(current_thread, target_thread, 1) } != 0;
+            unsafe { SetFocus(focus_hwnd) };
+            if attached {
+                unsafe { AttachThreadInput(current_thread, target_thread, 0) };
             }
-            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+
+    /// The target keeps focus, or gets it back when the user only clicked
+    /// OpenWhisper. Focus is never taken from another app the user moved to.
+    fn bring_target_forward(session: &PasteSession) -> bool {
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground == session.hwnd {
+            return true;
+        }
+        if foreground != 0 && is_own_process(foreground) {
+            restore_target_focus(session);
+            return unsafe { GetForegroundWindow() } == session.hwnd;
+        }
+        false
+    }
+
+    /// Classic Win32 edit controls mark password fields with `ES_PASSWORD`.
+    fn is_win32_password_edit(hwnd: isize) -> bool {
+        if hwnd == 0 || unsafe { GetWindowLongW(hwnd, GWL_STYLE) } & ES_PASSWORD == 0 {
+            return false;
+        }
+        let mut buf = [0u16; 64];
+        let len = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        if len <= 0 {
+            return false;
+        }
+        let class = String::from_utf16_lossy(&buf[..len as usize]).to_ascii_lowercase();
+        class == "edit" || class.starts_with("richedit")
+    }
+
+    fn observe(session: &PasteSession) -> Observation {
+        let target_alive = session.hwnd != 0 && unsafe { IsWindow(session.hwnd) } != 0;
+        let foreground_is_target = target_alive && bring_target_forward(session);
+        let focus_now = if foreground_is_target {
+            focused_control(session.hwnd)
+        } else {
+            0
+        };
+        let same_field = if session.focus_hwnd != 0 && focus_now != 0 {
+            Some(focus_now == session.focus_hwnd)
+        } else {
+            None
+        };
+        let is_password = foreground_is_target
+            && (uia::focused_element_is_password().unwrap_or(false)
+                || is_win32_password_edit(focus_now));
+        Observation {
+            target_alive,
+            foreground_is_target,
+            same_field,
+            is_password,
+            user_input_since_write: USER_INPUT_SINCE_WRITE.load(Ordering::SeqCst),
+            shortcut_modifier_held: [VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN]
+                .into_iter()
+                .any(key_held),
         }
     }
 
-    fn paste_shortcut() {
+    fn lock_session() -> std::sync::MutexGuard<'static, Option<PasteSession>> {
+        SESSION.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Type one live piece of the transcript into the locked target.
+    pub fn type_live(text: &str) -> WriteOutcome {
+        let mut guard = lock_session();
+        let Some(session) = guard.as_mut() else {
+            return WriteOutcome::Stopped(Blocked::NoTarget);
+        };
+        if let Some(blocked) = session.live_stopped {
+            return WriteOutcome::Stopped(blocked);
+        }
+        let observation = observe(session);
+        match paste_target::decide_live(&observation, !session.draft.is_empty()) {
+            LiveWrite::Type => {
+                let typed = paste_target::typeable_text(text);
+                release_held_ctrl();
+                type_unicode(&typed);
+                session.draft.push_str(&typed);
+                USER_INPUT_SINCE_WRITE.store(false, Ordering::SeqCst);
+                WriteOutcome::Typed
+            }
+            LiveWrite::Stop(blocked) => {
+                session.live_stopped = Some(blocked);
+                WriteOutcome::Stopped(blocked)
+            }
+        }
+    }
+
+    /// Write the final transcript and end the recording's target lock.
+    pub fn insert_final(text: &str) -> Result<WriteOutcome, String> {
+        let Some(session) = lock_session().take() else {
+            return copy_instead(text, Blocked::NoTarget);
+        };
+        let observation = observe(&session);
+        let decision = paste_target::decide_final(
+            &observation,
+            &session.draft,
+            session.live_stopped.is_none(),
+            text,
+        );
+        match decision {
+            FinalWrite::Replace { delete_chars } => {
+                release_held_ctrl();
+                press_backspace(delete_chars);
+                paste_restoring_clipboard(text, session.hwnd)?;
+                Ok(WriteOutcome::Replaced)
+            }
+            FinalWrite::Paste => {
+                paste_restoring_clipboard(text, session.hwnd)?;
+                Ok(WriteOutcome::Pasted)
+            }
+            FinalWrite::KeepDraft => Ok(WriteOutcome::Kept),
+            FinalWrite::Copy(blocked) => copy_instead(text, blocked),
+        }
+    }
+
+    /// Leave the transcript on the clipboard when it cannot be inserted. Text
+    /// meant for a password field stays out of clipboard history.
+    fn copy_instead(text: &str, blocked: Blocked) -> Result<WriteOutcome, String> {
+        use arboard::SetExtWindows;
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        let set = clipboard.set();
+        let set = if blocked == Blocked::PasswordField {
+            set.exclude_from_history().exclude_from_cloud()
+        } else {
+            set
+        };
+        set.text(text).map_err(|e| e.to_string())?;
+        Ok(WriteOutcome::Copied(blocked))
+    }
+
+    // ----- Keystrokes -----
+
+    fn send_inputs(inputs: &[KbdInput]) {
+        if inputs.is_empty() {
+            return;
+        }
         unsafe {
-            let size = std::mem::size_of::<KbdInput>() as i32;
-            let inputs = [
-                kbd(VK_CONTROL, 0),
-                kbd(VK_V, 0),
-                kbd(VK_V, KEYEVENTF_KEYUP),
-                kbd(VK_CONTROL, KEYEVENTF_KEYUP),
-            ];
-            SendInput(4, inputs.as_ptr(), size);
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                std::mem::size_of::<KbdInput>() as i32,
+            );
         }
     }
 
-    pub fn restore_and_paste() {
-        restore_target_focus();
-        paste_shortcut();
+    /// With Ctrl+Space held for hold-to-talk, typed letters would become
+    /// shortcuts and Backspace would delete whole words. Release Ctrl first;
+    /// the keyboard hook ignores injected keys, so the gesture keeps working.
+    fn release_held_ctrl() {
+        let inputs: Vec<KbdInput> = [VK_LCONTROL, VK_RCONTROL]
+            .into_iter()
+            .filter(|vk| key_held(*vk as i32))
+            .map(|vk| kbd(vk, KEYEVENTF_KEYUP))
+            .collect();
+        send_inputs(&inputs);
     }
 
-    pub fn restore_and_replace(streamed_chars: usize) {
-        restore_target_focus();
+    fn type_unicode(text: &str) {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        for chunk in units.chunks(64) {
+            let mut inputs = Vec::with_capacity(chunk.len() * 2);
+            for &unit in chunk {
+                inputs.push(unicode_key(unit, 0));
+                inputs.push(unicode_key(unit, KEYEVENTF_KEYUP));
+            }
+            send_inputs(&inputs);
+        }
+    }
 
-        // The caret remains immediately after the chunks pasted during this
-        // recording. Remove that exact draft before inserting a refined final.
-        let mut remaining = streamed_chars;
+    fn press_backspace(count: usize) {
+        let mut remaining = count;
         while remaining > 0 {
             let chunk_size = remaining.min(128);
             let mut inputs = Vec::with_capacity(chunk_size * 2);
@@ -336,23 +602,138 @@ mod text_inserter {
                 inputs.push(kbd(VK_BACK, 0));
                 inputs.push(kbd(VK_BACK, KEYEVENTF_KEYUP));
             }
-            unsafe {
-                SendInput(
-                    inputs.len() as u32,
-                    inputs.as_ptr(),
-                    std::mem::size_of::<KbdInput>() as i32,
-                );
-            }
+            send_inputs(&inputs);
             remaining -= chunk_size;
         }
-        paste_shortcut();
     }
 
-    // ----- Low-level keyboard hook (Ctrl+Space hold or toggle-to-talk) -----
+    fn paste_shortcut() {
+        send_inputs(&[
+            kbd(VK_CONTROL, 0),
+            kbd(VK_V, 0),
+            kbd(VK_V, KEYEVENTF_KEYUP),
+            kbd(VK_CONTROL, KEYEVENTF_KEYUP),
+        ]);
+    }
 
-    // The hook proc must stay extremely small to avoid Windows timing
-    // it out. It only flips atomics and swallows Space while the
-    // Ctrl+Space gesture is active.
+    // ----- Clipboard paste that puts the user's clipboard back -----
+
+    /// Paste `text` with Ctrl+V, then restore what the user had copied,
+    /// unless something else changed the clipboard in the meantime.
+    fn paste_restoring_clipboard(text: &str, target: isize) -> Result<(), String> {
+        let saved = {
+            let _open = clipboard_win::Clipboard::new_attempts(CLIPBOARD_OPEN_ATTEMPTS)
+                .map_err(|e| format!("Could not open the clipboard: {e}"))?;
+            let saved = save_clipboard();
+            clipboard_win::raw::set_string(text)
+                .map_err(|e| format!("Could not set the clipboard: {e}"))?;
+            mark_clipboard_item(&[
+                "ExcludeClipboardContentFromMonitorProcessing",
+                "CanIncludeInClipboardHistory",
+                "CanUploadToCloudClipboard",
+            ]);
+            saved
+        };
+        let ours = clipboard_win::raw::seq_num();
+        paste_shortcut();
+        wait_until_pasted(target);
+        if clipboard_win::raw::seq_num() == ours {
+            if let Ok(_open) = clipboard_win::Clipboard::new_attempts(CLIPBOARD_OPEN_ATTEMPTS) {
+                restore_clipboard(&saved);
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_until_pasted(target: isize) {
+        std::thread::sleep(Duration::from_millis(50));
+        let mut result = 0usize;
+        unsafe {
+            SendMessageTimeoutW(
+                target,
+                WM_NULL,
+                0,
+                0,
+                SMTO_ABORTIFHUNG,
+                PASTE_HANDLED_TIMEOUT_MS,
+                &mut result,
+            )
+        };
+        std::thread::sleep(PASTE_SETTLE);
+    }
+
+    /// Clipboard formats whose data is plain memory. Bitmaps, metafiles and
+    /// palettes are GDI handles (their DIB forms are kept), and private
+    /// formats hold handles only their owner understands.
+    fn is_memory_format(format: u32) -> bool {
+        const CF_BITMAP: u32 = 2;
+        const CF_METAFILEPICT: u32 = 3;
+        const CF_PALETTE: u32 = 9;
+        const CF_ENHMETAFILE: u32 = 14;
+        const CF_OWNERDISPLAY: u32 = 0x80;
+        const CF_DSPBITMAP: u32 = 0x82;
+        const CF_DSPMETAFILEPICT: u32 = 0x83;
+        const CF_DSPENHMETAFILE: u32 = 0x8E;
+        const CF_PRIVATEFIRST: u32 = 0x200;
+        const CF_GDIOBJLAST: u32 = 0x3FF;
+        !matches!(
+            format,
+            CF_BITMAP
+                | CF_METAFILEPICT
+                | CF_PALETTE
+                | CF_ENHMETAFILE
+                | CF_OWNERDISPLAY
+                | CF_DSPBITMAP
+                | CF_DSPMETAFILEPICT
+                | CF_DSPENHMETAFILE
+        ) && !(CF_PRIVATEFIRST..=CF_GDIOBJLAST).contains(&format)
+    }
+
+    /// Requires the clipboard to be open.
+    fn save_clipboard() -> Vec<(u32, Vec<u8>)> {
+        clipboard_win::raw::EnumFormats::new()
+            .filter(|format| is_memory_format(*format))
+            .filter_map(|format| {
+                let mut data = Vec::new();
+                clipboard_win::raw::get_vec(format, &mut data)
+                    .ok()
+                    .map(|_| (format, data))
+            })
+            .collect()
+    }
+
+    /// Requires the clipboard to be open. The restored copy is already in
+    /// clipboard history, so it is not added again.
+    fn restore_clipboard(saved: &[(u32, Vec<u8>)]) {
+        let _ = clipboard_win::raw::empty();
+        for (format, data) in saved {
+            let _ = clipboard_win::raw::set_without_clear(*format, data);
+        }
+        mark_clipboard_item(&["CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"]);
+    }
+
+    /// Windows reads these registered formats, set to a DWORD of 0, as
+    /// "do not keep this item". Requires the clipboard to be open.
+    fn mark_clipboard_item(format_names: &[&str]) {
+        for name in format_names {
+            if let Some(format) = clipboard_win::register_format(name) {
+                let _ = clipboard_win::raw::set_without_clear(format.get(), &0u32.to_ne_bytes());
+            }
+        }
+    }
+
+    // ----- Low-level keyboard and mouse hooks -----
+
+    fn note_user_input() {
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground == 0 || !is_own_process(foreground) {
+            USER_INPUT_SINCE_WRITE.store(true, Ordering::SeqCst);
+        }
+    }
+
+    // The hook procs must stay extremely small to avoid Windows timing them
+    // out. They only flip atomics and swallow Space while the Ctrl+Space
+    // gesture is active.
     unsafe extern "system" fn ll_keyboard_proc(
         n_code: i32,
         w_param: usize,
@@ -413,6 +794,21 @@ mod text_inserter {
                     }
                     _ => {}
                 }
+
+                // Ctrl and Shift alone never move the cursor; every other key
+                // (including Space typed without Ctrl) may.
+                let modifier_only = matches!(
+                    info.vk_code,
+                    VK_CONTROL_CODE
+                        | VK_LCONTROL_CODE
+                        | VK_RCONTROL_CODE
+                        | VK_SHIFT_CODE
+                        | VK_LSHIFT_CODE
+                        | VK_RSHIFT_CODE
+                );
+                if down && !modifier_only {
+                    note_user_input();
+                }
             }
         }
         CallNextHookEx(
@@ -423,12 +819,38 @@ mod text_inserter {
         )
     }
 
-    /// Installs the low-level keyboard hook and runs a blocking message pump.
-    /// Blocks forever — must be called from a dedicated thread.
-    pub fn install_keyboard_hook() {
+    unsafe extern "system" fn ll_mouse_proc(n_code: i32, w_param: usize, l_param: isize) -> isize {
+        if n_code >= 0
+            && matches!(
+                w_param as u32,
+                WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+            )
+        {
+            let info = &*(l_param as *const MsLlHookStruct);
+            // Clicks on the OpenWhisper pill do not move the target's cursor.
+            if info.flags & LLMHF_INJECTED == 0 {
+                let clicked = WindowFromPoint(info.pt);
+                if clicked == 0 || !is_own_process(clicked) {
+                    USER_INPUT_SINCE_WRITE.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        CallNextHookEx(
+            MOUSE_HOOK_HANDLE.load(Ordering::Relaxed),
+            n_code,
+            w_param,
+            l_param,
+        )
+    }
+
+    /// Installs the low-level keyboard and mouse hooks and runs a blocking
+    /// message pump. Blocks forever — must be called from a dedicated thread.
+    pub fn install_input_hooks() {
         let h_mod = unsafe { GetModuleHandleW(std::ptr::null()) };
         let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, h_mod, 0) };
         HOOK_HANDLE.store(hook, Ordering::Relaxed);
+        let mouse_hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, ll_mouse_proc, h_mod, 0) };
+        MOUSE_HOOK_HANDLE.store(mouse_hook, Ordering::Relaxed);
 
         let mut msg_buf = [0u64; 8];
         loop {
@@ -450,6 +872,60 @@ mod text_inserter {
             _pad1: 0,
             dw_extra_info: 0,
             _union_pad: [0; 8],
+        }
+    }
+
+    /// A keystroke that types one UTF-16 code unit, whatever the keyboard layout.
+    fn unicode_key(unit: u16, flags: u32) -> KbdInput {
+        KbdInput {
+            w_vk: 0,
+            w_scan: unit,
+            dw_flags: KEYEVENTF_UNICODE | flags,
+            ..kbd(0, 0)
+        }
+    }
+
+    /// Windows UI Automation: the only way to see that a browser or modern
+    /// app field is a password field.
+    mod uia {
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+        };
+        use windows::Win32::UI::Accessibility::{
+            CUIAutomation, CUIAutomation8, IUIAutomation, IUIAutomation2,
+        };
+
+        /// A hung target app must not stall dictation.
+        const UIA_TIMEOUT_MS: u32 = 1000;
+
+        fn automation() -> Option<IUIAutomation> {
+            unsafe {
+                // COM stays initialised on this worker thread; a thread that
+                // is already initialised in another mode can still use UIA.
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                if let Ok(automation) = CoCreateInstance::<_, IUIAutomation2>(
+                    &CUIAutomation8,
+                    None,
+                    CLSCTX_INPROC_SERVER,
+                ) {
+                    let _ = automation.SetConnectionTimeout(UIA_TIMEOUT_MS);
+                    let _ = automation.SetTransactionTimeout(UIA_TIMEOUT_MS);
+                    return Some(automation.into());
+                }
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()
+            }
+        }
+
+        /// `None` when UI Automation cannot tell.
+        pub fn focused_element_is_password() -> Option<bool> {
+            let automation = automation()?;
+            unsafe {
+                let element = automation.GetFocusedElement().ok()?;
+                element
+                    .CurrentIsPassword()
+                    .ok()
+                    .map(|value| value.as_bool())
+            }
         }
     }
 }
@@ -1634,40 +2110,83 @@ fn open_api_keys_page(app_handle: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn paste_to_target(text: String) -> Result<(), String> {
-    arboard::Clipboard::new()
-        .and_then(|mut c| c.set_text(&text))
-        .map_err(|e| e.to_string())?;
-
-    #[cfg(target_os = "windows")]
-    text_inserter::restore_and_paste();
-
-    Ok(())
-}
-
-#[tauri::command]
 fn copy_to_clipboard(text: String) -> Result<(), String> {
     arboard::Clipboard::new()
         .and_then(|mut clipboard| clipboard.set_text(text))
         .map_err(|e| e.to_string())
 }
 
+/// Lock the field the user is in for the whole recording.
 #[tauri::command]
 fn capture_paste_target() {
     #[cfg(target_os = "windows")]
-    text_inserter::save_foreground();
+    text_inserter::capture_target();
 }
 
+/// How a write into the recording's target field ended. `outcome` is one of
+/// `typed`, `stopped` (live typing ended for this recording), `replaced`,
+/// `pasted`, `kept` (the live draft already matched) or `copied` (left on the
+/// clipboard instead); `reason` says why text was stopped or copied.
+#[derive(Debug, Serialize)]
+struct TargetWrite {
+    outcome: &'static str,
+    reason: Option<&'static str>,
+}
+
+#[cfg(target_os = "windows")]
+impl From<text_inserter::WriteOutcome> for TargetWrite {
+    fn from(outcome: text_inserter::WriteOutcome) -> Self {
+        use text_inserter::WriteOutcome::*;
+        let (outcome, reason) = match outcome {
+            Typed => ("typed", None),
+            Replaced => ("replaced", None),
+            Pasted => ("pasted", None),
+            Kept => ("kept", None),
+            Stopped(blocked) => ("stopped", Some(blocked.as_str())),
+            Copied(blocked) => ("copied", Some(blocked.as_str())),
+        };
+        TargetWrite { outcome, reason }
+    }
+}
+
+/// Type one live piece of the transcript into the locked field.
 #[tauri::command]
-async fn replace_streamed_target(streamed_text: String, final_text: String) -> Result<(), String> {
-    arboard::Clipboard::new()
-        .and_then(|mut c| c.set_text(&final_text))
-        .map_err(|e| e.to_string())?;
-
+async fn type_to_target(text: String) -> Result<TargetWrite, String> {
     #[cfg(target_os = "windows")]
-    text_inserter::restore_and_replace(streamed_text.chars().count());
+    {
+        tauri::async_runtime::spawn_blocking(move || text_inserter::type_live(&text).into())
+            .await
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = text;
+        Ok(TargetWrite {
+            outcome: "stopped",
+            reason: Some("unsupported"),
+        })
+    }
+}
 
-    Ok(())
+/// Write the final transcript into the locked field, replacing the live
+/// draft only when it is safe to delete.
+#[tauri::command]
+async fn insert_final_text(text: String) -> Result<TargetWrite, String> {
+    #[cfg(target_os = "windows")]
+    {
+        tauri::async_runtime::spawn_blocking(move || text_inserter::insert_final(&text))
+            .await
+            .map_err(|e| e.to_string())?
+            .map(TargetWrite::from)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        copy_to_clipboard(text)?;
+        Ok(TargetWrite {
+            outcome: "copied",
+            reason: Some("unsupported"),
+        })
+    }
 }
 
 #[tauri::command]
@@ -1895,7 +2414,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
             "show" => reveal_main_window(app),
             "record" => {
                 #[cfg(target_os = "windows")]
-                text_inserter::save_foreground();
+                text_inserter::track_foreground();
                 reveal_main_window(app);
                 let _ = app.emit("toggle-recording", ());
             }
@@ -1977,7 +2496,7 @@ pub fn run() {
 
             #[cfg(target_os = "windows")]
             {
-                std::thread::spawn(|| text_inserter::install_keyboard_hook());
+                std::thread::spawn(|| text_inserter::install_input_hooks());
 
                 let poll_handle = app.handle().clone();
                 std::thread::spawn(move || {
@@ -1985,7 +2504,7 @@ pub fn run() {
                     let mut last_hook_event = String::new();
                     let mut monitor_transition = MonitorTransitionDebouncer::default();
                     loop {
-                        text_inserter::save_foreground();
+                        text_inserter::track_foreground();
                         if let Some(cursor_anchor) = cursor_overlay_anchor() {
                             let current_anchor = poll_handle
                                 .state::<Arc<AppState>>()
@@ -2032,7 +2551,7 @@ pub fn run() {
                         }
                         if should_start {
                             debug_log_line("shortcut", "emit press-to-talk-start");
-                            text_inserter::save_foreground();
+                            text_inserter::track_foreground();
                             reveal_overlay_window(&poll_handle);
                             let _ = poll_handle.emit("press-to-talk-start", ());
                         }
@@ -2042,7 +2561,7 @@ pub fn run() {
                         }
                         if should_toggle {
                             debug_log_line("shortcut", "emit toggle-recording");
-                            text_inserter::save_foreground();
+                            text_inserter::track_foreground();
                             reveal_overlay_window(&poll_handle);
                             let _ = poll_handle.emit("toggle-recording", ());
                         }
@@ -2077,8 +2596,8 @@ pub fn run() {
             open_api_keys_page,
             capture_paste_target,
             copy_to_clipboard,
-            paste_to_target,
-            replace_streamed_target,
+            type_to_target,
+            insert_final_text,
             overlay_apply_layout
         ])
         .run(tauri::generate_context!())

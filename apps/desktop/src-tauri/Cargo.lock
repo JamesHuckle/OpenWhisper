@@ -2447,6 +2447,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "base64 0.22.1",
+ "clipboard-win",
  "serde",
  "serde_json",
  "tauri",
@@ -2457,6 +2458,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "uuid",
+ "windows",
 ]
 
 [[package]]
