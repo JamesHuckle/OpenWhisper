@@ -24,6 +24,9 @@ data class TranscriptionAudio(
 
 fun interface TranscriptionClient {
     fun transcribe(audio: TranscriptionAudio): String
+
+    /** Stops a transcription that is running on another thread, if there is one. */
+    fun cancel() = Unit
 }
 
 class OpenAiRequestFactory(

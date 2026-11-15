@@ -61,12 +61,17 @@ class BufferedDictationBackend(
                     }
                 }
             } catch (error: Exception) {
+                val cancelled = generation.get() != expectedGeneration
                 recordingId?.let { id ->
-                    recordingStore?.finish(
-                        id,
-                        "failed",
-                        error = error.safeMessage("Dictation failed"),
-                    )
+                    if (cancelled) {
+                        recordingStore?.finish(id, "cancelled")
+                    } else {
+                        recordingStore?.finish(
+                            id,
+                            "failed",
+                            error = error.safeMessage("Dictation failed"),
+                        )
+                    }
                 }
                 callbacks.dispatch {
                     if (generation.get() == expectedGeneration && listener === expectedListener) {
@@ -85,6 +90,9 @@ class BufferedDictationBackend(
         generation.incrementAndGet()
         listener = null
         recorder.cancel()
+        // Stop the upload too, so the single background thread is free for
+        // the next dictation.
+        client.cancel()
     }
 
     private fun Throwable.safeMessage(fallback: String): String =

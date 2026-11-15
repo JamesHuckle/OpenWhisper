@@ -50,6 +50,21 @@ class BufferedDictationBackendTest {
     }
 
     @Test
+    fun cancelStopsTheUploadInProgress() {
+        val recorder = FakePcmRecorder(pcmRecording(byteArrayOf(1, 2)))
+        val client = FakeTranscriptionClient("late")
+        val runner = QueuedRunner()
+        val listener = CapturingListener()
+        val backend = BufferedDictationBackend(recorder, client, runner, DirectDispatcher)
+
+        backend.start(listener)
+        backend.finish()
+        backend.cancel()
+
+        assertEquals(1, client.cancelCount)
+    }
+
+    @Test
     fun recorderAndNetworkErrorsAreRecoverableMessages() {
         val recorder = FakePcmRecorder(pcmRecording(byteArrayOf()), stopError = "No audio")
         val runner = QueuedRunner()
@@ -94,6 +109,11 @@ private class FakePcmRecorder(
 
 private class FakeTranscriptionClient(private val response: String) : TranscriptionClient {
     var lastWav: ByteArray? = null
+    var cancelCount = 0
+
+    override fun cancel() {
+        cancelCount += 1
+    }
 
     override fun transcribe(audio: TranscriptionAudio): String {
         lastWav = audio.file.readBytes()

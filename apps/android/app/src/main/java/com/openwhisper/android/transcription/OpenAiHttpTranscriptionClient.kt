@@ -5,28 +5,46 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 class OpenAiHttpTranscriptionClient(
     private val apiKey: () -> String?,
     private val requestFactory: OpenAiRequestFactory = OpenAiRequestFactory(),
+    private val openConnection: (String) -> HttpURLConnection = { url ->
+        URL(url).openConnection() as HttpURLConnection
+    },
 ) : TranscriptionClient {
+    private val generation = AtomicLong(0)
+    private val activeConnection = AtomicReference<HttpURLConnection?>(null)
+
+    /**
+     * Closes the upload in progress, so the background thread is free at once
+     * instead of waiting for a result nobody will see.
+     */
+    override fun cancel() {
+        generation.incrementAndGet()
+        activeConnection.getAndSet(null)?.disconnect()
+    }
+
     override fun transcribe(audio: TranscriptionAudio): String {
+        val started = generation.get()
         val key = apiKey()?.takeIf { it.isNotBlank() }
             ?: throw TranscriptionException("Save an OpenAI API key or enable demo mode")
         if (!audio.file.exists() || audio.file.length() == 0L) {
             throw TranscriptionException("The saved audio file is empty")
         }
-        if (audio.pcmSampleRate != null) return transcribePcm(key, audio)
+        if (audio.pcmSampleRate != null) return transcribePcm(key, audio, started)
         if (audio.file.length() > MAX_UPLOAD_BYTES) {
             throw TranscriptionException(
                 "This audio file is larger than 24 MB. Use a smaller MP3/M4A, " +
                     "split the file, or import a PCM WAV file.",
             )
         }
-        return transcribeRequest(key, audio.file.readBytes(), "")
+        return transcribeRequest(key, audio.file.readBytes(), "", started)
     }
 
-    private fun transcribePcm(key: String, audio: TranscriptionAudio): String {
+    private fun transcribePcm(key: String, audio: TranscriptionAudio, started: Long): String {
         val sampleRate = requireNotNull(audio.pcmSampleRate)
         val transcripts = mutableListOf<String>()
         val bytesPerChunk = MAX_PCM_CHUNK_BYTES - (MAX_PCM_CHUNK_BYTES % 2)
@@ -37,17 +55,26 @@ class OpenAiHttpTranscriptionClient(
                 source.readFully(pcm)
                 val wav = WavEncoder.encodePcm16Mono(pcm, sampleRate)
                 val prompt = transcripts.lastOrNull()?.takeLast(1_200).orEmpty()
-                transcripts += transcribeRequest(key, wav, prompt)
+                transcripts += transcribeRequest(key, wav, prompt, started)
             }
         }
         return transcripts.filter(String::isNotBlank).joinToString(" ").trim()
             .ifBlank { throw TranscriptionException("Transcription was empty") }
     }
 
-    private fun transcribeRequest(key: String, wav: ByteArray, prompt: String): String {
+    private fun transcribeRequest(
+        key: String,
+        wav: ByteArray,
+        prompt: String,
+        started: Long,
+    ): String {
+        throwIfCancelled(started)
         val request = requestFactory.create(key, wav, prompt = prompt)
-        val connection = URL(request.url).openConnection() as HttpURLConnection
+        val connection = openConnection(request.url)
+        activeConnection.set(connection)
         return try {
+            // A cancel that came just before the connection was registered.
+            throwIfCancelled(started)
             connection.requestMethod = "POST"
             connection.connectTimeout = 30_000
             connection.readTimeout = 30 * 60 * 1_000
@@ -63,6 +90,7 @@ class OpenAiHttpTranscriptionClient(
         } catch (error: TranscriptionException) {
             throw error
         } catch (error: Exception) {
+            throwIfCancelled(started)
             val detail = error.message?.takeIf(String::isNotBlank)
             throw TranscriptionException(
                 "Could not reach the transcription service" +
@@ -70,13 +98,19 @@ class OpenAiHttpTranscriptionClient(
                 error,
             )
         } finally {
+            activeConnection.compareAndSet(connection, null)
             connection.disconnect()
         }
     }
 
-    private companion object {
-        const val MAX_UPLOAD_BYTES = 24L * 1024L * 1024L
-        const val MAX_PCM_CHUNK_BYTES = 20 * 1024 * 1024
+    private fun throwIfCancelled(started: Long) {
+        if (generation.get() != started) throw TranscriptionException(CANCELLED_MESSAGE)
+    }
+
+    companion object {
+        const val CANCELLED_MESSAGE = "Transcription cancelled"
+        private const val MAX_UPLOAD_BYTES = 24L * 1024L * 1024L
+        private const val MAX_PCM_CHUNK_BYTES = 20 * 1024 * 1024
     }
 }
 
