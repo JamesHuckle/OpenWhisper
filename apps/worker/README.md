@@ -1,6 +1,9 @@
 # WhisperFlow Worker
 
 Python worker process that receives JSON requests from desktop over stdin/stdout.
+It answers requests side by side and writes session events (progress, live
+text, the final transcript) to stdout as they happen; see the IPC contract in
+`docs/architecture.md`.
 
 ## Run
 

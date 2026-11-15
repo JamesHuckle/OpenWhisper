@@ -22,7 +22,7 @@ WhisperFlow is split into three runtime layers:
 1. User starts dictation from UI or global hotkey.
 2. Desktop shell opens session in worker via JSON-over-stdio protocol.
 3. Audio chunks stream from shell/native capture to worker using `append_audio_chunk`.
-4. Worker emits transcript updates and final text.
+4. Worker pushes transcript updates and final text as session events.
 5. Desktop finalizes transcription using `finalize_session_audio`.
 6. Native insertion engine commits text to focused target after explicit user action.
 
@@ -60,6 +60,22 @@ Error response:
 { "id": "uuid", "ok": false, "error": { "code": "bad_request", "message": "..." } }
 ```
 
+Requests run side by side in the worker, so replies can arrive in a different
+order than the requests; each reply carries its request's `id`. The desktop
+waits for each reply within a time limit per method and restarts a worker that
+stops. `stop_session` is answered at once even while that session is being
+transcribed, and the transcription stops before its next audio part or the
+tidy pass.
+
+Session events share stdout with replies. They have no `id` and are written as
+soon as they happen; the desktop forwards them to the UI as the
+`worker-session-event` Tauri event. `done` marks the session's last event,
+after which the worker forgets the session:
+
+```json
+{ "session_id": "...", "event": { "type": "partial", "text": "Transcribing part 2 of 5..." }, "done": false }
+```
+
 ## Windows insertion engine strategy
 
 Ordered fallback:
@@ -82,7 +98,7 @@ Safety rules:
 - OpenAI model listing and test transcription endpoint
 
 ### Milestone 2: Streaming
-- session event loop (polling in scaffold, push stream in production)
+- session event push stream (worker stdout to Tauri events)
 - partial/final transcript events in desktop UI
 - realtime session transport to OpenAI speech endpoint
 
