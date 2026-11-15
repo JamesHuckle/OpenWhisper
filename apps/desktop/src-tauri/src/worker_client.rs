@@ -1,43 +1,23 @@
+use crate::worker_connection::WorkerConnection;
 use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{path::BaseDirectory, AppHandle, Manager};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
-#[derive(Debug, Serialize)]
-struct WorkerRequest {
-    id: String,
-    method: String,
-    params: Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkerResponse {
-    id: String,
-    ok: bool,
-    result: Option<Value>,
-    error: Option<WorkerError>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkerError {
-    code: String,
-    message: String,
-}
+/// Tauri event carrying one worker session update to the desktop UI.
+pub const SESSION_EVENT: &str = "worker-session-event";
+/// Tauri event sent when the worker stops without being asked to.
+pub const WORKER_EXITED_EVENT: &str = "worker-exited";
 
 pub struct WorkerClient {
     child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    /// Stderr output captured from the worker process, for error reporting.
-    stderr_buf: Arc<Mutex<String>>,
+    connection: WorkerConnection<ChildStdin>,
 }
 
 impl WorkerClient {
@@ -186,51 +166,40 @@ impl WorkerClient {
             }
         });
 
-        Ok(Self {
-            child,
+        let event_app = app_handle.clone();
+        let exit_app = app_handle.clone();
+        let connection = WorkerConnection::start(
             stdin,
-            stdout: BufReader::new(stdout),
-            stderr_buf,
-        })
+            stdout,
+            Box::new(move |event: Value| {
+                let _ = event_app.emit(SESSION_EVENT, event);
+            }),
+            Box::new(move |message: String| {
+                eprintln!("[openwhisper][worker] worker stopped unexpectedly");
+                let _ = exit_app.emit(WORKER_EXITED_EVENT, message);
+            }),
+            move || async move {
+                let stderr = stderr_buf.lock().await;
+                if stderr.trim().is_empty() {
+                    "Worker process exited unexpectedly".to_string()
+                } else {
+                    format!("Worker process exited:\n{}", stderr.trim())
+                }
+            },
+        );
+
+        Ok(Self { child, connection })
     }
 
-    pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
-        let req = WorkerRequest {
-            id: Uuid::new_v4().to_string(),
-            method: method.to_string(),
-            params,
-        };
+    /// False once the worker has stopped; the next request starts a new one.
+    pub fn is_alive(&self) -> bool {
+        self.connection.is_alive()
+    }
 
-        let req_json = serde_json::to_string(&req)?;
-        self.stdin.write_all(req_json.as_bytes()).await?;
-        self.stdin.write_all(b"\n").await?;
-        self.stdin.flush().await?;
-
-        let mut line = String::new();
-        self.stdout.read_line(&mut line).await?;
-        if line.trim().is_empty() {
-            let stderr = self.stderr_buf.lock().await;
-            let msg = if stderr.trim().is_empty() {
-                "Worker process exited unexpectedly".to_string()
-            } else {
-                format!("Worker process exited:\n{}", stderr.trim())
-            };
-            return Err(anyhow!("{}", msg));
-        }
-
-        let response: WorkerResponse = serde_json::from_str(&line)?;
-        if response.id != req.id {
-            return Err(anyhow!("Worker response id mismatch"));
-        }
-
-        if response.ok {
-            Ok(response.result.unwrap_or(Value::Null))
-        } else {
-            let err = response
-                .error
-                .ok_or_else(|| anyhow!("Unknown worker error"))?;
-            Err(anyhow!("{}: {}", err.code, err.message))
-        }
+    /// Sends one request and waits, within that method's time limit, for its
+    /// reply. Other requests can be sent while this one waits.
+    pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.connection.request(method, params).await
     }
 }
 
@@ -243,6 +212,7 @@ fn apply_worker_environment(cmd: &mut Command, openai_api_key: Option<&str>, mod
 
 impl Drop for WorkerClient {
     fn drop(&mut self) {
+        self.connection.mark_closing();
         let _ = self.child.start_kill();
     }
 }

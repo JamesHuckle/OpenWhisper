@@ -1,4 +1,5 @@
 mod worker_client;
+mod worker_connection;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
@@ -828,7 +829,7 @@ impl MonitorTransitionDebouncer {
 }
 
 struct AppState {
-    worker: Mutex<Option<WorkerClient>>,
+    worker: Mutex<Option<Arc<WorkerClient>>>,
     settings: std::sync::Mutex<AppSettings>,
     overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
     overlay_layout: std::sync::Mutex<Option<OverlayLayoutSpec>>,
@@ -1376,29 +1377,35 @@ async fn with_worker_request(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let mut guard = state.worker.lock().await;
-    if guard.is_none() {
-        let (openai_api_key, transcription_model) = {
-            let settings = state
-                .settings
-                .lock()
-                .map_err(|_| "Failed to lock settings".to_string())?;
-            let key = if settings.openai_api_key.trim().is_empty() {
-                None
-            } else {
-                Some(settings.openai_api_key.clone())
-            };
-            (key, settings.transcription_model.clone())
-        };
-        let worker = WorkerClient::spawn(app_handle, openai_api_key, transcription_model)
-            .await
-            .map_err(|e| e.to_string())?;
-        *guard = Some(worker);
-    }
-
-    let worker = guard
-        .as_mut()
-        .ok_or_else(|| "Worker initialization failed".to_string())?;
+    // Hold the lock only to find or start the worker, never while a request
+    // runs, so a cancel or a settings save is not stuck behind a transcription.
+    let worker = {
+        let mut guard = state.worker.lock().await;
+        match guard.as_ref() {
+            Some(worker) if worker.is_alive() => worker.clone(),
+            _ => {
+                let (openai_api_key, transcription_model) = {
+                    let settings = state
+                        .settings
+                        .lock()
+                        .map_err(|_| "Failed to lock settings".to_string())?;
+                    let key = if settings.openai_api_key.trim().is_empty() {
+                        None
+                    } else {
+                        Some(settings.openai_api_key.clone())
+                    };
+                    (key, settings.transcription_model.clone())
+                };
+                let worker = Arc::new(
+                    WorkerClient::spawn(app_handle, openai_api_key, transcription_model)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
+                *guard = Some(worker.clone());
+                worker
+            }
+        }
+    };
 
     worker
         .request(method, params)
@@ -1483,7 +1490,8 @@ async fn app_save_settings(
     #[cfg(target_os = "windows")]
     text_inserter::set_hold_to_talk_enabled(updated.hold_to_talk);
 
-    // Force a fresh worker spawn so new settings are applied.
+    // Force a fresh worker spawn so new settings are applied. A request still
+    // running keeps the old worker until it finishes.
     let mut worker = state.worker.lock().await;
     *worker = None;
 
@@ -1556,21 +1564,6 @@ async fn worker_stop_session(
         &app_handle,
         &state,
         "stop_session",
-        json!({ "session_id": session_id }),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn worker_poll_session_events(
-    app_handle: AppHandle,
-    state: State<'_, Arc<AppState>>,
-    session_id: String,
-) -> Result<serde_json::Value, String> {
-    with_worker_request(
-        &app_handle,
-        &state,
-        "poll_session_events",
         json!({ "session_id": session_id }),
     )
     .await
@@ -2069,7 +2062,6 @@ pub fn run() {
             worker_list_models,
             worker_start_session,
             worker_stop_session,
-            worker_poll_session_events,
             worker_append_audio_chunk,
             worker_finalize_session_audio,
             recording_begin,

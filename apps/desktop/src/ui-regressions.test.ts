@@ -142,6 +142,28 @@ describe("desktop regression contracts", () => {
     expect(css).not.toMatch(/\.live-transcript\s*\{/);
   });
 
+  it("receives worker progress as pushed events instead of polling behind a transcription", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const client = readFileSync(
+      resolve(desktopRoot, "src-tauri/src/worker_client.rs"),
+      "utf8",
+    );
+    const lib = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+    const rustEvent = (name: string) =>
+      client.match(new RegExp(`pub const ${name}: &str = "([^"]+)";`))?.[1];
+
+    expect(rustEvent("SESSION_EVENT")).toBe("worker-session-event");
+    expect(rustEvent("WORKER_EXITED_EVENT")).toBe("worker-exited");
+    expect(main).toContain('listen<WorkerSessionEvent>("worker-session-event"');
+    expect(main).toContain('listen<string>("worker-exited"');
+    expect(main).not.toContain("worker_poll_session_events");
+    expect(main).not.toContain("setInterval(() => void pollOnce()");
+    expect(lib).not.toContain("poll_session_events");
+    // The worker lock is held only to find or start the worker, so Cancel
+    // and settings saves do not wait for a running transcription.
+    expect(lib).toContain("Mutex<Option<Arc<WorkerClient>>>");
+  });
+
   it("asks before installing an update and reassures users that settings are kept", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
 

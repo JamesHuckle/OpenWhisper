@@ -21,7 +21,8 @@ import "./styles.css";
 // Types
 // ---------------------------------------------------------------------------
 type TranscriptEvent = { type: "partial" | "final" | "warning" | "error"; text: string };
-type PollResponse = { events: TranscriptEvent[]; done?: boolean };
+// One update the worker pushes for a session; `done` marks its last one.
+type WorkerSessionEvent = { session_id: string; event: TranscriptEvent; done?: boolean };
 type TranscriptionModel =
   | "gpt-transcribe"
   | "gpt-live-transcribe";
@@ -59,9 +60,7 @@ type RecordingAudio = {
 // ---------------------------------------------------------------------------
 let state: WidgetState = "idle";
 let currentSessionId: string | null = null;
-let pollTimer: number | null = null;
-let pollInFlight = false;
-let pollFailureCount = 0;
+let sessionEventTail: Promise<void> = Promise.resolve();
 let finalTranscript = "";
 let liveTranscript = "";
 let streamTextToTarget = false;
@@ -1046,7 +1045,6 @@ async function startRecording() {
     pendingAudioParts = [];
     pendingAudioBytes = 0;
     sessionFailure = "";
-    pollFailureCount = 0;
     shouldPasteFinalTranscript = true;
 
     const result = await captureBeforeSession({
@@ -1089,7 +1087,6 @@ async function startRecording() {
     streamTextToTarget = settings.transcriptionModel === "gpt-live-transcribe";
     pastedTranscript = "";
     targetWriteQueue = Promise.resolve();
-    startPolling();
     logDebug(`session ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
     if (state === "transcribing") {
@@ -1231,7 +1228,6 @@ async function transcribeStoredAudio(
   currentRecordingId = recordingId;
   lastFailedRecordingId = null;
   sessionFailure = "";
-  pollFailureCount = 0;
   shouldPasteFinalTranscript = false;
   finalTranscript = "";
   liveTranscript = "";
@@ -1250,7 +1246,6 @@ async function transcribeStoredAudio(
     profileId,
   });
   currentSessionId = session.session_id;
-  startPolling();
   const chunkSize = 512 * 1024;
   for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
     const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + chunkSize));
@@ -1279,7 +1274,6 @@ function mimeTypeForFileName(name: string): string {
 
 function cleanup() {
   logDebug(`cleanup state=${state} session=${currentSessionId ?? "none"}`);
-  stopPolling();
   if (soundVisualizer) {
     soundVisualizer.stop();
     soundVisualizer = null;
@@ -1301,107 +1295,113 @@ function cleanup() {
 }
 
 // ---------------------------------------------------------------------------
-// Polling
+// Session events: the worker pushes progress, live text and the result as
+// they happen. They are handled one at a time, in the order they arrive.
 // ---------------------------------------------------------------------------
-function startPolling() {
-  stopPolling();
-  pollTimer = window.setInterval(() => void pollOnce(), 350);
+function queueSessionWork(work: () => Promise<void>) {
+  sessionEventTail = sessionEventTail.then(work).catch((error) => {
+    logDebug(`session event failed=${errorMessage(error)}`);
+  });
 }
 
-function stopPolling() {
-  if (pollTimer !== null) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-}
+void listen<WorkerSessionEvent>("worker-session-event", ({ payload }) => {
+  queueSessionWork(() => handleSessionEvent(payload));
+});
+void listen<string>("worker-exited", ({ payload }) => {
+  queueSessionWork(() => handleWorkerExit(payload));
+});
 
-async function pollOnce() {
-  if (!currentSessionId || pollInFlight) return;
-  pollInFlight = true;
+async function handleSessionEvent(message: WorkerSessionEvent) {
+  if (!currentSessionId || message.session_id !== currentSessionId) return;
   try {
-    const resp = await invoke<PollResponse>("worker_poll_session_events", {
-      sessionId: currentSessionId,
-    });
-    for (const ev of resp.events ?? []) {
-      if (ev.type === "final") {
-        finalTranscript = `${finalTranscript} ${ev.text}`.trim();
-        liveTranscript = ev.text;
-        widget.dataset.liveTranscript = liveTranscript;
-        widget.setAttribute("aria-label", `Transcription: ${liveTranscript}`);
-      } else if (
-        ev.type === "partial" &&
-        ev.text !== "Listening..." &&
-        ev.text !== "Refining transcript..." &&
-        !ev.text.startsWith("Captured ") &&
-        !ev.text.startsWith("Transcribing part ")
-      ) {
-        liveTranscript += ev.text;
-        widget.dataset.liveTranscript = liveTranscript;
-        widget.setAttribute("aria-label", `Live transcription: ${liveTranscript}`);
-        if (streamTextToTarget) {
-          const delta = ev.text;
-          targetWriteQueue = targetWriteQueue.then(async () => {
-            await invoke("paste_to_target", { text: delta });
-            pastedTranscript += delta;
-          }).catch((err) => {
-            logDebug(`live target write failed=${err instanceof Error ? err.message : String(err)}`);
-          });
-        }
-      } else if (ev.type === "error") {
-        sessionFailure = ev.text || "Transcription failed";
-        await handleTranscriptionFailure(sessionFailure);
-      } else if (ev.type === "warning") {
-        showToast(ev.text, 8000);
-      }
-    }
-    pollFailureCount = 0;
-    if (resp.done) {
-      stopPolling();
-      if (finalTranscript) {
-        lastTranscript = finalTranscript;
-        localStorage.setItem("ow_last_transcript", lastTranscript);
-        syncWidgetFrame();
-        await targetWriteQueue;
-        if (!shouldPasteFinalTranscript) {
-          await invoke("copy_to_clipboard", { text: finalTranscript });
-          showToast("Transcript copied to clipboard", 3000);
-        } else if (pastedTranscript) {
-          if (pastedTranscript.trim() !== finalTranscript.trim()) {
-            await invoke("replace_streamed_target", {
-              streamedText: pastedTranscript,
-              finalText: finalTranscript,
-            });
-          }
-          showToast("Transcribed live", 2000);
-        } else {
-          await invoke("paste_to_target", { text: finalTranscript });
-          showToast("Transcribed and pasted", 2000);
-        }
-        await finishCurrentRecording("complete", finalTranscript, "");
-      } else if (sessionFailure) {
-        await finishCurrentRecording("failed", "", sessionFailure);
-      }
-      cleanup();
-      widget.removeAttribute("data-live-transcript");
-      widget.setAttribute("aria-label", "Click to start or stop transcription");
-      setState("idle");
-    }
+    await applyTranscriptEvent(message.event);
+    if (message.done) await completeSession();
   } catch (error) {
-    const message = errorMessage(error, "Could not read transcription status");
-    logDebug(`poll failed=${message}`);
-    pollFailureCount += 1;
-    if (pollFailureCount >= 3 && (state === "recording" || state === "transcribing")) {
-      await handleTranscriptionFailure(`Could not read transcription status: ${message}`);
+    const text = errorMessage(error, "Could not finish the transcription");
+    logDebug(`session event failed=${text}`);
+    if (message.done && (state === "recording" || state === "transcribing")) {
+      await handleTranscriptionFailure(text);
       cleanup();
       setState("idle");
     }
-  } finally {
-    pollInFlight = false;
   }
+}
+
+async function applyTranscriptEvent(ev: TranscriptEvent) {
+  if (ev.type === "final") {
+    finalTranscript = `${finalTranscript} ${ev.text}`.trim();
+    liveTranscript = ev.text;
+    widget.dataset.liveTranscript = liveTranscript;
+    widget.setAttribute("aria-label", `Transcription: ${liveTranscript}`);
+  } else if (
+    ev.type === "partial" &&
+    ev.text !== "Refining transcript..." &&
+    !ev.text.startsWith("Captured ") &&
+    !ev.text.startsWith("Transcribing part ")
+  ) {
+    liveTranscript += ev.text;
+    widget.dataset.liveTranscript = liveTranscript;
+    widget.setAttribute("aria-label", `Live transcription: ${liveTranscript}`);
+    if (streamTextToTarget) {
+      const delta = ev.text;
+      targetWriteQueue = targetWriteQueue.then(async () => {
+        await invoke("paste_to_target", { text: delta });
+        pastedTranscript += delta;
+      }).catch((err) => {
+        logDebug(`live target write failed=${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+  } else if (ev.type === "error") {
+    sessionFailure = ev.text || "Transcription failed";
+    await handleTranscriptionFailure(sessionFailure);
+  } else if (ev.type === "warning") {
+    showToast(ev.text, 8000);
+  }
+}
+
+async function completeSession() {
+  if (finalTranscript) {
+    lastTranscript = finalTranscript;
+    localStorage.setItem("ow_last_transcript", lastTranscript);
+    syncWidgetFrame();
+    await targetWriteQueue;
+    if (!shouldPasteFinalTranscript) {
+      await invoke("copy_to_clipboard", { text: finalTranscript });
+      showToast("Transcript copied to clipboard", 3000);
+    } else if (pastedTranscript) {
+      if (pastedTranscript.trim() !== finalTranscript.trim()) {
+        await invoke("replace_streamed_target", {
+          streamedText: pastedTranscript,
+          finalText: finalTranscript,
+        });
+      }
+      showToast("Transcribed live", 2000);
+    } else {
+      await invoke("paste_to_target", { text: finalTranscript });
+      showToast("Transcribed and pasted", 2000);
+    }
+    await finishCurrentRecording("complete", finalTranscript, "");
+  } else if (sessionFailure) {
+    await finishCurrentRecording("failed", "", sessionFailure);
+  }
+  cleanup();
+  widget.removeAttribute("data-live-transcript");
+  widget.setAttribute("aria-label", "Click to start or stop transcription");
+  setState("idle");
+}
+
+// A worker that stops during a transcription fails that request on its own.
+// While recording no request is waiting, so this is the only notice.
+async function handleWorkerExit(message: string) {
+  logDebug(`worker exited state=${state} session=${currentSessionId ?? "none"}`);
+  if (state !== "recording" || !currentSessionId) return;
+  await handleTranscriptionFailure(message || "The transcription worker stopped");
+  cleanup();
+  setState("idle");
 }
 
 // Native end-to-end smoke hook for development builds. This deliberately uses
-// the same Tauri commands, polling loop, and target-field streaming as a
+// the same Tauri commands, session events, and target-field streaming as a
 // microphone recording; only the PCM source is deterministic test audio.
 if (import.meta.env.DEV) {
   (window as typeof window & {
@@ -1419,7 +1419,6 @@ if (import.meta.env.DEV) {
     pastedTranscript = "";
     targetWriteQueue = Promise.resolve();
     setState("recording");
-    startPolling();
     for (const chunkBase64 of chunks) {
       await invoke("worker_append_audio_chunk", {
         sessionId: currentSessionId,
