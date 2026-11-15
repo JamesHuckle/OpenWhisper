@@ -6,6 +6,7 @@ import {
   EXPANDED_WIDTH,
   WINDOW_BOTTOM_PADDING,
   getOverlayLayout,
+  isOverlayVisible,
 } from "./overlay-layout";
 
 describe("overlay startup layout", () => {
@@ -92,5 +93,27 @@ describe("overlay startup layout", () => {
     });
 
     expect(notice).toEqual({ ...pill, width: 132 });
+  });
+});
+
+describe("overlay visibility", () => {
+  const hiddenIdle = {
+    showIdlePill: false,
+    idle: true,
+    menuOpen: false,
+    manualReveal: false,
+    noticeShowing: false,
+  };
+
+  it("hides the idle pill completely when the user turns it off", () => {
+    expect(isOverlayVisible(hiddenIdle)).toBe(false);
+    expect(isOverlayVisible({ ...hiddenIdle, showIdlePill: true })).toBe(true);
+  });
+
+  it("still shows a hidden pill while dictating, in the menu, after a notice or a tray reveal", () => {
+    expect(isOverlayVisible({ ...hiddenIdle, idle: false })).toBe(true);
+    expect(isOverlayVisible({ ...hiddenIdle, menuOpen: true })).toBe(true);
+    expect(isOverlayVisible({ ...hiddenIdle, noticeShowing: true })).toBe(true);
+    expect(isOverlayVisible({ ...hiddenIdle, manualReveal: true })).toBe(true);
   });
 });

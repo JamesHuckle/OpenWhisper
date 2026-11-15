@@ -45,7 +45,8 @@ describe("desktop regression contracts", () => {
     expect(main).toContain("Show pill when idle");
     expect(main.indexOf("Show pill when idle")).toBeLessThan(main.indexOf("Microphone</div>"));
     expect(main).toContain('aria-label="Show pill when idle"');
-    expect(main).toContain('visible: showIdlePill || state !== "idle" || menuOpen || manualOverlayReveal');
+    // overlay-layout.test.ts checks when the pill is visible (isOverlayVisible).
+    expect(main).toContain("visible: isOverlayVisible({");
     expect(native).toContain("window.hide().map_err");
     expect(native).toContain('MenuItem::with_id(app, "show", "Show Pill"');
   });

@@ -67,3 +67,26 @@ export function getOverlayLayout(input: OverlayLayoutInput): OverlayLayout {
     bubbleVisible,
   };
 }
+
+export type OverlayVisibilityInput = {
+  /** The user's "Show pill when idle" setting. */
+  showIdlePill: boolean;
+  /** No recording or transcription is running. */
+  idle: boolean;
+  menuOpen: boolean;
+  /** The tray's "Show Pill" item revealed it for now. */
+  manualReveal: boolean;
+  /** A brief inline notice such as "No audio found" is showing. */
+  noticeShowing: boolean;
+};
+
+/**
+ * Whether the native window is shown. A user who hides the idle pill still
+ * sees it while dictating, while the menu or a notice is open, or after
+ * choosing "Show Pill" in the tray.
+ */
+export function isOverlayVisible(input: OverlayVisibilityInput): boolean {
+  return (
+    input.showIdlePill || !input.idle || input.menuOpen || input.manualReveal || input.noticeShowing
+  );
+}

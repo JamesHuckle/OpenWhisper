@@ -13,6 +13,7 @@ import {
   EXPANDED_HEIGHT,
   EXPANDED_WIDTH,
   getOverlayLayout,
+  isOverlayVisible,
 } from "./overlay-layout";
 import {
   DEFAULT_TRANSCRIPTION_MODEL,
@@ -389,7 +390,13 @@ function getWindowLayout() {
   });
   return {
     ...layout,
-    visible: showIdlePill || state !== "idle" || menuOpen || manualOverlayReveal || noticeWidth > 0,
+    visible: isOverlayVisible({
+      showIdlePill,
+      idle: state === "idle",
+      menuOpen,
+      manualReveal: manualOverlayReveal,
+      noticeShowing: noticeWidth > 0,
+    }),
   };
 }
 
