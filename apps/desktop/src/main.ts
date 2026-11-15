@@ -1130,18 +1130,23 @@ async function stopRecording() {
 }
 
 async function finalizeRecording() {
-  if (!currentSessionId) return;
+  const sessionId = currentSessionId;
+  if (!sessionId) return;
   try {
     await audioQueue.drain();
     await backupTail;
     if (backupError) throw backupError;
+    if (currentSessionId !== sessionId) return;
     await invoke("worker_finalize_session_audio", {
-      sessionId: currentSessionId,
+      sessionId,
       mimeType: recordingMimeType,
     });
-    logDebug(`stopRecording finalized session=${currentSessionId}`);
+    logDebug(`stopRecording finalized session=${sessionId}`);
   } catch (err) {
     logDebug(`stopRecording error=${err instanceof Error ? err.message : String(err)}`);
+    // Cancel answers at once, so a cancelled session's last request can
+    // still fail here; the cancel already tidied up.
+    if (currentSessionId !== sessionId) return;
     await handleTranscriptionFailure(err);
     cleanup();
     setState("idle");
@@ -1245,19 +1250,29 @@ async function transcribeStoredAudio(
   const session = await invoke<{ session_id: string }>("worker_start_session", {
     profileId,
   });
-  currentSessionId = session.session_id;
-  const chunkSize = 512 * 1024;
-  for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
-    const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + chunkSize));
-    await invoke("worker_append_audio_chunk", {
-      sessionId: currentSessionId,
-      chunkBase64: toBase64(chunk),
+  const sessionId = session.session_id;
+  currentSessionId = sessionId;
+  const cancelled = () => currentSessionId !== sessionId;
+  try {
+    const chunkSize = 512 * 1024;
+    for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+      if (cancelled()) return;
+      const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + chunkSize));
+      await invoke("worker_append_audio_chunk", {
+        sessionId,
+        chunkBase64: toBase64(chunk),
+      });
+    }
+    if (cancelled()) return;
+    await invoke("worker_finalize_session_audio", {
+      sessionId,
+      mimeType,
     });
+  } catch (error) {
+    // A cancel during the upload already tidied up; its failure is expected.
+    if (cancelled()) return;
+    throw error;
   }
-  await invoke("worker_finalize_session_audio", {
-    sessionId: currentSessionId,
-    mimeType,
-  });
 }
 
 function mimeTypeForFileName(name: string): string {
