@@ -3,8 +3,11 @@ from __future__ import annotations
 import base64
 import io
 import math
+import os
 import struct
+import tempfile
 import unittest
+import wave
 from unittest.mock import patch
 
 from openwhisper_worker.protocol import SessionEvent, WorkerRequest
@@ -83,10 +86,12 @@ class FakeFileOpenAI:
         self.transcribe_error = transcribe_error
         self.polish_error = polish_error
         self.transcribed = 0
+        self.files: list[tuple[str, str]] = []
         self.polished: list[str] = []
 
-    def transcribe_file(self, _path, mime_type: str, prompt: str = "", on_progress=None) -> str:
+    def transcribe_file(self, path, mime_type: str, prompt: str = "", on_progress=None) -> str:
         self.transcribed += 1
+        self.files.append((str(path), mime_type))
         if self.transcribe_error:
             raise self.transcribe_error
         return self.transcript
@@ -230,6 +235,94 @@ class NoAudioWorkerServerTests(unittest.TestCase):
         server, _ = self.server_returning("Zoon Robotics is hiring.")
         events = dictate(server, pcm_tone(1.0), self.PROMPT)
         self.assertEqual(events[-1], {"type": "final", "text": "Zoon Robotics is hiring."})
+
+
+def write_wav(path: str, pcm: bytes, rate: int = 24_000) -> None:
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(pcm)
+
+
+class SavedFileWorkerServerTests(unittest.TestCase):
+    """The desktop hands the worker a saved recording's path instead of its audio."""
+
+    def setUp(self) -> None:
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+
+    def saved(self, name: str, content: bytes | None = None, pcm: bytes | None = None) -> str:
+        path = os.path.join(self.folder.name, name)
+        if pcm is not None:
+            write_wav(path, pcm)
+        else:
+            with open(path, "wb") as target:
+                target.write(content or b"")
+        return path
+
+    def transcribe_saved(self, server: WorkerServer, path: str, mime_type: str) -> tuple:
+        session_id = server.handle(
+            request("start_session", refine_enabled=False)
+        ).result["session_id"]
+        with patch("sys.stderr", io.StringIO()):
+            finalized = server.handle(
+                request(
+                    "finalize_session_audio",
+                    session_id=session_id,
+                    mime_type=mime_type,
+                    audio_path=path,
+                )
+            )
+        return finalized, server._emit_sink.events(session_id)
+
+    def test_saved_recording_is_read_in_place_and_kept(self) -> None:
+        path = self.saved("audio.wav", pcm=pcm_tone(1.0))
+        before = open(path, "rb").read()
+        server, log = new_server(FakeFileOpenAI("Zoon Robotics is hiring."))
+
+        finalized, events = self.transcribe_saved(server, path, "audio/wav")
+
+        self.assertEqual(finalized.result, {"final_text": "Zoon Robotics is hiring."})
+        self.assertEqual(events[-1], {"type": "final", "text": "Zoon Robotics is hiring."})
+        self.assertEqual(server._openai.files, [(path, "audio/wav")])
+        # The worker never copies or removes the desktop's saved file.
+        self.assertEqual(open(path, "rb").read(), before)
+        self.assertEqual(server._sessions, {})
+
+    def test_saved_quick_tap_silence_and_empty_files_report_no_audio(self) -> None:
+        cases = [
+            self.saved("tap.wav", pcm=pcm_tone(0.1)),
+            self.saved("silent.wav", pcm=bytes(24_000 * 2)),
+            self.saved("empty.wav", content=b""),
+            os.path.join(self.folder.name, "missing.wav"),
+        ]
+        for path in cases:
+            server, _ = new_server(FakeFileOpenAI("Glossary: Zoon"))
+            _, events = self.transcribe_saved(server, path, "audio/wav")
+            self.assertEqual(events[-1], {"type": "error", "text": "No audio found"}, path)
+            self.assertEqual(server._openai.transcribed, 0, path)
+
+    def test_compressed_imports_go_straight_to_the_model(self) -> None:
+        path = self.saved("memo.mp3", content=b"ID3 not really an mp3")
+        server, _ = new_server(FakeFileOpenAI("A voice memo."))
+
+        _, events = self.transcribe_saved(server, path, "audio/mpeg")
+
+        self.assertEqual(events[-1], {"type": "final", "text": "A voice memo."})
+        self.assertEqual(server._openai.files, [(path, "audio/mpeg")])
+
+    def test_live_session_refuses_a_saved_file(self) -> None:
+        path = self.saved("audio.wav", pcm=pcm_tone(1.0))
+        openai = FakeRealtimeOpenAI()
+        server, _ = new_server(openai)
+
+        finalized, events = self.transcribe_saved(server, path, "audio/wav")
+
+        self.assertEqual(finalized.result, {"final_text": ""})
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertTrue(openai.stream.closed)
+        self.assertEqual(server._sessions, {})
 
 
 class RefineWorkerServerTests(unittest.TestCase):

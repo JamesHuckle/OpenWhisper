@@ -54,3 +54,15 @@ This package documents the canonical local IPC contract between desktop and work
   "params": { "session_id": "uuid", "mime_type": "audio/webm" }
 }
 ```
+
+A session can instead be finalized from a saved file on disk, with no chunks
+appended. The worker reads the file in parts and never changes or removes it.
+Live (realtime) sessions only accept appended chunks.
+
+```json
+{
+  "id": "uuid",
+  "method": "finalize_session_audio",
+  "params": { "session_id": "uuid", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav" }
+}
+```
