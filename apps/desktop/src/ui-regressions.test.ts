@@ -199,10 +199,39 @@ describe("desktop regression contracts", () => {
 
     expect(main).toContain('transcribeButton.textContent = "Transcribe"');
     expect(main).toContain("retranscribeRecording(recording)");
-    expect(main).toContain('"recording_read"');
     expect(main).toContain('status: "transcribing"');
-    expect(native).toContain("fn recording_read(");
-    expect(native).toContain("STANDARD.encode(bytes)");
+    // Only the recording id crosses to the app; the worker reads the saved
+    // file from disk, so the audio is never loaded into the window.
+    expect(main).toContain('invoke("recording_transcribe", { recordingId, sessionId })');
+    expect(main).not.toContain('"recording_read"');
+    expect(native).not.toContain("fn recording_read(");
+    expect(native).toContain("async fn recording_transcribe(");
+    expect(native).toContain('"audio_path": audio_path.to_string_lossy()');
+  });
+
+  it("sends each piece of normal dictation once, to the saved backup", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+
+    // Only live transcription streams audio to the worker while recording.
+    expect(main).toContain("if (streamAudioToWorker) audioQueue.append(combined.buffer);");
+    expect(main).toContain(
+      'streamAudioToWorker = settings.transcriptionModel === "gpt-live-transcribe";',
+    );
+    // The backup file stays open and its header is not rewritten per piece.
+    expect(native).toContain("recordings: std::sync::Mutex<HashMap<String, ActiveRecording>>");
+    expect(native).not.toContain("fn append_pcm_chunk(");
+  });
+
+  it("imports audio files by copying them on disk, not through the window", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+
+    expect(main).not.toContain('type="file"');
+    expect(main).not.toContain(".arrayBuffer()");
+    expect(main).toContain('invoke<{ id: string } | null>("recording_import")');
+    expect(native).toContain(".blocking_pick_file()");
+    expect(native).toContain("fs::copy(source, dir.join(&file_name))");
   });
 
   it("promotes saved transcripts over redundant retranscription", () => {

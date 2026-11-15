@@ -51,10 +51,6 @@ type RecordingMetadata = {
   transcript: string;
   error: string;
 };
-type RecordingAudio = {
-  mimeType: string;
-  fileBase64: string;
-};
 
 // ---------------------------------------------------------------------------
 // State
@@ -65,6 +61,10 @@ let sessionEventTail: Promise<void> = Promise.resolve();
 let finalTranscript = "";
 let liveTranscript = "";
 let streamTextToTarget = false;
+// Live transcription hears audio while it is recorded, so the worker gets
+// every chunk. Otherwise audio goes only to the saved backup, and the worker
+// reads that file once the recording stops.
+let streamAudioToWorker = false;
 let targetWriteQueue: Promise<void> = Promise.resolve();
 let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
 let mediaRecorder: MediaRecorder | null = null;
@@ -207,7 +207,6 @@ app.innerHTML = `
           </svg>
         </button>
       </div>
-      <input id="audio-file-input" type="file" accept="audio/*,.wav,.mp3,.m4a,.mp4,.mpeg,.mpga,.webm,.ogg" hidden />
       <div id="recent-recordings" class="recent-recordings"></div>
       <div class="menu-divider"></div>
       <div class="menu-section">Appearance</div>
@@ -299,7 +298,6 @@ const failureOpenRecording = document.getElementById("failure-open-recording") a
 const failureDismiss = document.getElementById("failure-dismiss") as HTMLButtonElement;
 const menuImportAudio = document.getElementById("menu-import-audio") as HTMLButtonElement;
 const menuOpenRecordings = document.getElementById("menu-open-recordings") as HTMLButtonElement;
-const audioFileInput = document.getElementById("audio-file-input") as HTMLInputElement;
 const recentRecordings = document.getElementById("recent-recordings")!;
 const widgetNoticeText = document.getElementById("widget-notice-text")!;
 
@@ -651,15 +649,6 @@ function toBase64(buf: ArrayBuffer): string {
   return btoa(binary);
 }
 
-function fromBase64(value: string): ArrayBuffer {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes.buffer;
-}
-
 // ---------------------------------------------------------------------------
 // Volume monitor — show wobbly line when mic is silent during recording
 // ---------------------------------------------------------------------------
@@ -747,7 +736,7 @@ function flushAudioBatch() {
         backupError ??= error;
       });
   }
-  audioQueue.append(combined.buffer);
+  if (streamAudioToWorker) audioQueue.append(combined.buffer);
 }
 
 function errorMessage(error: unknown, fallback = "Transcription failed"): string {
@@ -974,13 +963,7 @@ menuOpenRecordings.addEventListener("click", () => {
   });
 });
 
-menuImportAudio.addEventListener("click", () => audioFileInput.click());
-
-audioFileInput.addEventListener("change", () => {
-  const file = audioFileInput.files?.[0];
-  audioFileInput.value = "";
-  if (file) void transcribeImportedFile(file);
-});
+menuImportAudio.addEventListener("click", () => void transcribeImportedFile());
 
 async function startPcmCapture(stream: MediaStream) {
   pcmAudioContext = new AudioContext();
@@ -1030,6 +1013,7 @@ async function startRecording() {
       setState("idle");
       return;
     }
+    streamAudioToWorker = settings.transcriptionModel === "gpt-live-transcribe";
 
     const constraints: MediaStreamConstraints = {
       audio: selectedMicId === "default" ? true : { deviceId: { exact: selectedMicId } },
@@ -1136,10 +1120,18 @@ async function finalizeRecording() {
     await backupTail;
     if (backupError) throw backupError;
     if (currentSessionId !== sessionId) return;
-    await invoke("worker_finalize_session_audio", {
-      sessionId,
-      mimeType: recordingMimeType,
-    });
+    if (streamAudioToWorker) {
+      await invoke("worker_finalize_session_audio", {
+        sessionId,
+        mimeType: recordingMimeType,
+      });
+    } else {
+      // The worker reads the saved backup from disk, so the audio crosses
+      // to it once, at the end, instead of a second time while recording.
+      const recordingId = currentRecordingId;
+      if (!recordingId) throw new Error("The recording was not saved");
+      await invoke("recording_transcribe", { recordingId, sessionId });
+    }
     logDebug(`stopRecording finalized session=${sessionId}`);
   } catch (err) {
     logDebug(`stopRecording error=${err instanceof Error ? err.message : String(err)}`);
@@ -1159,13 +1151,15 @@ async function cancelTranscription() {
       logDebug(`stop session failed=${errorMessage(error)}`);
     });
   }
+  // Capture has stopped; let its last pieces reach the backup before closing it.
+  await backupTail;
   await finishCurrentRecording("cancelled", "", "Cancelled by user");
   cleanup();
   setState("idle");
   showToast("Transcription cancelled. Raw audio is still saved.", 4000);
 }
 
-async function transcribeImportedFile(file: File) {
+async function transcribeImportedFile() {
   if (state !== "idle") {
     showToast("Finish the current recording first");
     return;
@@ -1178,14 +1172,15 @@ async function transcribeImportedFile(file: File) {
     if (settings.transcriptionModel === "gpt-live-transcribe") {
       throw new Error("Choose Standard transcription for imported audio files");
     }
-    const bytes = await file.arrayBuffer();
-    const mimeType = file.type || mimeTypeForFileName(file.name);
-    const stored = await invoke<{ id: string }>("recording_import", {
-      name: file.name,
-      mimeType,
-      fileBase64: toBase64(bytes),
-    });
-    await transcribeStoredAudio(stored.id, bytes, mimeType, "file-import");
+    // The native picker hands the path to the app, which copies the file
+    // from disk; the audio never passes through this window.
+    const stored = await invoke<{ id: string } | null>("recording_import");
+    if (!stored) return;
+    if (state !== "idle") {
+      showToast("Finish the current recording first");
+      return;
+    }
+    await transcribeStoredAudio(stored.id, "file-import");
   } catch (error) {
     await handleTranscriptionFailure(error);
     cleanup();
@@ -1206,15 +1201,7 @@ async function retranscribeRecording(recording: RecordingMetadata) {
     if (settings.transcriptionModel === "gpt-live-transcribe") {
       throw new Error("Choose Standard transcription for saved audio files");
     }
-    const audio = await invoke<RecordingAudio>("recording_read", {
-      recordingId: recording.id,
-    });
-    await transcribeStoredAudio(
-      recording.id,
-      fromBase64(audio.fileBase64),
-      audio.mimeType,
-      "recording-retry",
-    );
+    await transcribeStoredAudio(recording.id, "recording-retry");
   } catch (error) {
     await handleTranscriptionFailure(error);
     cleanup();
@@ -1222,12 +1209,7 @@ async function retranscribeRecording(recording: RecordingMetadata) {
   }
 }
 
-async function transcribeStoredAudio(
-  recordingId: string,
-  bytes: ArrayBuffer,
-  mimeType: string,
-  profileId: string,
-) {
+async function transcribeStoredAudio(recordingId: string, profileId: string) {
   clearWidgetNotice();
   currentRecordingId = recordingId;
   lastFailedRecordingId = null;
@@ -1252,37 +1234,14 @@ async function transcribeStoredAudio(
   currentSessionId = sessionId;
   const cancelled = () => currentSessionId !== sessionId;
   try {
-    const chunkSize = 512 * 1024;
-    for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
-      if (cancelled()) return;
-      const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + chunkSize));
-      await invoke("worker_append_audio_chunk", {
-        sessionId,
-        chunkBase64: toBase64(chunk),
-      });
-    }
-    if (cancelled()) return;
-    await invoke("worker_finalize_session_audio", {
-      sessionId,
-      mimeType,
-    });
+    // The app finds the saved file and the worker reads it from disk, so
+    // the audio is never loaded into this window.
+    await invoke("recording_transcribe", { recordingId, sessionId });
   } catch (error) {
-    // A cancel during the upload already tidied up; its failure is expected.
+    // A cancel during the transcription already tidied up; its failure is expected.
     if (cancelled()) return;
     throw error;
   }
-}
-
-function mimeTypeForFileName(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".wav")) return "audio/wav";
-  if (lower.endsWith(".mp3") || lower.endsWith(".mpeg") || lower.endsWith(".mpga")) {
-    return "audio/mpeg";
-  }
-  if (lower.endsWith(".m4a")) return "audio/x-m4a";
-  if (lower.endsWith(".mp4")) return "audio/mp4";
-  if (lower.endsWith(".ogg")) return "audio/ogg";
-  return "audio/webm";
 }
 
 function cleanup() {
@@ -1305,6 +1264,7 @@ function cleanup() {
   pendingAudioBytes = 0;
   liveTranscript = "";
   streamTextToTarget = false;
+  streamAudioToWorker = false;
 }
 
 // ---------------------------------------------------------------------------

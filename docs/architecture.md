@@ -28,9 +28,18 @@ WhisperFlow is split into three runtime layers:
 
 1. User starts dictation from UI or global hotkey.
 2. Desktop shell opens session in worker via JSON-over-stdio protocol.
-3. Audio chunks stream from shell/native capture to worker using `append_audio_chunk`.
+3. The shell saves every audio chunk once, to the recording's WAV file
+   (`src-tauri/src/recording_store.rs`). The file stays open while recording;
+   its header and size are brought up to date about once a second.
+   Live transcription also streams each chunk to the worker using
+   `append_audio_chunk`, because it transcribes while the user speaks.
 4. Worker pushes transcript updates and final text as session events.
-5. Desktop finalizes transcription using `finalize_session_audio`.
+5. Desktop finalizes transcription using `finalize_session_audio`. For
+   standard transcription the shell closes the WAV file and passes its
+   `audio_path`, and the worker reads it from disk in parts
+   (`recording_transcribe`). Retrying a saved recording sends only its id
+   the same way, and an imported file is copied on disk after the native
+   file picker returns its path, so audio never passes through the UI.
 6. Native insertion engine writes the text into the field that was focused when
    the recording started, after checking that field again.
 
@@ -54,6 +63,10 @@ Audio pipeline methods:
 
 ```json
 { "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/webm" } }
+```
+
+```json
+{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav" } }
 ```
 
 Each response from worker:

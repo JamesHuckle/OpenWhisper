@@ -2,26 +2,28 @@ mod api_key_store;
 // Parts of the insertion rules are used only by the Windows writer.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod paste_target;
+mod recording_store;
 mod worker_client;
 mod worker_connection;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
+use recording_store::PcmWavWriter;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
-use std::fs::OpenOptions;
-use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Size, State, Window,
     WindowEvent,
 };
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -1323,6 +1325,14 @@ struct AppState {
     overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
     overlay_layout: std::sync::Mutex<Option<OverlayLayoutSpec>>,
     overlay_layout_locked: AtomicBool,
+    // Microphone recordings in progress, by recording id. Each keeps its
+    // file open until the recording is transcribed or finished.
+    recordings: std::sync::Mutex<HashMap<String, ActiveRecording>>,
+}
+
+struct ActiveRecording {
+    writer: PcmWavWriter,
+    metadata: RecordingMetadata,
 }
 
 struct OverlayLayoutGuard<'a>(&'a AtomicBool);
@@ -1583,13 +1593,6 @@ struct RecordingStartResponse {
     id: String,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RecordingAudioResponse {
-    mime_type: String,
-    file_base64: String,
-}
-
 fn recordings_root(app_handle: &AppHandle) -> Result<PathBuf> {
     let mut root = app_handle
         .path()
@@ -1645,93 +1648,118 @@ fn prune_recordings(root: &std::path::Path, keep: usize) -> Result<()> {
     Ok(())
 }
 
-fn wav_header(pcm_bytes: u32, sample_rate: u32) -> [u8; 44] {
-    let mut header = [0_u8; 44];
-    header[0..4].copy_from_slice(b"RIFF");
-    header[4..8].copy_from_slice(&(36_u32.saturating_add(pcm_bytes)).to_le_bytes());
-    header[8..12].copy_from_slice(b"WAVE");
-    header[12..16].copy_from_slice(b"fmt ");
-    header[16..20].copy_from_slice(&16_u32.to_le_bytes());
-    header[20..22].copy_from_slice(&1_u16.to_le_bytes());
-    header[22..24].copy_from_slice(&1_u16.to_le_bytes());
-    header[24..28].copy_from_slice(&sample_rate.to_le_bytes());
-    header[28..32].copy_from_slice(&(sample_rate.saturating_mul(2)).to_le_bytes());
-    header[32..34].copy_from_slice(&2_u16.to_le_bytes());
-    header[34..36].copy_from_slice(&16_u16.to_le_bytes());
-    header[36..40].copy_from_slice(b"data");
-    header[40..44].copy_from_slice(&pcm_bytes.to_le_bytes());
-    header
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
-fn append_pcm_chunk(
+fn lock_recordings(
+    state: &AppState,
+) -> Result<std::sync::MutexGuard<'_, HashMap<String, ActiveRecording>>, String> {
+    state
+        .recordings
+        .lock()
+        .map_err(|_| "Failed to lock recordings".to_string())
+}
+
+/// Writes the final header and size of a recording still being written, and
+/// closes its file. Does nothing for a recording that is not open.
+fn close_active_recording(
+    state: &AppState,
     root: &std::path::Path,
     recording_id: &str,
-    chunk: &[u8],
-    sample_rate: u32,
-) -> Result<()> {
-    let mut metadata = read_recording_metadata(root, recording_id)?;
-    let path = root.join(recording_id).join(&metadata.file_name);
-    let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
-    file.seek(SeekFrom::End(0))?;
-    file.write_all(chunk)?;
-    let pcm_bytes = file
-        .metadata()?
-        .len()
-        .saturating_sub(44)
-        .min(u32::MAX as u64) as u32;
-    file.seek(SeekFrom::Start(0))?;
-    file.write_all(&wav_header(pcm_bytes, sample_rate))?;
-    file.flush()?;
-    metadata.bytes = pcm_bytes as u64 + 44;
-    write_recording_metadata(root, &metadata)?;
-    Ok(())
+) -> Result<(), String> {
+    let Some(active) = lock_recordings(state)?.remove(recording_id) else {
+        return Ok(());
+    };
+    let mut metadata = active.metadata;
+    metadata.bytes = active.writer.finish().map_err(|e| e.to_string())?;
+    write_recording_metadata(root, &metadata).map_err(|e| e.to_string())
 }
 
-fn safe_extension(name: &str, mime_type: &str) -> &'static str {
-    let lowercase = name.to_ascii_lowercase();
-    if lowercase.ends_with(".wav") || mime_type.contains("wav") {
-        "wav"
-    } else if lowercase.ends_with(".mp3") || mime_type.contains("mpeg") {
-        "mp3"
-    } else if lowercase.ends_with(".m4a") || mime_type.contains("m4a") {
-        "m4a"
-    } else if lowercase.ends_with(".mp4") || mime_type.contains("mp4") {
-        "mp4"
-    } else if lowercase.ends_with(".ogg") || mime_type.contains("ogg") {
-        "ogg"
-    } else {
-        "webm"
+/// Copies an audio file from disk into a new saved recording.
+fn import_recording(
+    root: &std::path::Path,
+    source: &std::path::Path,
+) -> Result<RecordingStartResponse, String> {
+    let name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Imported audio".to_string());
+    let size = fs::metadata(source)
+        .map_err(|e| format!("Could not read the selected audio file: {e}"))?
+        .len();
+    if size == 0 {
+        return Err("The selected audio file is empty".to_string());
     }
+    let mime_type = recording_store::mime_type_for_file_name(&name);
+    let file_name = format!("audio.{}", recording_store::safe_extension(&name, mime_type));
+    let id = Uuid::new_v4().to_string();
+    let dir = root.join(&id);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let bytes = match fs::copy(source, dir.join(&file_name)) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(format!("Could not copy the selected audio file: {error}"));
+        }
+    };
+    let metadata = RecordingMetadata {
+        id: id.clone(),
+        created_at_ms: now_ms(),
+        name,
+        source: "import".to_string(),
+        mime_type: mime_type.to_string(),
+        file_name,
+        status: "saved".to_string(),
+        bytes,
+        transcript: String::new(),
+        error: String::new(),
+    };
+    write_recording_metadata(root, &metadata).map_err(|e| e.to_string())?;
+    prune_recordings(root, RECORDING_RETENTION_COUNT).map_err(|e| e.to_string())?;
+    Ok(RecordingStartResponse { id })
 }
 
 #[tauri::command]
 fn recording_begin(
     app_handle: AppHandle,
+    state: State<'_, Arc<AppState>>,
     source: String,
     name: String,
 ) -> Result<RecordingStartResponse, String> {
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
-    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    // One microphone recording runs at a time. Close any the UI left open
+    // (for example after a reload) so their files are complete.
+    let left_open: Vec<String> = lock_recordings(&state)?.keys().cloned().collect();
+    for recording_id in left_open {
+        close_active_recording(&state, &root, &recording_id)?;
+    }
     let id = Uuid::new_v4().to_string();
     let dir = root.join(&id);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    fs::write(dir.join("audio.wav"), wav_header(0, 24_000)).map_err(|e| e.to_string())?;
+    let writer = PcmWavWriter::create(
+        &dir.join("audio.wav"),
+        recording_store::MICROPHONE_SAMPLE_RATE,
+        Instant::now(),
+    )
+    .map_err(|e| e.to_string())?;
     let metadata = RecordingMetadata {
         id: id.clone(),
-        created_at_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or(0),
+        created_at_ms: now_ms(),
         name,
         source,
         mime_type: "audio/wav".to_string(),
         file_name: "audio.wav".to_string(),
         status: "recording".to_string(),
-        bytes: 44,
+        bytes: writer.file_bytes(),
         transcript: String::new(),
         error: String::new(),
     };
     write_recording_metadata(&root, &metadata).map_err(|e| e.to_string())?;
+    lock_recordings(&state)?.insert(id.clone(), ActiveRecording { writer, metadata });
     prune_recordings(&root, RECORDING_RETENTION_COUNT).map_err(|e| e.to_string())?;
     Ok(RecordingStartResponse { id })
 }
@@ -1739,66 +1767,99 @@ fn recording_begin(
 #[tauri::command]
 fn recording_append_chunk(
     app_handle: AppHandle,
+    state: State<'_, Arc<AppState>>,
     recording_id: String,
     chunk_base64: String,
 ) -> Result<(), String> {
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
     let chunk = base64::engine::general_purpose::STANDARD
         .decode(chunk_base64)
         .map_err(|e| format!("Invalid audio chunk: {e}"))?;
-    append_pcm_chunk(&root, &recording_id, &chunk, 24_000).map_err(|e| e.to_string())
+    let mut recordings = lock_recordings(&state)?;
+    let active = recordings
+        .get_mut(&recording_id)
+        .ok_or_else(|| "This recording is no longer being saved".to_string())?;
+    let synced = active
+        .writer
+        .append(&chunk, Instant::now())
+        .map_err(|e| e.to_string())?;
+    if synced {
+        // The saved size follows the header, about once a second.
+        active.metadata.bytes = active.writer.file_bytes();
+        let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+        write_recording_metadata(&root, &active.metadata).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
+/// Lets the user choose an audio file and copies it into the saved
+/// recordings, straight from disk. Returns None when the user cancels.
 #[tauri::command]
-fn recording_import(
-    app_handle: AppHandle,
-    name: String,
-    mime_type: String,
-    file_base64: String,
-) -> Result<RecordingStartResponse, String> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(file_base64)
-        .map_err(|e| format!("Could not read imported audio: {e}"))?;
-    if bytes.is_empty() {
-        return Err("The selected audio file is empty".to_string());
-    }
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
-    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    let id = Uuid::new_v4().to_string();
-    let extension = safe_extension(&name, &mime_type);
-    let file_name = format!("audio.{extension}");
-    let dir = root.join(&id);
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    fs::write(dir.join(&file_name), &bytes).map_err(|e| e.to_string())?;
-    let metadata = RecordingMetadata {
-        id: id.clone(),
-        created_at_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_millis())
-            .unwrap_or(0),
-        name,
-        source: "import".to_string(),
-        mime_type,
-        file_name,
-        status: "saved".to_string(),
-        bytes: bytes.len() as u64,
-        transcript: String::new(),
-        error: String::new(),
+async fn recording_import(app_handle: AppHandle) -> Result<Option<RecordingStartResponse>, String> {
+    let dialog_app = app_handle.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        let mut dialog = dialog_app
+            .dialog()
+            .file()
+            .set_title("Choose an audio file to transcribe")
+            .add_filter("Audio", recording_store::IMPORT_EXTENSIONS);
+        if let Some(window) = dialog_app.get_webview_window("main") {
+            dialog = dialog.set_parent(&window);
+        }
+        dialog.blocking_pick_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(picked) = picked else {
+        return Ok(None);
     };
-    write_recording_metadata(&root, &metadata).map_err(|e| e.to_string())?;
-    prune_recordings(&root, RECORDING_RETENTION_COUNT).map_err(|e| e.to_string())?;
-    Ok(RecordingStartResponse { id })
+    let source = picked.into_path().map_err(|e| e.to_string())?;
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    import_recording(&root, &source).map(Some)
+}
+
+/// Transcribes a saved recording in a worker session. The worker reads the
+/// file from disk, so its audio never passes through the UI.
+#[tauri::command]
+async fn recording_transcribe(
+    app_handle: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    recording_id: String,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    close_active_recording(&state, &root, &recording_id)?;
+    let metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
+    let audio_path = root.join(&recording_id).join(&metadata.file_name);
+    if metadata.source == "microphone" {
+        // A recording the app did not finish (it stopped while recording)
+        // has a header up to a second behind its audio.
+        recording_store::repair_wav_header(&audio_path, recording_store::MICROPHONE_SAMPLE_RATE)
+            .map_err(|e| format!("Could not read saved recording: {e}"))?;
+    }
+    with_worker_request(
+        &app_handle,
+        &state,
+        "finalize_session_audio",
+        json!({
+            "session_id": session_id,
+            "mime_type": metadata.mime_type,
+            "audio_path": audio_path.to_string_lossy(),
+        }),
+    )
+    .await
 }
 
 #[tauri::command]
 fn recording_finish(
     app_handle: AppHandle,
+    state: State<'_, Arc<AppState>>,
     recording_id: String,
     status: String,
     transcript: String,
     error: String,
 ) -> Result<(), String> {
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    close_active_recording(&state, &root, &recording_id)?;
     let mut metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
     metadata.status = status;
     metadata.transcript = transcript;
@@ -1811,24 +1872,6 @@ fn recording_finish(
 fn recording_list(app_handle: AppHandle) -> Result<Vec<RecordingMetadata>, String> {
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
     list_recording_metadata(&root).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn recording_read(
-    app_handle: AppHandle,
-    recording_id: String,
-) -> Result<RecordingAudioResponse, String> {
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
-    let metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
-    let audio_path = root.join(recording_id).join(metadata.file_name);
-    let bytes = fs::read(audio_path).map_err(|e| format!("Could not read saved recording: {e}"))?;
-    if bytes.is_empty() {
-        return Err("The saved recording is empty".to_string());
-    }
-    Ok(RecordingAudioResponse {
-        mime_type: metadata.mime_type,
-        file_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-    })
 }
 
 #[tauri::command]
@@ -2533,6 +2576,7 @@ pub fn run() {
         overlay_anchor: std::sync::Mutex::new(None),
         overlay_layout: std::sync::Mutex::new(None),
         overlay_layout_locked: AtomicBool::new(false),
+        recordings: std::sync::Mutex::new(HashMap::new()),
     });
 
     tauri::Builder::default()
@@ -2545,6 +2589,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
@@ -2674,9 +2719,9 @@ pub fn run() {
             recording_begin,
             recording_append_chunk,
             recording_import,
+            recording_transcribe,
             recording_finish,
             recording_list,
-            recording_read,
             recording_open,
             recordings_open_folder,
             debug_log,
@@ -2735,7 +2780,7 @@ mod tests {
             let id = format!("recording-{index}");
             let directory = root.join(&id);
             fs::create_dir_all(&directory).unwrap();
-            fs::write(directory.join("audio.wav"), wav_header(0, 24_000)).unwrap();
+            fs::write(directory.join("audio.wav"), recording_store::wav_header(0, 24_000)).unwrap();
             write_recording_metadata(
                 &root,
                 &RecordingMetadata {
@@ -2766,35 +2811,86 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    fn test_state() -> AppState {
+        AppState {
+            worker: Mutex::new(None),
+            settings: std::sync::Mutex::new(AppSettings::default()),
+            overlay_anchor: std::sync::Mutex::new(None),
+            overlay_layout: std::sync::Mutex::new(None),
+            overlay_layout_locked: AtomicBool::new(false),
+            recordings: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
     #[test]
-    fn appended_backup_is_immediately_a_valid_wav() {
+    fn closing_an_open_recording_writes_its_final_length() {
         let root = std::env::temp_dir().join(format!("openwhisper-wav-test-{}", Uuid::new_v4()));
         let id = "active";
         fs::create_dir_all(root.join(id)).unwrap();
-        fs::write(root.join(id).join("audio.wav"), wav_header(0, 24_000)).unwrap();
-        write_recording_metadata(
-            &root,
-            &RecordingMetadata {
-                id: id.to_string(),
-                created_at_ms: 1,
-                name: "Active".to_string(),
-                source: "microphone".to_string(),
-                mime_type: "audio/wav".to_string(),
-                file_name: "audio.wav".to_string(),
-                status: "recording".to_string(),
-                bytes: 44,
-                transcript: String::new(),
-                error: String::new(),
-            },
-        )
-        .unwrap();
+        let started = Instant::now();
+        let mut writer =
+            PcmWavWriter::create(&root.join(id).join("audio.wav"), 24_000, started).unwrap();
+        let metadata = RecordingMetadata {
+            id: id.to_string(),
+            created_at_ms: 1,
+            name: "Active".to_string(),
+            source: "microphone".to_string(),
+            mime_type: "audio/wav".to_string(),
+            file_name: "audio.wav".to_string(),
+            status: "recording".to_string(),
+            bytes: writer.file_bytes(),
+            transcript: String::new(),
+            error: String::new(),
+        };
+        write_recording_metadata(&root, &metadata).unwrap();
+        writer.append(&[1, 2, 3, 4], started).unwrap();
+        let state = test_state();
+        state
+            .recordings
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), ActiveRecording { writer, metadata });
 
-        append_pcm_chunk(&root, id, &[1, 2, 3, 4], 24_000).unwrap();
+        close_active_recording(&state, &root, id).unwrap();
+
         let wav = fs::read(root.join(id).join("audio.wav")).unwrap();
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
         assert_eq!(&wav[44..], &[1, 2, 3, 4]);
+        assert_eq!(read_recording_metadata(&root, id).unwrap().bytes, 48);
+        assert!(state.recordings.lock().unwrap().is_empty());
+        // Closing again (transcribe, then finish) is harmless.
+        close_active_recording(&state, &root, id).unwrap();
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imported_audio_is_copied_from_disk_into_saved_recordings() {
+        let folder = std::env::temp_dir().join(format!("openwhisper-import-test-{}", Uuid::new_v4()));
+        let root = folder.join("recordings");
+        fs::create_dir_all(&folder).unwrap();
+        let source = folder.join("Voice memo.M4A");
+        fs::write(&source, b"m4a audio").unwrap();
+
+        let stored = import_recording(&root, &source).unwrap();
+
+        let metadata = read_recording_metadata(&root, &stored.id).unwrap();
+        assert_eq!(metadata.name, "Voice memo.M4A");
+        assert_eq!(metadata.source, "import");
+        assert_eq!(metadata.mime_type, "audio/x-m4a");
+        assert_eq!(metadata.file_name, "audio.m4a");
+        assert_eq!(metadata.bytes, 9);
+        assert_eq!(fs::read(root.join(&stored.id).join("audio.m4a")).unwrap(), b"m4a audio");
+        assert_eq!(fs::read(&source).unwrap(), b"m4a audio", "the original is untouched");
+
+        let empty = folder.join("empty.wav");
+        fs::write(&empty, b"").unwrap();
+        assert_eq!(
+            import_recording(&root, &empty).err().as_deref(),
+            Some("The selected audio file is empty")
+        );
+        assert_eq!(list_recording_metadata(&root).unwrap().len(), 1);
+        fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]
