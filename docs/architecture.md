@@ -11,7 +11,8 @@ WhisperFlow is split into three runtime layers:
 2. Native control plane (`apps/desktop/src-tauri`, Rust):
    - global hotkeys
    - app focus and target detection
-   - insertion engine (UI Automation, keyboard, clipboard fallback)
+   - insertion engine (Unicode keystrokes for live text, clipboard paste and
+     restore for the final text, UI Automation password check)
 3. Model worker (`apps/worker`, Python):
    - OpenAI model catalog and routing
    - speech session orchestration
@@ -24,7 +25,8 @@ WhisperFlow is split into three runtime layers:
 3. Audio chunks stream from shell/native capture to worker using `append_audio_chunk`.
 4. Worker pushes transcript updates and final text as session events.
 5. Desktop finalizes transcription using `finalize_session_audio`.
-6. Native insertion engine commits text to focused target after explicit user action.
+6. Native insertion engine writes the text into the field that was focused when
+   the recording started, after checking that field again.
 
 One-way data flow rule:
 - UI and tree components never mutate parent-owned commit state during initialization.
@@ -76,19 +78,41 @@ after which the worker forgets the session:
 { "session_id": "...", "event": { "type": "partial", "text": "Transcribing part 2 of 5..." }, "done": false }
 ```
 
-## Windows insertion engine strategy
+## Windows insertion engine
 
-Ordered fallback:
+What the code in `apps/desktop/src-tauri/src/lib.rs` (`text_inserter`) does,
+with the write rules in `paste_target.rs`:
 
-1. UI Automation `ValuePattern` / `TextPattern`
-2. App-specific adapters (browser extension bridge for complex editors)
-3. `SendInput` keystroke injection
-4. Transactional clipboard paste and restore
+1. A 20 ms loop tracks the last focused window outside OpenWhisper, so that
+   clicking the pill still knows where the user was.
+2. When a recording starts, `capture_paste_target` locks that window and its
+   focused control for the whole recording. The loop never changes it.
+3. Before every write the target is checked again:
+   - the locked window still exists and has focus; it gets focus back only
+     when the user merely clicked OpenWhisper, never from another app;
+   - the focused control is the one locked at the start;
+   - the focused field is not a password field (UI Automation `IsPassword`,
+     plus `ES_PASSWORD` on classic edit controls);
+   - the user has not pressed a key or clicked outside OpenWhisper since the
+     last write (low-level keyboard and mouse hooks);
+   - Alt and Windows are not held.
+4. Live pieces (`type_to_target`) are typed as `SendInput` Unicode keystrokes,
+   never through the clipboard. Line breaks and tabs are typed as spaces. A
+   held Ctrl is released first. Once a check fails, live typing stops for the
+   rest of the recording.
+5. The final text (`insert_final_text`) replaces the live draft with Backspace
+   only when every check passed and live typing never stopped. Otherwise it
+   is pasted after the draft and nothing is deleted. If the window is gone,
+   the user moved to another app, or the field is a password field, the
+   transcript is put on the clipboard instead and the user is told why.
+6. The final paste saves the clipboard, sets the text marked to stay out of
+   clipboard history, cloud sync and clipboard monitors, presses Ctrl+V,
+   waits for the target to handle it, then restores the saved clipboard
+   unless something else changed it meanwhile. Bitmaps are restored in their
+   DIB form; GDI-handle and private formats are not restored.
 
-Safety rules:
-- Never insert into password fields
-- Re-validate focused window before commit
-- Keep retry windows short and bounded
+Not built yet: writing through UI Automation `ValuePattern` / `TextPattern`
+and app-specific adapters.
 
 ## Build milestones
 
@@ -105,7 +129,7 @@ Safety rules:
 ### Milestone 3: Native reliability
 - hotkey registration
 - focus target resolver
-- insertion fallback chain
+- insertion into more editors (UI Automation text patterns, app adapters)
 
 ### Milestone 4: Product polish
 - profiles per app
