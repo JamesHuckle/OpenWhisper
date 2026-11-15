@@ -14,6 +14,13 @@ here only; the packaged worker carries a copy that the Windows build adds.
 The Android app talks to OpenAI directly and still names `gpt-transcribe` in
 its own code.
 
+## Example messages
+
+`examples/` holds real request, reply and event messages. The worker's tests
+check that it answers each request with the reply shown, and the desktop's
+Rust tests check that it sends and reads the same messages. See
+[`examples/README.md`](examples/README.md).
+
 ## Request
 
 ```json

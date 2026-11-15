@@ -1,0 +1,23 @@
+{
+  "request": {
+    "id": "7d4e2f9a-0c51-4f0e-9a43-3b1c2d5e6f70",
+    "method": "start_session",
+    "params": {
+      "profile_id": "default",
+      "openai_api_key": "sk-example",
+      "transcription_model": "gpt-transcribe",
+      "prompt": "Glossary: Zoon",
+      "refine_enabled": true,
+      "refine_prompt": "Use British spelling."
+    }
+  },
+  "reply": {
+    "id": "7d4e2f9a-0c51-4f0e-9a43-3b1c2d5e6f70",
+    "ok": true,
+    "result": {
+      "session_id": "5f0c6a1e-8b2d-4c3a-9e7f-1a2b3c4d5e6f",
+      "profile_id": "default"
+    },
+    "error": null
+  }
+}

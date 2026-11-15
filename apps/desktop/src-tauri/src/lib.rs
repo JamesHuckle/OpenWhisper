@@ -2762,6 +2762,28 @@ mod tests {
     }
 
     #[test]
+    fn start_session_params_match_the_shared_protocol_example() {
+        let exchange: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../packages/protocol/examples/start_session.json"
+        ))
+        .unwrap();
+        let params = &exchange["request"]["params"];
+        let settings = AppSettings {
+            openai_api_key: params["openai_api_key"].as_str().unwrap().into(),
+            transcription_model: params["transcription_model"].as_str().unwrap().into(),
+            transcription_prompt: params["prompt"].as_str().unwrap().into(),
+            refine_enabled: params["refine_enabled"].as_bool().unwrap(),
+            refine_prompt: params["refine_prompt"].as_str().unwrap().into(),
+            ..AppSettings::default()
+        };
+
+        assert_eq!(
+            start_session_params(&settings, params["profile_id"].as_str().unwrap()),
+            *params
+        );
+    }
+
+    #[test]
     fn plain_key_from_older_versions_is_read_and_kept_until_moved() {
         let settings: AppSettings =
             serde_json::from_str(r#"{"openaiApiKey":"sk-legacy","holdToTalk":false}"#).unwrap();

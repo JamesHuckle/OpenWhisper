@@ -1,0 +1,18 @@
+{
+  "request": {
+    "id": "c2a8b0d4-6e1f-4a9b-8c3d-5e7f9a1b3c5d",
+    "method": "stop_session",
+    "params": { "session_id": "5f0c6a1e-8b2d-4c3a-9e7f-1a2b3c4d5e6f" }
+  },
+  "reply": {
+    "id": "c2a8b0d4-6e1f-4a9b-8c3d-5e7f9a1b3c5d",
+    "ok": true,
+    "result": {
+      "session_id": "5f0c6a1e-8b2d-4c3a-9e7f-1a2b3c4d5e6f",
+      "profile_id": "default",
+      "final_text": "",
+      "note": "Session stopped."
+    },
+    "error": null
+  }
+}

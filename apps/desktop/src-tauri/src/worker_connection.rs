@@ -380,6 +380,76 @@ mod tests {
         assert!(exit.await.is_err());
     }
 
+    /// One exchange from `packages/protocol/examples`, which the worker's
+    /// tests answer with the same replies.
+    fn example(json: &str) -> Value {
+        serde_json::from_str(json).unwrap()
+    }
+
+    const EXCHANGES: [&str; 4] = [
+        include_str!("../../../../packages/protocol/examples/start_session.json"),
+        include_str!("../../../../packages/protocol/examples/stop_session.json"),
+        include_str!("../../../../packages/protocol/examples/unknown_session.json"),
+        include_str!("../../../../packages/protocol/examples/list_models.json"),
+    ];
+
+    #[tokio::test]
+    async fn requests_and_replies_match_the_shared_examples() {
+        for exchange in EXCHANGES.map(example) {
+            let (connection, mut worker, _events, _exit) = connect();
+            let expected_request = &exchange["request"];
+            let method = expected_request["method"].as_str().unwrap().to_string();
+            let params = expected_request["params"].clone();
+            let asking = connection.clone();
+            let answer = tokio::spawn(async move { asking.request(&method, params).await });
+
+            let request = worker.next_request().await;
+            assert_eq!(request["method"], expected_request["method"]);
+            assert_eq!(request["params"], expected_request["params"]);
+            assert!(request["id"].as_str().is_some_and(|id| !id.is_empty()));
+            let mut reply = exchange["reply"].clone();
+            reply["id"] = request["id"].clone();
+            worker.send(reply).await;
+
+            let expected_reply = &exchange["reply"];
+            match answer.await.unwrap() {
+                Ok(result) => {
+                    assert_eq!(expected_reply["ok"], true);
+                    assert_eq!(result, expected_reply["result"]);
+                }
+                Err(error) => {
+                    assert_eq!(expected_reply["ok"], false);
+                    let expected = format!(
+                        "{}: {}",
+                        expected_reply["error"]["code"].as_str().unwrap(),
+                        expected_reply["error"]["message"].as_str().unwrap()
+                    );
+                    assert_eq!(error.to_string(), expected);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_shared_example_session_event_is_passed_on_unchanged() {
+        let line = example(include_str!(
+            "../../../../packages/protocol/examples/session_event.json"
+        ))["event"]
+            .clone();
+        let (connection, mut worker, events, _exit) = connect();
+        worker.send(line.clone()).await;
+        // A ping answered after the event proves the event line was read first.
+        let asking = connection.clone();
+        let ping = tokio::spawn(async move { asking.request("ping", json!({})).await });
+        let request = worker.next_request().await;
+        worker
+            .send(json!({ "id": request["id"], "ok": true, "result": {}, "error": null }))
+            .await;
+        ping.await.unwrap().unwrap();
+
+        assert_eq!(*events.lock().unwrap(), vec![line]);
+    }
+
     #[tokio::test]
     async fn worker_errors_are_returned_to_the_caller() {
         let (connection, mut worker, _events, _exit) = connect();

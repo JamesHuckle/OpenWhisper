@@ -1,0 +1,13 @@
+{
+  "request": {
+    "id": "e9f1a3b5-7c9d-4e1f-a3b5-c7d9e1f3a5b7",
+    "method": "finalize_session_audio",
+    "params": { "session_id": "5f0c6a1e-8b2d-4c3a-9e7f-1a2b3c4d5e6f", "mime_type": "audio/wav" }
+  },
+  "reply": {
+    "id": "e9f1a3b5-7c9d-4e1f-a3b5-c7d9e1f3a5b7",
+    "ok": false,
+    "result": null,
+    "error": { "code": "bad_request", "message": "Unknown session_id" }
+  }
+}
