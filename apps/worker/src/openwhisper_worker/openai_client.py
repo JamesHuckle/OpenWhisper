@@ -16,6 +16,14 @@ from typing import Any
 from httpx import Timeout
 from openai import OpenAI
 
+from .models import (
+    DEFAULT_POLISH_MODEL,
+    DEFAULT_TRANSCRIBE_MODEL as _DEFAULT_TRANSCRIBE_MODEL,
+    LEGACY_MODEL_ALIASES as _LEGACY_MODEL_ALIASES,
+    LIVE_TRANSCRIBE_MODEL as _LIVE_TRANSCRIBE_MODEL,
+    TRANSCRIPTION_MODELS as _TRANSCRIPTION_MODELS,
+)
+
 # Long recordings can legitimately take many minutes to upload and transcribe.
 _STREAM_TIMEOUT = Timeout(connect=30.0, read=1800.0, write=600.0, pool=30.0)
 _BLOCKING_TIMEOUT = Timeout(connect=30.0, read=1800.0, write=600.0, pool=30.0)
@@ -23,13 +31,9 @@ _POLISH_TIMEOUT = Timeout(connect=30.0, read=300.0, write=120.0, pool=30.0)
 _MIN_SENTENCES_PER_POLISH_CHUNK = 4
 _MAX_PARALLEL_POLISH_CHUNKS = 5
 _MAX_POLISH_CHUNK_CHARS = 12_000
-# The desktop settings text names this model; a desktop test keeps the two in step.
-DEFAULT_POLISH_MODEL = "gpt-5-nano"
 # Transcripts this short that already read cleanly are pasted without a polish call.
 _MAX_SKIP_POLISH_WORDS = 11
 _MAX_AUDIO_UPLOAD_BYTES = 24 * 1024 * 1024
-_LIVE_TRANSCRIBE_MODEL = "gpt-live-transcribe"
-_DEFAULT_TRANSCRIBE_MODEL = "gpt-transcribe"
 _REALTIME_FINAL_TIMEOUT_SECONDS = 120.0
 
 _STREAMING_MODELS = frozenset({
@@ -47,18 +51,6 @@ _PROMPT_SUPPORTED_MODELS = frozenset({
     "gpt-4o-mini-transcribe",
     "gpt-4o-mini-transcribe-2025-12-15",
 })
-
-_TRANSCRIPTION_MODELS = (
-    _DEFAULT_TRANSCRIBE_MODEL,
-    _LIVE_TRANSCRIBE_MODEL,
-)
-
-# Settings saved before the gpt-transcribe family keep working after upgrade.
-_LEGACY_MODEL_ALIASES = {
-    "gpt-4o-mini-transcribe": _DEFAULT_TRANSCRIBE_MODEL,
-    "gpt-4o-transcribe": _DEFAULT_TRANSCRIBE_MODEL,
-    "gpt-realtime-transcribe": _LIVE_TRANSCRIBE_MODEL,
-}
 
 
 class RealtimeTranscriptionStream:

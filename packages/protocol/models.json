@@ -1,0 +1,22 @@
+{
+  "default_transcription_model": "gpt-transcribe",
+  "live_transcription_model": "gpt-live-transcribe",
+  "transcription_models": [
+    {
+      "id": "gpt-transcribe",
+      "label": "Standard — GPT-Transcribe ($0.0045/min)",
+      "hint": "OpenAI's most accurate transcription model. Transcribes when you finish speaking. $0.0045 per audio minute."
+    },
+    {
+      "id": "gpt-live-transcribe",
+      "label": "Live — GPT-Live-Transcribe ($0.017/min)",
+      "hint": "Types as you speak, so text is ready the moment you stop. $0.017 per audio minute."
+    }
+  ],
+  "legacy_transcription_models": {
+    "gpt-4o-mini-transcribe": "gpt-transcribe",
+    "gpt-4o-transcribe": "gpt-transcribe",
+    "gpt-realtime-transcribe": "gpt-live-transcribe"
+  },
+  "refine_model": "gpt-5-nano"
+}

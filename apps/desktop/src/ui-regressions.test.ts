@@ -15,18 +15,13 @@ describe("desktop regression contracts", () => {
     expect(runLocal).not.toContain('"apps\\desktop\\src-tauri\\target');
   });
 
-  it("names the worker's default tidy model in the refine settings text", () => {
+  it("names the shared tidy model in the refine settings text", () => {
+    // models.test.ts and the worker's test_models.py check that both sides
+    // read REFINE_MODEL from packages/protocol/models.json.
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const worker = readFileSync(
-      resolve(repositoryRoot, "apps/worker/src/openwhisper_worker/openai_client.py"),
-      "utf8",
-    );
-    const workerModel = worker.match(/^DEFAULT_POLISH_MODEL = "([^"]+)"$/m)?.[1];
-    const desktopModel = main.match(/^const REFINE_MODEL = "([^"]+)";$/m)?.[1];
 
-    expect(workerModel).toBe("gpt-5-nano");
-    expect(desktopModel).toBe(workerModel);
     expect(main).toContain("refinement pass (${REFINE_MODEL})");
+    expect(main).not.toMatch(/const REFINE_MODEL = "/);
   });
 
   it("keeps the collapsed pill interior fully transparent", () => {
@@ -236,7 +231,7 @@ describe("desktop regression contracts", () => {
     // Only live transcription streams audio to the worker while recording.
     expect(main).toContain("if (streamAudioToWorker) audioQueue.append(combined.buffer);");
     expect(main).toContain(
-      'streamAudioToWorker = settings.transcriptionModel === "gpt-live-transcribe";',
+      "streamAudioToWorker = isLiveTranscription(settings.transcriptionModel);",
     );
     // The backup file stays open and its header is not rewritten per piece.
     expect(native).toContain("recordings: std::sync::Mutex<HashMap<String, ActiveRecording>>");

@@ -1,6 +1,18 @@
-# WhisperFlow IPC Protocol
+# OpenWhisper IPC Protocol
 
 This package documents the canonical local IPC contract between desktop and worker.
+
+## Shared model list
+
+`models.json` is the one list of transcription models the app offers: the
+default and live models, the menu label and hint for each, the models that
+older saved settings move to, and the refine (tidy) model. The desktop settings
+menu (`apps/desktop/src/models.ts`), the desktop's saved-settings checks
+(`apps/desktop/src-tauri/src/models.rs`) and the worker
+(`apps/worker/src/openwhisper_worker/models.py`) all read it. Change a model
+here only; the packaged worker carries a copy that the Windows build adds.
+The Android app talks to OpenAI directly and still names `gpt-transcribe` in
+its own code.
 
 ## Request
 
@@ -19,7 +31,7 @@ This package documents the canonical local IPC contract between desktop and work
   "id": "uuid",
   "ok": true,
   "result": {
-    "models": ["gpt-transcribe"]
+    "models": ["gpt-transcribe", "gpt-live-transcribe"]
   }
 }
 ```

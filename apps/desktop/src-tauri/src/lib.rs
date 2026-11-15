@@ -2,12 +2,16 @@ mod api_key_store;
 // Parts of the insertion rules are used only by the Windows writer.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod paste_target;
+mod models;
 mod recording_store;
 mod worker_client;
 mod worker_connection;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
+use models::{
+    default_transcription_model, is_supported_transcription_model, migrate_transcription_model,
+};
 use recording_store::PcmWavWriter;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1168,23 +1172,6 @@ fn cursor_overlay_anchor() -> Option<OverlayAnchor> {
 
 fn default_transcription_prompt() -> String {
     "I was editing @README.md and checking @package.json in my IDE. Let me also look at @tsconfig.json and the @src directory.".to_string()
-}
-
-fn default_transcription_model() -> String {
-    "gpt-transcribe".to_string()
-}
-
-fn is_supported_transcription_model(model: &str) -> bool {
-    matches!(model, "gpt-transcribe" | "gpt-live-transcribe")
-}
-
-/// Settings saved before the gpt-transcribe family move to its replacement.
-fn migrate_transcription_model(model: &str) -> String {
-    match model {
-        "gpt-realtime-transcribe" => "gpt-live-transcribe".to_string(),
-        model if is_supported_transcription_model(model) => model.to_string(),
-        _ => default_transcription_model(),
-    }
 }
 
 fn default_refine_enabled() -> bool {

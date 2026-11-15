@@ -1,4 +1,4 @@
-# WhisperFlow Worker
+# OpenWhisper Worker
 
 Python worker process that receives JSON requests from desktop over stdin/stdout.
 It answers requests side by side and writes session events (progress, live
@@ -9,7 +9,7 @@ text, the final transcript) to stdout as they happen; see the IPC contract in
 
 ```bash
 uv sync
-uv run python -m whisperflow_worker
+uv run python -m openwhisper_worker
 ```
 
 The desktop app sends the OpenAI key and transcription model with each
@@ -31,13 +31,17 @@ $env:OPENAI_API_KEY="..."
 `scripts/build-windows-installer.ps1` builds the worker with PyInstaller
 `--onedir` into `apps/desktop/src-tauri/binaries/openwhisper-worker/`, and the
 installer ships that whole folder. The worker starts without unpacking Python
-and its libraries first, as a single-file build did on every start.
+and its libraries first, as a single-file build did on every start. The build
+also copies the shared model list, `packages/protocol/models.json`, into the
+folder beside the worker's `models` module; a worker run from the repository
+reads the shared file itself.
 
 ## Refine with AI
 
 When refinement is on, the worker tidies each transcript with `gpt-5-nano`
-(`DEFAULT_POLISH_MODEL`; override with `OPENWHISPER_POLISH_MODEL`). The desktop
-settings text names the same model, and a desktop test keeps the two equal.
+(`refine_model` in `packages/protocol/models.json`; override with
+`OPENWHISPER_POLISH_MODEL`). The desktop settings text names the same model,
+read from the same file.
 A short transcript (under 12 words, one punctuated sentence, no filler words or
 false starts) is pasted as it is, without the extra model call, unless the user
 set custom refine instructions.

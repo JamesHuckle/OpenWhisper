@@ -14,6 +14,14 @@ import {
   EXPANDED_WIDTH,
   getOverlayLayout,
 } from "./overlay-layout";
+import {
+  DEFAULT_TRANSCRIPTION_MODEL,
+  isLiveTranscription,
+  REFINE_MODEL,
+  transcriptionModelHint,
+  transcriptionModelOptionsHtml,
+  type TranscriptionModel,
+} from "./models";
 import { captureBeforeSession, SessionAudioQueue } from "./recording-pipeline";
 import { finalWriteNotice, type TargetWrite } from "./target-write";
 import "./styles.css";
@@ -24,9 +32,6 @@ import "./styles.css";
 type TranscriptEvent = { type: "partial" | "final" | "warning" | "error"; text: string };
 // One update the worker pushes for a session; `done` marks its last one.
 type WorkerSessionEvent = { session_id: string; event: TranscriptEvent; done?: boolean };
-type TranscriptionModel =
-  | "gpt-transcribe"
-  | "gpt-live-transcribe";
 type AppSettings = {
   hasOpenaiApiKey: boolean;
   openaiApiKeyPreview: string | null;
@@ -109,8 +114,6 @@ const NOTICE_DURATION_MS = 5000;
 const NOTICE_CHROME_WIDTH = 52;
 const NOTICE_MAX_WIDTH = 180;
 const AUDIO_BATCH_BYTES = 16 * 1024;
-// The worker's default tidy model (DEFAULT_POLISH_MODEL); a test keeps them equal.
-const REFINE_MODEL = "gpt-5-nano";
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -236,8 +239,7 @@ app.innerHTML = `
       <div class="menu-divider"></div>
       <div class="menu-section">Transcription model</div>
       <select id="menu-model-select" class="menu-select" aria-label="Transcription model">
-        <option value="gpt-transcribe">Standard — GPT-Transcribe ($0.0045/min)</option>
-        <option value="gpt-live-transcribe">Live — GPT-Live-Transcribe ($0.017/min)</option>
+        ${transcriptionModelOptionsHtml()}
       </select>
       <div id="menu-model-hint" class="menu-prompt-hint"></div>
       <div class="menu-divider"></div>
@@ -1013,7 +1015,7 @@ async function startRecording() {
       setState("idle");
       return;
     }
-    streamAudioToWorker = settings.transcriptionModel === "gpt-live-transcribe";
+    streamAudioToWorker = isLiveTranscription(settings.transcriptionModel);
 
     const constraints: MediaStreamConstraints = {
       audio: selectedMicId === "default" ? true : { deviceId: { exact: selectedMicId } },
@@ -1068,7 +1070,7 @@ async function startRecording() {
     audioQueue.attachSession(currentSessionId);
     finalTranscript = "";
     liveTranscript = "";
-    streamTextToTarget = settings.transcriptionModel === "gpt-live-transcribe";
+    streamTextToTarget = isLiveTranscription(settings.transcriptionModel);
     targetWriteQueue = Promise.resolve();
     logDebug(`session ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
@@ -1169,7 +1171,7 @@ async function transcribeImportedFile() {
     if (!settings.hasOpenaiApiKey) {
       throw new Error("Set your OpenAI API key before importing audio");
     }
-    if (settings.transcriptionModel === "gpt-live-transcribe") {
+    if (isLiveTranscription(settings.transcriptionModel)) {
       throw new Error("Choose Standard transcription for imported audio files");
     }
     // The native picker hands the path to the app, which copies the file
@@ -1198,7 +1200,7 @@ async function retranscribeRecording(recording: RecordingMetadata) {
     if (!settings.hasOpenaiApiKey) {
       throw new Error("Set your OpenAI API key before transcribing saved audio");
     }
-    if (settings.transcriptionModel === "gpt-live-transcribe") {
+    if (isLiveTranscription(settings.transcriptionModel)) {
       throw new Error("Choose Standard transcription for saved audio files");
     }
     await transcribeStoredAudio(recording.id, "recording-retry");
@@ -1501,16 +1503,9 @@ function syncRefinePromptVisibility() {
   }
 }
 
-const MODEL_HINTS: Record<TranscriptionModel, string> = {
-  "gpt-transcribe":
-    "OpenAI's most accurate transcription model. Transcribes when you finish speaking. $0.0045 per audio minute.",
-  "gpt-live-transcribe":
-    "Types as you speak, so text is ready the moment you stop. $0.017 per audio minute.",
-};
-
 function syncModelHint() {
   const model = menuModelSelect.value as TranscriptionModel;
-  menuModelHint.textContent = MODEL_HINTS[model] ?? "";
+  menuModelHint.textContent = transcriptionModelHint(model);
 }
 
 function applySettingsUi(settings: AppSettings, configuredLabel = "Key configured") {
@@ -1522,7 +1517,7 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
   applyStoredKeyPreview(settings.openaiApiKeyPreview);
   menuKeyStatus.textContent = settings.hasOpenaiApiKey ? configuredLabel : "Not configured";
   menuKeyStatus.className = `menu-item ${settings.hasOpenaiApiKey ? "key-ok" : "key-missing"}`;
-  menuModelSelect.value = settings.transcriptionModel ?? "gpt-transcribe";
+  menuModelSelect.value = settings.transcriptionModel ?? DEFAULT_TRANSCRIPTION_MODEL;
   showIdlePill = settings.showIdlePill ?? true;
   menuShowIdlePillToggle.checked = showIdlePill;
   menuHoldToTalkToggle.checked = settings.holdToTalk ?? true;
@@ -1588,7 +1583,7 @@ async function loadSettings() {
     const settings = await invoke<AppSettings>("app_get_settings");
     applySettingsUi(settings);
   } catch {
-    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: "gpt-transcribe", transcriptionPrompt: "", refineEnabled: true, refinePrompt: "", showIdlePill: true, holdToTalk: true });
+    applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: DEFAULT_TRANSCRIPTION_MODEL, transcriptionPrompt: "", refineEnabled: true, refinePrompt: "", showIdlePill: true, holdToTalk: true });
   }
 }
 
