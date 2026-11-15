@@ -22,3 +22,15 @@ class WorkerResponse(BaseModel):
     result: dict[str, Any] | None = None
     error: WorkerError | None = None
 
+
+
+class SessionEvent(BaseModel):
+    """A session update the worker writes to stdout as soon as it happens.
+
+    It shares stdout with responses; it has no `id`, so readers tell the two
+    apart by the `session_id` field. `done` marks the session's last event.
+    """
+
+    session_id: str
+    event: dict[str, Any]
+    done: bool = False

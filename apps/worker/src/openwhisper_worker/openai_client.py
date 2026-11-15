@@ -83,6 +83,7 @@ class RealtimeTranscriptionStream:
         self._transcript = ""
         self._error: str | None = None
         self._closed = False
+        self._close_lock = threading.Lock()
 
         self._connection.session.update(
             session={
@@ -125,10 +126,13 @@ class RealtimeTranscriptionStream:
             self.close()
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         self._manager.__exit__(None, None, None)
+        # Wake a finalize() that is still waiting, so a cancel ends it at once.
+        self._completed.set()
 
     def _read_events(self) -> None:
         try:

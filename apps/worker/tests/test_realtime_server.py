@@ -7,8 +7,31 @@ import struct
 import unittest
 from unittest.mock import patch
 
-from openwhisper_worker.protocol import WorkerRequest
+from openwhisper_worker.protocol import SessionEvent, WorkerRequest
 from openwhisper_worker.server import WorkerServer
+
+
+class EventLog:
+    """Collects the session events a server pushes, as the desktop would."""
+
+    def __init__(self) -> None:
+        self.messages: list[SessionEvent] = []
+
+    def __call__(self, message: SessionEvent) -> None:
+        self.messages.append(message)
+
+    def events(self, session_id: str) -> list[dict]:
+        return [m.event for m in self.messages if m.session_id == session_id]
+
+    def done(self, session_id: str) -> bool:
+        return any(m.done for m in self.messages if m.session_id == session_id)
+
+
+def new_server(openai) -> tuple[WorkerServer, EventLog]:
+    log = EventLog()
+    server = WorkerServer(emit=log)
+    server._openai = openai
+    return server, log
 
 
 class FakeRealtimeStream:
@@ -114,24 +137,21 @@ def dictate(
     server.handle(
         request("finalize_session_audio", session_id=session_id, mime_type="audio/pcm;rate=24000")
     )
-    return server.handle(request("poll_session_events", session_id=session_id)).result["events"]
+    return server._emit_sink.events(session_id)
 
 
 class RealtimeWorkerServerTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.server = WorkerServer()
         self.fake_openai = FakeRealtimeOpenAI()
-        self.server._openai = self.fake_openai
+        self.server, self.log = new_server(self.fake_openai)
 
-    def test_audio_is_forwarded_and_delta_is_pollable_before_finalize(self) -> None:
+    def test_audio_is_forwarded_and_delta_is_pushed_before_finalize(self) -> None:
         started = self.server.handle(
             request("start_session", refine_enabled=False)
         )
         self.assertTrue(started.ok)
         session_id = started.result["session_id"]
 
-        # Consume the initial Listening status, then stream one PCM chunk.
-        self.server.handle(request("poll_session_events", session_id=session_id))
         audio = pcm_tone(0.5)
         appended = self.server.handle(
             request(
@@ -143,21 +163,19 @@ class RealtimeWorkerServerTests(unittest.TestCase):
         self.assertTrue(appended.ok)
         self.assertEqual(self.fake_openai.stream.chunks, [audio])
 
-        polled = self.server.handle(request("poll_session_events", session_id=session_id))
-        self.assertEqual(polled.result["events"], [{"type": "partial", "text": "hello"}])
-        self.assertFalse(polled.result["done"])
+        self.assertEqual(self.log.events(session_id), [{"type": "partial", "text": "hello"}])
+        self.assertFalse(self.log.done(session_id))
 
         finalized = self.server.handle(
             request("finalize_session_audio", session_id=session_id, mime_type="audio/pcm;rate=24000")
         )
         self.assertEqual(finalized.result["final_text"], "hello world")
-        final_event = self.server.handle(
-            request("poll_session_events", session_id=session_id)
-        )
         self.assertEqual(
-            final_event.result["events"], [{"type": "final", "text": "hello world"}]
+            self.log.events(session_id)[-1], {"type": "final", "text": "hello world"}
         )
-        self.assertTrue(final_event.result["done"])
+        self.assertTrue(self.log.messages[-1].done)
+        # A finished session is forgotten, so its transcript leaves memory.
+        self.assertEqual(self.server._sessions, {})
 
     def test_long_realtime_audio_rotates_and_stitches_sessions(self) -> None:
         started = self.server.handle(request("start_session", refine_enabled=False))
@@ -194,8 +212,7 @@ class NoAudioWorkerServerTests(unittest.TestCase):
     PROMPT = "Glossary:\nZoon\nZoon Robotics\nEuphoric"
 
     def server_returning(self, transcript: str) -> tuple[WorkerServer, FakeFileOpenAI]:
-        server = WorkerServer()
-        server._openai = FakeFileOpenAI(transcript)
+        server, _ = new_server(FakeFileOpenAI(transcript))
         return server, server._openai
 
     def test_quick_tap_and_silence_report_no_audio_without_transcribing(self) -> None:
@@ -217,9 +234,8 @@ class NoAudioWorkerServerTests(unittest.TestCase):
 
 class RefineWorkerServerTests(unittest.TestCase):
     def dictate_with_refine(self, transcript: str, refine_prompt: str = "") -> tuple:
-        server = WorkerServer()
         openai = FakeFileOpenAI(transcript)
-        server._openai = openai
+        server, _ = new_server(openai)
         stderr = io.StringIO()
         with patch("sys.stderr", stderr):
             events = dictate(server, pcm_tone(1.0), refine_prompt=refine_prompt, refine_enabled=True)
@@ -262,11 +278,10 @@ class PrivateTextWorkerServerTests(unittest.TestCase):
     REFINE_PROMPT = "Write my mother's maiden name, Gwendolyn, in capitals."
 
     def test_failed_refinement_keeps_transcript_out_of_log_and_notice(self) -> None:
-        server = WorkerServer()
-        server._openai = FakeFileOpenAI(
+        server, _ = new_server(FakeFileOpenAI(
             self.DICTATED,
             polish_error=RuntimeError(f"Could not tidy: {self.DICTATED} {self.REFINE_PROMPT}"),
-        )
+        ))
         stderr = io.StringIO()
 
         with patch("sys.stderr", stderr):
@@ -284,11 +299,10 @@ class PrivateTextWorkerServerTests(unittest.TestCase):
             self.assertNotIn(private, warning["text"])
 
     def test_failed_transcription_notice_leaves_out_the_vocabulary_prompt(self) -> None:
-        server = WorkerServer()
-        server._openai = FakeFileOpenAI(
+        server, _ = new_server(FakeFileOpenAI(
             "",
             transcribe_error=RuntimeError(f"Prompt rejected: {self.VOCABULARY}"),
-        )
+        ))
         stderr = io.StringIO()
 
         with patch("sys.stderr", stderr):
