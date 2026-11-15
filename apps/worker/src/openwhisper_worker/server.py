@@ -14,6 +14,7 @@ from openwhisper_worker.openai_client import (
     OpenWhisperOpenAI,
     RealtimeTranscriptionStream,
     describe_error,
+    is_short_clean_transcript,
 )
 from openwhisper_worker.protocol import WorkerError, WorkerRequest, WorkerResponse
 
@@ -290,7 +291,15 @@ class WorkerServer:
         if _echoes_prompt(text, session.prompt):
             return self._finish_without_audio(request.id, session, "prompt_echo")
 
-        if session.refine_enabled:
+        # A short clean transcript is pasted at once: the default tidy pass
+        # would not change it. A custom prompt can ask for any change, so it
+        # always runs.
+        skip_short_clean = (
+            session.refine_enabled
+            and not session.refine_prompt.strip()
+            and is_short_clean_transcript(text)
+        )
+        if session.refine_enabled and not skip_short_clean:
             sys.stderr.write(
                 "[worker] refine begin "
                 f"session_id={session_id!r} "
@@ -322,7 +331,10 @@ class WorkerServer:
                 )
                 sys.stderr.flush()
         else:
-            sys.stderr.write(f"[worker] refine skipped session_id={session_id!r}\n")
+            reason = "short_clean" if skip_short_clean else "disabled"
+            sys.stderr.write(
+                f"[worker] refine skipped session_id={session_id!r} reason={reason}\n"
+            )
             sys.stderr.flush()
 
         session.events.append({"type": "final", "text": text})

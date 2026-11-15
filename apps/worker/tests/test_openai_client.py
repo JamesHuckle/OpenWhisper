@@ -15,6 +15,7 @@ from openwhisper_worker.openai_client import (
     OpenWhisperOpenAI,
     RealtimeTranscriptionStream,
     describe_error,
+    is_short_clean_transcript,
 )
 
 DICTATED = "My bank PIN is four four seven one, please remind me at noon."
@@ -81,6 +82,45 @@ class OpenWhisperOpenAITests(unittest.TestCase):
             client = OpenWhisperOpenAI()
         self.assertEqual(client.model, "gpt-transcribe")
         self.assertFalse(client.is_live)
+
+    def test_small_model_tidies_transcripts_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            client = OpenWhisperOpenAI()
+        self.assertEqual(client.health()["polish_model"], "gpt-5-nano")
+        with patch.dict(os.environ, {"OPENWHISPER_POLISH_MODEL": "gpt-5.4"}, clear=True):
+            self.assertEqual(OpenWhisperOpenAI().health()["polish_model"], "gpt-5.4")
+
+    def test_short_clean_transcripts_are_recognised(self) -> None:
+        for text in (
+            "Send me the report by Friday.",
+            "  Can you call me back?  ",
+            "I like it, thanks!",
+            "3 people are coming.",
+            "Meet me at 3.30 today.",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(is_short_clean_transcript(text))
+        for text in (
+            "",
+            "send me the report by friday.",
+            "Send me the report by Friday",
+            "Send me the report. Thanks.",
+            "Send it now\nThanks.",
+            "Please send me the full quarterly sales report and the budget by Friday.",
+            "Um, send me the report.",
+            "Uh send me the report.",
+            "Send me, you know, the report.",
+            "Send me the, like, report.",
+            "Like, send me the report.",
+            "So send me the report.",
+            "It is basically done.",
+            "Send me the report, right?",
+            "I want\u2014 I think we should go.",
+            "I want -- I think we should go.",
+            "Send me the the report.",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(is_short_clean_transcript(text))
 
     def test_available_models_only_contains_transcription_models(self) -> None:
         client = OpenWhisperOpenAI()

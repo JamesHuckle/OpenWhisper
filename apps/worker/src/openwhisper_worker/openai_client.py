@@ -23,6 +23,10 @@ _POLISH_TIMEOUT = Timeout(connect=30.0, read=300.0, write=120.0, pool=30.0)
 _MIN_SENTENCES_PER_POLISH_CHUNK = 4
 _MAX_PARALLEL_POLISH_CHUNKS = 5
 _MAX_POLISH_CHUNK_CHARS = 12_000
+# The desktop settings text names this model; a desktop test keeps the two in step.
+DEFAULT_POLISH_MODEL = "gpt-5-nano"
+# Transcripts this short that already read cleanly are pasted without a polish call.
+_MAX_SKIP_POLISH_WORDS = 11
 _MAX_AUDIO_UPLOAD_BYTES = 24 * 1024 * 1024
 _LIVE_TRANSCRIBE_MODEL = "gpt-live-transcribe"
 _DEFAULT_TRANSCRIBE_MODEL = "gpt-transcribe"
@@ -173,6 +177,38 @@ def describe_error(exc: BaseException) -> str:
     return " ".join(parts)
 
 
+# Signs that the default polish pass would change a transcript: filler words
+# and verbal tics, a sentence opened with "so", a tag "right" at the end,
+# self-corrections marked by dashes and stuttered repeats ("the the").
+_POLISH_NEEDED = re.compile(
+    r"\b(?:um+|uh+|uhm|erm|er|ah|hmm+|mm+|you know|i mean|sort of|kind of|basically|literally)\b"
+    r"|(?:^|,\s*)like\b|\blike,"
+    r"|^so\b"
+    r"|,\s*right\W*$"
+    r"|--|\u2014|\u2013|\s-\s|\.\.\.|\u2026"
+    r"|\b(\w+)\s+\1\b",
+    re.IGNORECASE,
+)
+
+
+def is_short_clean_transcript(text: str) -> bool:
+    """Whether the default polish pass would leave this transcript as it is.
+
+    True for one short, already punctuated sentence with no filler words or
+    false starts, so the caller can paste it at once instead of paying for a
+    model call and waiting for it.
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped.split()) > _MAX_SKIP_POLISH_WORDS:
+        return False
+    if not (stripped[0].isupper() or stripped[0].isdigit()):
+        return False
+    body, end = stripped[:-1], stripped[-1]
+    if end not in ".?!" or re.search(r"[.?!]\s", body) or "\n" in stripped:
+        return False
+    return _POLISH_NEEDED.search(stripped) is None
+
+
 def _elapsed_ms(started: float) -> int:
     return round((time.perf_counter() - started) * 1000)
 
@@ -211,7 +247,9 @@ class OpenWhisperOpenAI:
         self._model = _LEGACY_MODEL_ALIASES.get(model, model)
         if self._model not in _TRANSCRIPTION_MODELS:
             raise ValueError(f"Unsupported transcription model: {self._model}")
-        self._polish_model = os.getenv("OPENWHISPER_POLISH_MODEL", "gpt-5.4").strip()
+        self._polish_model = (
+            os.getenv("OPENWHISPER_POLISH_MODEL", "").strip() or DEFAULT_POLISH_MODEL
+        )
         self._client: OpenAI | None = None
 
     @property

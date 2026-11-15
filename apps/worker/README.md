@@ -21,6 +21,15 @@ On Windows PowerShell:
 $env:OPENAI_API_KEY="..."
 ```
 
+## Refine with AI
+
+When refinement is on, the worker tidies each transcript with `gpt-5-nano`
+(`DEFAULT_POLISH_MODEL`; override with `OPENWHISPER_POLISH_MODEL`). The desktop
+settings text names the same model, and a desktop test keeps the two equal.
+A short transcript (under 12 words, one punctuated sentence, no filler words or
+false starts) is pasted as it is, without the extra model call, unless the user
+set custom refine instructions.
+
 ## Compare transcription models
 
 Run both supported models against the same audio file. Supplying the known transcript adds a

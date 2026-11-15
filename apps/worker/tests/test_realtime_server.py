@@ -60,6 +60,7 @@ class FakeFileOpenAI:
         self.transcribe_error = transcribe_error
         self.polish_error = polish_error
         self.transcribed = 0
+        self.polished: list[str] = []
 
     def transcribe_file(self, _path, mime_type: str, prompt: str = "", on_progress=None) -> str:
         self.transcribed += 1
@@ -68,9 +69,10 @@ class FakeFileOpenAI:
         return self.transcript
 
     def polish(self, text: str, _prompt: str) -> str:
+        self.polished.append(text)
         if self.polish_error:
             raise self.polish_error
-        return text
+        return f"tidied: {text}"
 
 
 def request(method: str, **params) -> WorkerRequest:
@@ -90,12 +92,15 @@ def dictate(
     audio: bytes,
     prompt: str = "",
     refine_prompt: str = "",
+    refine_enabled: bool | None = None,
 ) -> list[dict]:
+    if refine_enabled is None:
+        refine_enabled = bool(refine_prompt)
     session_id = server.handle(
         request(
             "start_session",
             prompt=prompt,
-            refine_enabled=bool(refine_prompt),
+            refine_enabled=refine_enabled,
             refine_prompt=refine_prompt,
         )
     ).result["session_id"]
@@ -208,6 +213,47 @@ class NoAudioWorkerServerTests(unittest.TestCase):
         server, _ = self.server_returning("Zoon Robotics is hiring.")
         events = dictate(server, pcm_tone(1.0), self.PROMPT)
         self.assertEqual(events[-1], {"type": "final", "text": "Zoon Robotics is hiring."})
+
+
+class RefineWorkerServerTests(unittest.TestCase):
+    def dictate_with_refine(self, transcript: str, refine_prompt: str = "") -> tuple:
+        server = WorkerServer()
+        openai = FakeFileOpenAI(transcript)
+        server._openai = openai
+        stderr = io.StringIO()
+        with patch("sys.stderr", stderr):
+            events = dictate(server, pcm_tone(1.0), refine_prompt=refine_prompt, refine_enabled=True)
+        return events, openai, stderr.getvalue()
+
+    def test_short_clean_transcript_is_pasted_without_a_tidy_call(self) -> None:
+        events, openai, log = self.dictate_with_refine("Send me the report by Friday.")
+
+        self.assertEqual(openai.polished, [])
+        self.assertNotIn({"type": "partial", "text": "Refining transcript..."}, events)
+        self.assertEqual(events[-1], {"type": "final", "text": "Send me the report by Friday."})
+        self.assertIn("refine skipped", log)
+        self.assertIn("reason=short_clean", log)
+
+    def test_transcripts_that_need_tidying_still_get_the_tidy_call(self) -> None:
+        for transcript in (
+            "Um, send me the report by Friday.",
+            "Send me the report by Friday. Thanks a lot.",
+            "Please send me the full quarterly sales report and the budget by Friday morning.",
+            "send me the report by friday",
+        ):
+            with self.subTest(transcript=transcript):
+                events, openai, _ = self.dictate_with_refine(transcript)
+                self.assertEqual(openai.polished, [transcript])
+                self.assertEqual(events[-1], {"type": "final", "text": f"tidied: {transcript}"})
+
+    def test_custom_refine_prompt_always_gets_the_tidy_call(self) -> None:
+        events, openai, _ = self.dictate_with_refine(
+            "Send me the report by Friday.", refine_prompt="Translate into French."
+        )
+        self.assertEqual(openai.polished, ["Send me the report by Friday."])
+        self.assertEqual(
+            events[-1], {"type": "final", "text": "tidied: Send me the report by Friday."}
+        )
 
 
 class PrivateTextWorkerServerTests(unittest.TestCase):
