@@ -15,6 +15,20 @@ describe("desktop regression contracts", () => {
     expect(runLocal).not.toContain('"apps\\desktop\\src-tauri\\target');
   });
 
+  it("names the worker's default tidy model in the refine settings text", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const worker = readFileSync(
+      resolve(repositoryRoot, "apps/worker/src/openwhisper_worker/openai_client.py"),
+      "utf8",
+    );
+    const workerModel = worker.match(/^DEFAULT_POLISH_MODEL = "([^"]+)"$/m)?.[1];
+    const desktopModel = main.match(/^const REFINE_MODEL = "([^"]+)";$/m)?.[1];
+
+    expect(workerModel).toBe("gpt-5-nano");
+    expect(desktopModel).toBe(workerModel);
+    expect(main).toContain("refinement pass (${REFINE_MODEL})");
+  });
+
   it("keeps the collapsed pill interior fully transparent", () => {
     const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
     const collapsedRule = css.match(

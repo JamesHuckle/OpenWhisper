@@ -110,6 +110,8 @@ const NOTICE_DURATION_MS = 5000;
 const NOTICE_CHROME_WIDTH = 52;
 const NOTICE_MAX_WIDTH = 180;
 const AUDIO_BATCH_BYTES = 16 * 1024;
+// The worker's default tidy model (DEFAULT_POLISH_MODEL); a test keeps them equal.
+const REFINE_MODEL = "gpt-5-nano";
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -265,7 +267,7 @@ app.innerHTML = `
         </label>
       </div>
       <textarea id="menu-refine-prompt-input" class="menu-prompt-input" rows="3" placeholder="Leave blank for default: strip fillers, fix sentences, add lists when enumerated" spellcheck="false"></textarea>
-      <div class="menu-prompt-hint">Custom instructions for the refinement pass (gpt-5-nano). This can add about 1-2 seconds to transcription time.</div>
+      <div class="menu-prompt-hint">Custom instructions for the refinement pass (${REFINE_MODEL}). Short, clean dictations are pasted without it; longer ones can take about 1-2 seconds more.</div>
     </div>
   </div>
 
