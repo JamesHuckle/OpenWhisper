@@ -184,6 +184,26 @@ describe("desktop regression contracts", () => {
     expect(lib).toContain("Mutex<Option<Arc<WorkerClient>>>");
   });
 
+  it("ships the worker as a folder build so it starts without unpacking", () => {
+    const buildScript = readFileSync(
+      resolve(repositoryRoot, "scripts/build-windows-installer.ps1"),
+      "utf8",
+    );
+    const tauriConfig = JSON.parse(
+      readFileSync(resolve(desktopRoot, "src-tauri/tauri.conf.json"), "utf8"),
+    );
+    const client = readFileSync(
+      resolve(desktopRoot, "src-tauri/src/worker_client.rs"),
+      "utf8",
+    );
+
+    expect(buildScript).toContain("--onedir");
+    expect(buildScript).not.toContain("--onefile");
+    // A plain "binaries/*" skips folders, which would leave out the worker.
+    expect(tauriConfig.bundle.resources).toEqual(["binaries/**/*"]);
+    expect(client).toContain('"binaries/openwhisper-worker/openwhisper-worker.exe"');
+  });
+
   it("asks before installing an update and reassures users that settings are kept", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
 

@@ -32,7 +32,7 @@
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
     "icon": ["icons/icon.ico", "icons/icon.png"],
-    "resources": ["binaries/*"]
+    "resources": ["binaries/**/*"]
   },
   "plugins": {
     "updater": {

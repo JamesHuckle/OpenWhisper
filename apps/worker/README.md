@@ -26,6 +26,13 @@ On Windows PowerShell:
 $env:OPENAI_API_KEY="..."
 ```
 
+## Packaging
+
+`scripts/build-windows-installer.ps1` builds the worker with PyInstaller
+`--onedir` into `apps/desktop/src-tauri/binaries/openwhisper-worker/`, and the
+installer ships that whole folder. The worker starts without unpacking Python
+and its libraries first, as a single-file build did on every start.
+
 ## Refine with AI
 
 When refinement is on, the worker tidies each transcript with `gpt-5-nano`

@@ -175,14 +175,25 @@ if (Test-Path ".venv") {
 }
 uv sync --link-mode copy
 
-Write-Host "==> Build standalone worker executable"
+Write-Host "==> Build standalone worker folder"
+# A folder build (binaries/openwhisper-worker/openwhisper-worker.exe beside its
+# _internal libraries) starts at once. A single-file build unpacks Python and
+# its libraries into TEMP on every start, which made each worker start slow.
+# Clear old output first so a stale single-file worker is never bundled.
+if (Test-Path -LiteralPath $BinariesDir) {
+  Remove-Item -LiteralPath $BinariesDir -Recurse -Force
+}
 uv run pyinstaller `
   --noconfirm `
-  --onefile `
+  --onedir `
   --name openwhisper-worker `
   --paths src `
   --distpath $BinariesDir `
   src/openwhisper_worker/__main__.py
+$WorkerExe = Join-Path $BinariesDir "openwhisper-worker/openwhisper-worker.exe"
+if (-not (Test-Path -LiteralPath $WorkerExe)) {
+  throw "Worker build did not produce $WorkerExe"
+}
 Pop-Location
 
 Push-Location -LiteralPath $DesktopDir

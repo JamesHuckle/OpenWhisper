@@ -229,6 +229,15 @@ fn worker_root_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../worker")
 }
 
+/// The bundled worker is a PyInstaller folder build: the executable sits in
+/// its own folder beside the `_internal` libraries, so it starts without
+/// unpacking anything. `scripts/build-windows-installer.ps1` builds it.
+const BUNDLED_WORKER: &str = if cfg!(target_os = "windows") {
+    "binaries/openwhisper-worker/openwhisper-worker.exe"
+} else {
+    "binaries/openwhisper-worker/openwhisper-worker"
+};
+
 fn worker_bin_candidates(app_handle: &AppHandle) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
 
@@ -243,30 +252,13 @@ fn worker_bin_candidates(app_handle: &AppHandle) -> Vec<PathBuf> {
         }
     }
 
-    let resource_candidates = if cfg!(target_os = "windows") {
-        vec!["binaries/openwhisper-worker.exe", "openwhisper-worker.exe"]
-    } else {
-        vec!["binaries/openwhisper-worker", "openwhisper-worker"]
-    };
-    for candidate in resource_candidates {
-        if let Ok(path) = app_handle
-            .path()
-            .resolve(candidate, BaseDirectory::Resource)
-        {
-            paths.push(path);
-        }
+    if let Ok(path) = app_handle
+        .path()
+        .resolve(BUNDLED_WORKER, BaseDirectory::Resource)
+    {
+        paths.push(path);
     }
-
-    let local_dev_bin = if cfg!(target_os = "windows") {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("binaries")
-            .join("openwhisper-worker.exe")
-    } else {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("binaries")
-            .join("openwhisper-worker")
-    };
-    paths.push(local_dev_bin);
+    paths.push(Path::new(env!("CARGO_MANIFEST_DIR")).join(BUNDLED_WORKER));
 
     paths
 }
