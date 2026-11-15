@@ -208,7 +208,8 @@ git push origin main
 When you push to `main`, the pre-push hook will:
 
 1. Test and production-build the website.
-2. Test the Python worker and desktop UI.
+2. Test the Python worker, the desktop's Rust logic (`cargo test` in
+   `apps/desktop/src-tauri/core-tests`, which needs no Tauri) and the desktop UI.
 3. Test, lint, build, sign, and verify the Android APK.
 4. Build and sign the Tauri Windows NSIS installer and updater artifact.
 5. Tag the commit, create/update the GitHub Release, and publish both update

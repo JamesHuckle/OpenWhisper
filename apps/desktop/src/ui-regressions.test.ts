@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -60,6 +60,30 @@ describe("desktop regression contracts", () => {
     expect(native).toContain("HOLD_TO_TALK_ENABLED");
     expect(native).toContain("TOGGLE_RECORDING.store(true");
     expect(native).toContain('emit("toggle-recording", ())');
+  });
+
+  it("runs the tests of every Rust file that needs no Tauri before a release", () => {
+    const sourceDir = resolve(desktopRoot, "src-tauri/src");
+    const coreTests = readFileSync(resolve(desktopRoot, "src-tauri/core-tests/lib.rs"), "utf8");
+    const releaseScript = readFileSync(
+      resolve(repositoryRoot, "scripts/pre-push-release.ps1"),
+      "utf8",
+    );
+    const tauriFreeTested = readdirSync(sourceDir)
+      .filter((name) => name.endsWith(".rs"))
+      .filter((name) => {
+        const source = readFileSync(resolve(sourceDir, name), "utf8");
+        return (
+          source.includes("#[cfg(test)]") && !/\btauri\b|crate::|\bkeyring\b/.test(source)
+        );
+      });
+
+    expect(tauriFreeTested).toContain("worker_connection.rs");
+    for (const name of tauriFreeTested) {
+      expect(coreTests).toContain(`#[path = "../src/${name}"]`);
+    }
+    expect(releaseScript).toContain('"apps/desktop/src-tauri/core-tests"');
+    expect(releaseScript).toContain("& cargo.exe test --locked");
   });
 
   it("refreshes the stable local installer after every Windows build", () => {

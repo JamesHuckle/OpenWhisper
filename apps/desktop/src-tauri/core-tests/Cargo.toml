@@ -1,0 +1,18 @@
+# Runs the tests of the desktop app's Rust files that need no Tauri, on any
+# system: cargo test --manifest-path apps/desktop/src-tauri/core-tests/Cargo.toml
+# The release check (scripts/pre-push-release.ps1) runs it before building.
+[package]
+name = "openwhisper_core_tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.40.0", features = ["io-util", "sync", "rt-multi-thread", "macros", "time"] }
+uuid = { version = "1.10.0", features = ["v4"] }

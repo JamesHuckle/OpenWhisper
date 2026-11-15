@@ -166,6 +166,20 @@ try {
   }
 }
 
+Write-Host "==> Testing desktop Rust logic"
+# The desktop's Rust files that need no Tauri (recordings, the WAV backup,
+# model settings, the worker link, the write rules) are tested on their own.
+$previousCargoTargetDir = $env:CARGO_TARGET_DIR
+Push-Location (Join-Path $RepoRoot "apps/desktop/src-tauri/core-tests")
+try {
+  $env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE "openwhisper-cargo-target"
+  & cargo.exe test --locked
+  Assert-LastExitCode "Desktop Rust tests failed."
+} finally {
+  Pop-Location
+  $env:CARGO_TARGET_DIR = $previousCargoTargetDir
+}
+
 Write-Host "==> Testing and building signed Android release"
 & "$PSScriptRoot/android.ps1" testDebugUnitTest
 Assert-LastExitCode "Android unit tests failed."
