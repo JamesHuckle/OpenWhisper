@@ -23,6 +23,14 @@ import {
   transcriptionModelOptionsHtml,
   type TranscriptionModel,
 } from "./models";
+import {
+  PCM_FLUSH_REQUEST,
+  PCM_FLUSHED,
+  PCM_MIME_TYPE,
+  PCM_SAMPLE_RATE,
+  PCM_WORKLET_NAME,
+} from "./pcm-capture";
+import pcmCaptureWorkletUrl from "./pcm-capture.worklet?worker&url";
 import { captureBeforeSession, SessionAudioQueue } from "./recording-pipeline";
 import { finalWriteNotice, type TargetWrite } from "./target-write";
 import "./styles.css";
@@ -76,7 +84,7 @@ let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
 let mediaRecorder: MediaRecorder | null = null;
 let pcmAudioContext: AudioContext | null = null;
 let pcmSource: MediaStreamAudioSourceNode | null = null;
-let pcmProcessor: ScriptProcessorNode | null = null;
+let pcmProcessor: AudioWorkletNode | null = null;
 let pcmSilentGain: GainNode | null = null;
 let recordingMimeType = "audio/webm";
 let isRecording = false;
@@ -703,19 +711,6 @@ function stopVolumeMonitor() {
 // ---------------------------------------------------------------------------
 // Recording
 // ---------------------------------------------------------------------------
-function resampleToPcm16(input: Float32Array, sourceRate: number): ArrayBuffer {
-  const targetRate = 24_000;
-  const outputLength = Math.max(1, Math.round(input.length * targetRate / sourceRate));
-  const buffer = new ArrayBuffer(outputLength * 2);
-  const view = new DataView(buffer);
-  for (let i = 0; i < outputLength; i++) {
-    const sourceIndex = Math.min(input.length - 1, Math.floor(i * sourceRate / targetRate));
-    const sample = Math.max(-1, Math.min(1, input[sourceIndex]));
-    view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-  }
-  return buffer;
-}
-
 function queueAudioChunk(buffer: ArrayBuffer) {
   pendingAudioParts.push(new Uint8Array(buffer));
   pendingAudioBytes += buffer.byteLength;
@@ -974,25 +969,66 @@ menuOpenRecordings.addEventListener("click", () => {
 
 menuImportAudio.addEventListener("click", () => void transcribeImportedFile());
 
+// The context runs at the upload rate, so the browser's filtered resampler
+// converts the microphone audio. The worklet only packs it as 16-bit PCM, on
+// the audio thread, so a busy page cannot drop samples.
 async function startPcmCapture(stream: MediaStream) {
-  pcmAudioContext = new AudioContext();
-  await pcmAudioContext.resume();
-  pcmSource = pcmAudioContext.createMediaStreamSource(stream);
-  pcmProcessor = pcmAudioContext.createScriptProcessor(4096, 1, 1);
-  pcmSilentGain = pcmAudioContext.createGain();
-  pcmSilentGain.gain.value = 0;
-  const sourceRate = pcmAudioContext.sampleRate;
-  pcmProcessor.onaudioprocess = (event) => {
-    queueAudioChunk(resampleToPcm16(event.inputBuffer.getChannelData(0), sourceRate));
+  const context = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
+  pcmAudioContext = context;
+  if (context.sampleRate !== PCM_SAMPLE_RATE) {
+    throw new Error(`Audio capture runs at ${context.sampleRate} Hz, not ${PCM_SAMPLE_RATE} Hz`);
+  }
+  await context.audioWorklet.addModule(pcmCaptureWorkletUrl);
+  await context.resume();
+  pcmSource = context.createMediaStreamSource(stream);
+  const processor = new AudioWorkletNode(context, PCM_WORKLET_NAME, {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+    channelCount: 1,
+    channelCountMode: "explicit",
+    channelInterpretation: "speakers",
+  });
+  pcmProcessor = processor;
+  processor.port.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
+    if (event.data instanceof ArrayBuffer) queueAudioChunk(event.data);
   };
-  pcmSource.connect(pcmProcessor);
-  pcmProcessor.connect(pcmSilentGain);
-  pcmSilentGain.connect(pcmAudioContext.destination);
-  recordingMimeType = "audio/pcm;rate=24000";
+  // A silent path to the speakers keeps the browser pulling audio through
+  // the worklet.
+  pcmSilentGain = context.createGain();
+  pcmSilentGain.gain.value = 0;
+  pcmSource.connect(processor);
+  processor.connect(pcmSilentGain);
+  pcmSilentGain.connect(context.destination);
+  recordingMimeType = PCM_MIME_TYPE;
 }
 
-async function stopPcmCapture() {
-  if (pcmProcessor) pcmProcessor.onaudioprocess = null;
+// Asks the worklet for the samples that did not yet fill a chunk, so the end
+// of the recording is kept. Gives up after a short wait.
+function flushPcmWorklet(processor: AudioWorkletNode): Promise<void> {
+  return new Promise((resolve) => {
+    const timeout = window.setTimeout(resolve, 250);
+    processor.port.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
+      if (event.data instanceof ArrayBuffer) {
+        queueAudioChunk(event.data);
+      } else if (event.data === PCM_FLUSHED) {
+        window.clearTimeout(timeout);
+        resolve();
+      }
+    };
+    processor.port.postMessage(PCM_FLUSH_REQUEST);
+  });
+}
+
+// keepTail is false when the recording is being thrown away.
+async function stopPcmCapture(keepTail = true) {
+  const processor = pcmProcessor;
+  if (processor && keepTail && pcmAudioContext?.state === "running") {
+    await flushPcmWorklet(processor);
+    // Another stop finished this capture while the tail was on its way.
+    if (pcmProcessor !== processor) return;
+  }
+  if (processor) processor.port.onmessage = null;
   pcmSource?.disconnect();
   pcmProcessor?.disconnect();
   pcmSilentGain?.disconnect();
@@ -1263,7 +1299,7 @@ function cleanup() {
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
   }
-  if (pcmAudioContext) void stopPcmCapture();
+  if (pcmAudioContext) void stopPcmCapture(false);
   micStream?.getTracks().forEach((t) => t.stop());
   mediaRecorder = null;
   micStream = null;
@@ -1409,7 +1445,7 @@ if (import.meta.env.DEV) {
     setState("transcribing");
     await invoke("worker_finalize_session_audio", {
       sessionId: currentSessionId,
-      mimeType: "audio/pcm;rate=24000",
+      mimeType: PCM_MIME_TYPE,
     });
   };
 }
