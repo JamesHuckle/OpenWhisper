@@ -4,28 +4,29 @@ WhisperFlow is a cross-platform desktop dictation app that captures live speech,
 
 ## Push-to-release contract (read this first)
 
-Every normal `git push origin main` is a coordinated production release of
-the web, Windows, and Android apps. Configure the repository hooks once with:
+Every push to `main` runs the release workflow in GitHub Actions
+(`.github/workflows/release.yml`). It does not matter which machine pushed: a
+Windows PC, a Linux VM and an agent's worktree all release the same way.
 
-```powershell
-git config core.hooksPath scripts/hooks
-```
+1. It runs every test: the website, the Python worker, the desktop's Rust logic
+   and UI, the Android unit tests and the release steps themselves.
+2. When app code changed since the last release tag (anything under
+   `apps/desktop`, `apps/worker`, `apps/android` or `packages/protocol`, or the
+   two build scripts, except tests and Markdown), it builds and signs the
+   Windows installer and the Android APK. Website-only and docs-only pushes
+   stop after the tests.
+3. It uploads both builds and both update feeds to a draft GitHub Release,
+   checks the draft, publishes it as the latest release and then checks the
+   public feeds. The release tag is created only at that point, on the pushed
+   commit, so users only ever get code that is on `main`.
 
-After that, the supported workflow is simply:
+The workflow sets the version (the last release tag + 1) in its own copy of the
+code, so commits never change the version files. To start a new minor or major
+version, raise the version once in a normal commit:
+`node scripts/release.mjs set-version 0.3.0` writes it into every desktop and
+Android version file.
 
-```powershell
-git add -A
-git commit -m "Describe the change"
-git push origin main
-```
-
-The commit hook assigns one new version to both native apps and increments the
-Android `versionCode`. The push hook requires a clean tree, runs the web,
-worker, desktop, and Android test/build checks, creates signed Windows and
-Android packages, publishes both update feeds to one GitHub Release, and only
-then allows the `main` push to finish. Vercel deploys `apps/web` from `main`.
-
-Users receive updates as follows:
+Vercel deploys `apps/web` from `main`. Users receive updates as follows:
 
 - Windows checks the signed feed at startup, announces the new version, and
   installs it after the user confirms.
@@ -35,12 +36,15 @@ Users receive updates as follows:
 - The web app is replaced by the Vercel deployment; visitors receive the new
   version on their next page load.
 
-A native release is deliberately a full signed rebuild on every push, even for
-a documentation-only change. Do not use `--no-verify`, `SKIP_RELEASE`, or
-`OPENWHISPER_SKIP_VERSION_BUMP` for a production push: those escape hatches
-break the guarantee that all apps share the release. If a hook fails, fix the
-reported problem and rerun the normal commit or push; a retry safely repairs
-the same release.
+If a release fails, fix the reported problem and push again, or rerun the
+workflow from the Actions tab: a rerun replaces the unfinished draft. Nothing
+reaches users until both builds and both feeds are checked.
+
+Machines that used the old local release hooks should remove that setting once:
+
+```bash
+git config --unset core.hooksPath
+```
 
 ## Run website locally
 
@@ -120,14 +124,11 @@ APK output: `apps/android/app/build/outputs/apk/debug/app-debug.apk`.
 Installation, Samsung device setup, architecture, privacy constraints, and the
 test matrix are documented in [`docs/android.md`](docs/android.md).
 
-Maintainers can create and publish a signed update with:
+Releases, including the signed Android APK, are published by the release
+workflow (see [Releasing a new version](#releasing-a-new-version)). The Android
+signing key is created once with `.\scripts\setup-android-signing.ps1`.
 
-```powershell
-.\scripts\setup-android-signing.ps1 # first release only
-.\scripts\release-android.ps1
-```
-
-To rebuild the full Windows installer instead, run from the repo root:
+To build the full Windows installer on a Windows PC, run from the repo root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-windows-installer.ps1
@@ -135,13 +136,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows-installer.ps1
 
 Installer output: `artifacts\windows-installer\OpenWhisper_x64-setup.exe` (with the
 versioned and signed build outputs also kept under
-`%USERPROFILE%\openwhisper-cargo-target\release\bundle\nsis\`).
-
-Every normal push to `main` runs the local release hook. After the signed
-release and public update feeds are verified, the hook silently updates the
-installed `%LOCALAPPDATA%\OpenWhisper` copy to the same version and restarts it
-only when it was already running. `SKIP_RELEASE=1` intentionally bypasses both
-the release and this local installation sync.
+`%USERPROFILE%\openwhisper-cargo-target\release\bundle\nsis\`). The build reads
+the updater signing key from `.env`.
 
 This repository uses a hybrid architecture:
 
@@ -182,40 +178,54 @@ This repository uses a hybrid architecture:
 
 ## Releasing a new version
 
-Releases happen **automatically** when you commit and push to `main`. The
-repository hooks synchronize versions, test all components, build both native
-apps locally, and publish one coordinated GitHub Release.
+Releases happen **automatically** in GitHub Actions when a push to `main`
+changes app code (see the push-to-release contract above). Releasing needs no
+local tools: commit and push normally.
 
-**Prerequisites (one-time):**
-- [Rust](https://rustup.rs) (`winget install -e --id Rustlang.Rustup`)
-- Visual Studio Build Tools (Desktop C++ workload)
-- [GitHub CLI](https://cli.github.com) (`winget install --id GitHub.cli`, then `gh auth login`)
-- [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org)
-- Hook path configured: `git config core.hooksPath scripts/hooks`
-- **Updater signing keys** (one-time): `.\scripts\setup-updater-keys.ps1`
-- **Android signing key** (one-time): `.\scripts\setup-android-signing.ps1`
+**One-time setup:**
+
 - Vercel project connected to this repository with production branch `main`
-  and root directory `apps/web`
+  and root directory `apps/web`.
+- These repository secrets (Settings, Secrets and variables, Actions). The keys
+  must be the ones earlier releases were signed with, or installed apps cannot
+  update.
 
-**Release workflow:**
-```powershell
-# Versions are assigned by the commit hook. Commit and push normally:
-git add -A
-git commit -m "Describe the change"
-git push origin main
+| Secret | Value |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | The updater private key (`%USERPROFILE%\.tauri\openwhisper.key`, created by `.\scripts\setup-updater-keys.ps1`) |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Its password, only if it has one |
+| `OPENWHISPER_ANDROID_KEYSTORE_BASE64` | The Android keystore file (`OPENWHISPER_ANDROID_KEYSTORE` in `.env`), base64-encoded |
+| `OPENWHISPER_ANDROID_KEY_ALIAS` | From `.env` |
+| `OPENWHISPER_ANDROID_STORE_PASSWORD` | From `.env` |
+| `OPENWHISPER_ANDROID_KEY_PASSWORD` | From `.env` |
+
+Set them with the GitHub CLI so the values are never shown, for example:
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/openwhisper.key
+base64 -w0 openwhisper-release.jks | gh secret set OPENWHISPER_ANDROID_KEYSTORE_BASE64
 ```
 
-When you push to `main`, the pre-push hook will:
+**What a release run does:**
 
-1. Test and production-build the website.
-2. Test the Python worker, the desktop's Rust logic (`cargo test` in
-   `apps/desktop/src-tauri/core-tests`, which needs no Tauri) and the desktop UI.
-3. Test, lint, build, sign, and verify the Android APK.
-4. Build and sign the Tauri Windows NSIS installer and updater artifact.
-5. Tag the commit, create/update the GitHub Release, and publish both update
-   feeds and stable download assets.
-6. Re-download and verify the public Android APK and both feed versions.
-7. Allow the push to complete, after which Vercel deploys the website.
+1. Test and production-build the website; test the Python worker, the
+   desktop's Rust logic (`cargo test` in `apps/desktop/src-tauri/core-tests`,
+   which needs no Tauri), the desktop UI, the Android unit tests and
+   `scripts/release.mjs`.
+2. Decide whether app code changed since the last tag and choose the version
+   (`node scripts/release.mjs plan`).
+3. On Windows runners, set that version (`set-version`), then build and sign
+   the Tauri NSIS installer and updater signature
+   (`scripts/build-windows-installer.ps1`) and, in parallel, test, lint, build,
+   sign and verify the Android APK (`scripts/bootstrap-android.ps1`, then
+   `scripts/build-android-release.ps1`). The Android `versionCode` comes from
+   the version (0.2.28 is 2028), so it grows with every release.
+4. Upload the installers, APKs, checksum and both update feeds (`latest.json`
+   and `OpenWhisper-Android-update.json`) to a draft release, check that every
+   file finished uploading and that both feeds match the builds.
+5. Publish the draft as latest, which tags the pushed commit, then re-download
+   and check both public feeds and the public APK
+   (`node scripts/release.mjs publish`).
 
 **Auto-update:** Installed native apps announce an available update and guide
 the user through installation. The desktop app relaunches afterward. Android

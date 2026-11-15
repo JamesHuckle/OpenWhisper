@@ -66,8 +66,8 @@ describe("desktop regression contracts", () => {
   it("runs the tests of every Rust file that needs no Tauri before a release", () => {
     const sourceDir = resolve(desktopRoot, "src-tauri/src");
     const coreTests = readFileSync(resolve(desktopRoot, "src-tauri/core-tests/lib.rs"), "utf8");
-    const releaseScript = readFileSync(
-      resolve(repositoryRoot, "scripts/pre-push-release.ps1"),
+    const releaseWorkflow = readFileSync(
+      resolve(repositoryRoot, ".github/workflows/release.yml"),
       "utf8",
     );
     const tauriFreeTested = readdirSync(sourceDir)
@@ -83,8 +83,8 @@ describe("desktop regression contracts", () => {
     for (const name of tauriFreeTested) {
       expect(coreTests).toContain(`#[path = "../src/${name}"]`);
     }
-    expect(releaseScript).toContain('"apps/desktop/src-tauri/core-tests"');
-    expect(releaseScript).toContain("& cargo.exe test --locked");
+    expect(releaseWorkflow).toContain("working-directory: apps/desktop/src-tauri/core-tests");
+    expect(releaseWorkflow).toContain("run: cargo test --locked");
   });
 
   it("refreshes the stable local installer after every Windows build", () => {
@@ -99,23 +99,48 @@ describe("desktop regression contracts", () => {
     expect(buildScript).not.toContain("if ($IsUncRepo) {");
   });
 
-  it("updates the installed Windows app during every normal main push", () => {
-    const releaseScript = readFileSync(
-      resolve(repositoryRoot, "scripts/pre-push-release.ps1"),
+  it("releases from GitHub Actions on every main push, after the tests, through a checked draft", () => {
+    const workflow = readFileSync(
+      resolve(repositoryRoot, ".github/workflows/release.yml"),
       "utf8",
     );
-    const syncScript = readFileSync(
-      resolve(repositoryRoot, "scripts/sync-local-windows-release.ps1"),
+    const releaseSteps = readFileSync(resolve(repositoryRoot, "scripts/release.mjs"), "utf8");
+    const job = (name: string) => {
+      const start = workflow.indexOf(`\n  ${name}:\n`);
+      const next = workflow.slice(start + 1).search(/\n  [a-z-]+:\n/);
+      return next === -1 ? workflow.slice(start) : workflow.slice(start, start + 1 + next);
+    };
+
+    expect(workflow).toMatch(/on:\n  push:\n    branches: \[main\]/);
+    for (const build of ["build-windows", "build-android"]) {
+      expect(job(build)).toContain(
+        "needs: [plan, test-web, test-worker, test-desktop, test-android]",
+      );
+      expect(job(build)).toContain("if: needs.plan.outputs.release == 'true'");
+      expect(job(build)).toContain("node scripts/release.mjs set-version");
+    }
+    expect(job("build-windows")).toContain("./scripts/build-windows-installer.ps1");
+    expect(job("build-android")).toContain("./scripts/build-android-release.ps1");
+    expect(job("publish")).toContain("needs: [plan, build-windows, build-android]");
+    expect(job("publish")).toContain("node scripts/release.mjs publish");
+    // The draft is checked before it is published as latest.
+    const draft = releaseSteps.indexOf('"--draft", "--target"');
+    const check = releaseSteps.indexOf("checkFeeds({", draft);
+    const publish = releaseSteps.indexOf('"--draft=false", "--latest"');
+    expect(draft).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(draft);
+    expect(publish).toBeGreaterThan(check);
+  });
+
+  it("never stops Node or Python processes it did not start while building Windows", () => {
+    const buildScript = readFileSync(
+      resolve(repositoryRoot, "scripts/build-windows-installer.ps1"),
       "utf8",
     );
 
-    expect(releaseScript).toContain('sync-local-windows-release.ps1');
-    expect(releaseScript).toContain('-InstallerPath $versionedInstaller');
-    expect(releaseScript).toContain('-ExpectedVersion $version');
-    expect(syncScript).toContain('VersionInfo.ProductVersion');
-    expect(syncScript).toContain('Start-Process -FilePath $resolvedInstaller -ArgumentList "/S" -Wait');
-    expect(syncScript).toContain('Local\\OpenWhisperLocalReleaseInstall');
-    expect(syncScript).toContain('Start-Process -FilePath $installedExecutable');
+    expect(buildScript).not.toContain("Get-Process node");
+    expect(buildScript).not.toMatch(/Get-Process python\*, pythonw\* [^\n]*\| Stop-Process/);
+    expect(buildScript).toContain(".StartsWith($venvAbs)");
   });
 
   it("builds signed releases without waiting for an interactive key prompt", () => {

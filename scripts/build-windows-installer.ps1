@@ -60,6 +60,11 @@ function Import-VsBuildToolsEnvironment {
 
 $OriginalRepoRoot = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path `
   -replace '^Microsoft\.PowerShell\.Core\\FileSystem::', ''
+
+# Local builds take the updater signing key from .env. The release workflow
+# passes it as an environment variable instead.
+. "$PSScriptRoot/load-env.ps1" -Path (Join-Path $OriginalRepoRoot ".env")
+
 $RepoRoot = $OriginalRepoRoot
 $IsUncRepo = $RepoRoot.StartsWith("\\") -or $RepoRoot.ToLowerInvariant().Contains("\\wsl$\")
 $IsOneDriveRepo = $RepoRoot.ToLowerInvariant().Contains("\onedrive\")
@@ -138,7 +143,8 @@ Write-Host "==> Sync worker dependencies"
 Push-Location -LiteralPath $WorkerDir
 if (Test-Path ".venv") {
   Write-Host "==> Removing existing worker .venv"
-  # Kill any Python processes that may be locking the venv (e.g. from a previous run or IDE)
+  # Stop only Python processes running from this .venv (for example a
+  # previous build). Other agents and tools on the machine keep running.
   $venvAbs = (Join-Path (Get-Location) ".venv").ToLowerInvariant()
   Get-Process python*, pythonw* -ErrorAction SilentlyContinue | ForEach-Object {
     try {
@@ -151,23 +157,10 @@ if (Test-Path ".venv") {
     } catch { }
   }
   Start-Sleep -Seconds 1
-  $removed = $false
   try {
     Remove-Item ".venv" -Recurse -Force -ErrorAction Stop
-    $removed = $true
   } catch {
     cmd /c "rmdir /s /q .venv" | Out-Null
-    $removed = -not (Test-Path ".venv")
-  }
-  if (-not $removed) {
-    Write-Host "    First attempt failed. Stopping all Python processes and retrying..."
-    Get-Process python*, pythonw* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-    try {
-      Remove-Item ".venv" -Recurse -Force -ErrorAction Stop
-    } catch {
-      cmd /c "rmdir /s /q .venv" | Out-Null
-    }
   }
   if (Test-Path ".venv") {
     throw "Failed to remove worker .venv from build directory. Close any terminals/IDEs using the worker venv and retry."
@@ -205,30 +198,12 @@ Push-Location -LiteralPath $DesktopDir
 if (-not $SkipNpmInstall) {
   if (Test-Path "node_modules") {
     Write-Host "==> Removing existing node_modules"
-    # Node child processes (esbuild, rollup, tauri-cli) can lock binaries in node_modules
-    $nodeProcs = Get-Process node -ErrorAction SilentlyContinue
-    if ($nodeProcs) {
-      $nodeProcs | Stop-Process -Force -ErrorAction SilentlyContinue
-      Write-Host "    Stopped $($nodeProcs.Count) Node process(es) that may lock node_modules"
-      Start-Sleep -Seconds 2
-    }
-    $removed = $false
+    # Never stop Node processes here: agents and dev servers on the machine
+    # run on Node. If a running desktop dev server locks a file, say so.
     try {
       Remove-Item "node_modules" -Recurse -Force -ErrorAction Stop
-      $removed = $true
     } catch {
       cmd /c "rmdir /s /q node_modules" | Out-Null
-      $removed = -not (Test-Path "node_modules")
-    }
-    if (-not $removed) {
-      Write-Host "    First attempt failed. Stopping all Node processes and retrying..."
-      Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-      Start-Sleep -Seconds 2
-      try {
-        Remove-Item "node_modules" -Recurse -Force -ErrorAction Stop
-      } catch {
-        cmd /c "rmdir /s /q node_modules" | Out-Null
-      }
     }
     if (Test-Path "node_modules") {
       throw "Failed to remove node_modules from build directory. Close any terminals/IDEs using the desktop app and retry."
@@ -240,10 +215,12 @@ if (-not $SkipNpmInstall) {
   } else {
     npm install
   }
+  if ($LASTEXITCODE -ne 0) { throw "Desktop dependency installation failed." }
 }
 
 Write-Host "==> Build Tauri Windows installer (NSIS)"
 npm run tauri:build:signed
+if ($LASTEXITCODE -ne 0) { throw "Tauri Windows build failed." }
 Pop-Location
 
 $InstallerDir = Join-Path $CargoTargetDir "release/bundle/nsis"

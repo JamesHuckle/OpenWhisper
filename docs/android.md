@@ -151,18 +151,20 @@ The keystore is created outside the repository at
 `%USERPROFILE%\.openwhisper\android\openwhisper-release.jks`; its credentials
 are stored in the ignored `.env`. Back up both securely. Losing the key makes
 it impossible to publish an update that existing Android installations accept.
+Copy the keystore (base64-encoded) and its credentials into the repository
+secrets listed in the README under "Releasing a new version".
 
-Build, sign, verify, upload, and re-download/verify the public asset with:
-
-```powershell
-.\scripts\release-android.ps1
-```
+Releases are built by the GitHub Actions release workflow
+(`.github/workflows/release.yml`) on every push to `main` that changes app
+code. It builds, lints, signs and verifies the APK with
+`scripts/build-android-release.ps1`, uploads it to a draft release together
+with the Windows build, checks both update feeds, publishes the release and
+re-downloads the public APK to check its SHA-256 digest.
 
 Every release publishes both a versioned APK and the stable
-`OpenWhisper-Android.apk` asset used by the latest-download URL.
-When Android advances without a new desktop build, the release script carries
-the stable Windows installer and signed desktop update feed forward so the
-shared GitHub `releases/latest` URLs continue to work for both platforms.
+`OpenWhisper-Android.apk` asset used by the latest-download URL. Windows and
+Android are always released together, so the shared GitHub `releases/latest`
+URLs work for both platforms.
 
 It also publishes `OpenWhisper-Android-update.json`. Android 0.2.0 and newer
 checks that feed daily while the accessibility service is enabled and whenever
@@ -175,8 +177,8 @@ permitted by the platform.
 Updates use the same `com.openwhisper.android` package and persistent signing
 key, so Android performs an in-place upgrade. Shared preferences, the Android
 Keystore entry, and the encrypted OpenAI API key remain untouched. Never change
-the application ID or release key, and increment `versionCode` for every
-Android release.
+the application ID or release key. The release workflow sets `versionCode`
+from the version (0.2.28 is 2028), so it grows with every release.
 
 The original 0.1.0 build predates this updater and cannot be made to display a
 remote prompt retroactively. Those users need to install 0.2.0 manually once;
