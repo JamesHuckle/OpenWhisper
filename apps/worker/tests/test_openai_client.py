@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 import unittest
@@ -7,7 +8,31 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from openwhisper_worker.openai_client import OpenWhisperOpenAI, RealtimeTranscriptionStream
+import httpx
+import openai
+
+from openwhisper_worker.openai_client import (
+    OpenWhisperOpenAI,
+    RealtimeTranscriptionStream,
+    describe_error,
+)
+
+DICTATED = "My bank PIN is four four seven one, please remind me at noon."
+CUSTOM_PROMPT = "Write my mother's maiden name, Gwendolyn, in capitals."
+TIDIED = "My bank PIN is 4471. Please remind me at noon."
+
+
+def responses_reply(text: str) -> SimpleNamespace:
+    return SimpleNamespace(output=[SimpleNamespace(content=[SimpleNamespace(text=text)])])
+
+
+def bad_request_quoting(text: str) -> openai.BadRequestError:
+    response = httpx.Response(400, request=httpx.Request("POST", "https://api.openai.test/v1"))
+    return openai.BadRequestError(
+        f"Could not process input: {text}",
+        response=response,
+        body={"message": f"Could not process input: {text}", "code": "invalid_input"},
+    )
 
 
 class OpenWhisperOpenAITests(unittest.TestCase):
@@ -128,6 +153,49 @@ class OpenWhisperOpenAITests(unittest.TestCase):
             " ".join(f"segment-{index}" for index in range(1, len(uploaded_sizes) + 1)),
         )
         self.assertEqual(progress, [(index, len(uploaded_sizes)) for index in range(1, len(uploaded_sizes) + 1)])
+
+    def test_polish_logs_counts_and_timings_but_never_the_text(self) -> None:
+        client = OpenWhisperOpenAI()
+        client._client = Mock()
+        client._client.responses.create.return_value = responses_reply(TIDIED)
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", stderr):
+            result = client.polish(DICTATED, CUSTOM_PROMPT)
+
+        self.assertEqual(result, TIDIED)
+        sent = client._client.responses.create.call_args.kwargs["input"]
+        self.assertIn(CUSTOM_PROMPT, sent[0]["content"])
+        self.assertEqual(sent[1]["content"], DICTATED)
+        log = stderr.getvalue()
+        for private in (DICTATED, CUSTOM_PROMPT, TIDIED, "bank PIN", "Gwendolyn"):
+            self.assertNotIn(private, log)
+        self.assertNotIn("master transcriber", log)
+        self.assertIn(f"input_chars={len(DICTATED)}", log)
+        self.assertIn(f"output_chars={len(TIDIED)}", log)
+        self.assertIn("elapsed_ms=", log)
+
+    def test_failed_polish_logs_error_codes_but_never_the_text(self) -> None:
+        client = OpenWhisperOpenAI()
+        client._client = Mock()
+        client._client.responses.create.side_effect = bad_request_quoting(DICTATED)
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", stderr):
+            with self.assertRaises(openai.BadRequestError):
+                client.polish(DICTATED, CUSTOM_PROMPT)
+
+        log = stderr.getvalue()
+        self.assertNotIn("bank PIN", log)
+        self.assertNotIn("Gwendolyn", log)
+        self.assertIn("error=BadRequestError status=400 code=invalid_input", log)
+
+    def test_describe_error_leaves_out_the_message(self) -> None:
+        self.assertEqual(
+            describe_error(bad_request_quoting(DICTATED)),
+            "BadRequestError status=400 code=invalid_input",
+        )
+        self.assertEqual(describe_error(RuntimeError(DICTATED)), "RuntimeError")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import threading
+import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
@@ -154,6 +155,33 @@ class RealtimeTranscriptionStream:
                 self._error = str(exc)
                 self._completed.set()
 
+
+def describe_error(exc: BaseException) -> str:
+    """Describe an error for logs and notices without its message text.
+
+    API error messages can quote the request, which holds the user's dictated
+    words and custom prompts, so only the error type, HTTP status and API error
+    code are reported.
+    """
+    parts = [exc.__class__.__name__]
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        parts.append(f"status={status}")
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", code):
+        parts.append(f"code={code}")
+    return " ".join(parts)
+
+
+def _elapsed_ms(started: float) -> int:
+    return round((time.perf_counter() - started) * 1000)
+
+
+def _log(line: str) -> None:
+    sys.stderr.write(f"{line}\n")
+    sys.stderr.flush()
+
+
 _POLISH_SYSTEM = """\
 You are a master transcriber and transcript editor.
 Return only the transcribed text, with only the modifications requested below.
@@ -217,18 +245,17 @@ class OpenWhisperOpenAI:
 
     def polish(self, text: str, custom_prompt: str = "") -> str:
         """Run a fast LLM pass to strip filler words, fix sentence structure, and add
-        basic markdown formatting. Falls back to the original text on any error."""
+        basic markdown formatting. Raises on API errors; the caller keeps the raw text."""
         stripped = text.strip()
         if not stripped:
             return text
 
         system = self._build_polish_system(custom_prompt)
         chunks = self._chunk_for_polish(stripped)
-        sys.stderr.write(
-            f"\n[polish] chunk_plan model={self._polish_model} chunks={len(chunks)} "
-            f"input_chars={len(stripped)}\n"
+        _log(
+            f"[polish] chunk_plan model={self._polish_model} chunks={len(chunks)} "
+            f"input_chars={len(stripped)} custom_prompt_chars={len(custom_prompt.strip())}"
         )
-        sys.stderr.flush()
 
         if len(chunks) == 1:
             return self._polish_chunk(system, chunks[0], 1, 1)
@@ -256,13 +283,27 @@ class OpenWhisperOpenAI:
         )
 
     def _polish_chunk(self, system: str, text: str, chunk_index: int, total_chunks: int) -> str:
-        sys.stderr.write(
-            f"[polish] ── system prompt ({chunk_index}/{total_chunks}) ───────────────\n{system}\n"
-            f"[polish] ── input ({chunk_index}/{total_chunks}) ───────────────────────\n{text}\n"
-            f"[polish] ─────────────────────────────────────────────────\n"
+        # Log only sizes, timings and error codes: the prompt, the dictated words
+        # and the tidied result are private and must never reach the log, which
+        # the desktop app keeps and shows in its error messages.
+        started = time.perf_counter()
+        try:
+            result = self._request_polish(system, text)
+        except Exception as exc:
+            _log(
+                f"[polish] chunk_failed chunk={chunk_index}/{total_chunks} "
+                f"input_chars={len(text)} elapsed_ms={_elapsed_ms(started)} "
+                f"error={describe_error(exc)}"
+            )
+            raise
+        _log(
+            f"[polish] chunk_done chunk={chunk_index}/{total_chunks} "
+            f"system_chars={len(system)} input_chars={len(text)} "
+            f"output_chars={len(result)} elapsed_ms={_elapsed_ms(started)}"
         )
-        sys.stderr.flush()
+        return result
 
+    def _request_polish(self, system: str, text: str) -> str:
         client = self._get_client()
         if self._polish_model.startswith("gpt-5"):
             response = client.responses.create(
@@ -286,12 +327,6 @@ class OpenWhisperOpenAI:
                 timeout=_POLISH_TIMEOUT,
             )
             result = (response.choices[0].message.content or "").strip() or text
-
-        sys.stderr.write(
-            f"[polish] ── output ({chunk_index}/{total_chunks}) ──────────────────────\n{result}\n"
-            f"[polish] ─────────────────────────────────────────────────\n\n"
-        )
-        sys.stderr.flush()
         return result
 
     @staticmethod

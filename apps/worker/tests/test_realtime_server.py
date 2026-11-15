@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import math
 import struct
 import unittest
@@ -49,15 +50,26 @@ class FakeFileOpenAI:
     model = "gpt-transcribe"
     is_live = False
 
-    def __init__(self, transcript: str) -> None:
+    def __init__(
+        self,
+        transcript: str,
+        transcribe_error: Exception | None = None,
+        polish_error: Exception | None = None,
+    ) -> None:
         self.transcript = transcript
+        self.transcribe_error = transcribe_error
+        self.polish_error = polish_error
         self.transcribed = 0
 
     def transcribe_file(self, _path, mime_type: str, prompt: str = "", on_progress=None) -> str:
         self.transcribed += 1
+        if self.transcribe_error:
+            raise self.transcribe_error
         return self.transcript
 
     def polish(self, text: str, _prompt: str) -> str:
+        if self.polish_error:
+            raise self.polish_error
         return text
 
 
@@ -73,9 +85,19 @@ def pcm_tone(seconds: float, amplitude: int = 6000, rate: int = 24_000) -> bytes
     )
 
 
-def dictate(server: WorkerServer, audio: bytes, prompt: str = "") -> list[dict]:
+def dictate(
+    server: WorkerServer,
+    audio: bytes,
+    prompt: str = "",
+    refine_prompt: str = "",
+) -> list[dict]:
     session_id = server.handle(
-        request("start_session", prompt=prompt, refine_enabled=False)
+        request(
+            "start_session",
+            prompt=prompt,
+            refine_enabled=bool(refine_prompt),
+            refine_prompt=refine_prompt,
+        )
     ).result["session_id"]
     server.handle(
         request(
@@ -186,6 +208,48 @@ class NoAudioWorkerServerTests(unittest.TestCase):
         server, _ = self.server_returning("Zoon Robotics is hiring.")
         events = dictate(server, pcm_tone(1.0), self.PROMPT)
         self.assertEqual(events[-1], {"type": "final", "text": "Zoon Robotics is hiring."})
+
+
+class PrivateTextWorkerServerTests(unittest.TestCase):
+    DICTATED = "My bank PIN is four four seven one, please remind me at noon."
+    VOCABULARY = "Glossary:\nGwendolyn\nZoon Robotics"
+    REFINE_PROMPT = "Write my mother's maiden name, Gwendolyn, in capitals."
+
+    def test_failed_refinement_keeps_transcript_out_of_log_and_notice(self) -> None:
+        server = WorkerServer()
+        server._openai = FakeFileOpenAI(
+            self.DICTATED,
+            polish_error=RuntimeError(f"Could not tidy: {self.DICTATED} {self.REFINE_PROMPT}"),
+        )
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", stderr):
+            events = dictate(server, pcm_tone(1.0), self.VOCABULARY, self.REFINE_PROMPT)
+
+        warning = next(event for event in events if event["type"] == "warning")
+        self.assertEqual(
+            warning["text"], "Refinement failed; using the raw transcript (RuntimeError)"
+        )
+        self.assertEqual(events[-1], {"type": "final", "text": self.DICTATED})
+        log = stderr.getvalue()
+        self.assertIn("refine failed", log)
+        for private in ("bank PIN", "Gwendolyn", "Glossary"):
+            self.assertNotIn(private, log)
+            self.assertNotIn(private, warning["text"])
+
+    def test_failed_transcription_notice_leaves_out_the_vocabulary_prompt(self) -> None:
+        server = WorkerServer()
+        server._openai = FakeFileOpenAI(
+            "",
+            transcribe_error=RuntimeError(f"Prompt rejected: {self.VOCABULARY}"),
+        )
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", stderr):
+            events = dictate(server, pcm_tone(1.0), self.VOCABULARY)
+
+        self.assertEqual(events[-1], {"type": "error", "text": "Prompt rejected: [redacted]"})
+        self.assertNotIn("Gwendolyn", stderr.getvalue())
 
 
 if __name__ == "__main__":

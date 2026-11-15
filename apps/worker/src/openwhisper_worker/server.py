@@ -10,7 +10,11 @@ from array import array
 from dataclasses import dataclass
 from typing import Any
 
-from openwhisper_worker.openai_client import OpenWhisperOpenAI, RealtimeTranscriptionStream
+from openwhisper_worker.openai_client import (
+    OpenWhisperOpenAI,
+    RealtimeTranscriptionStream,
+    describe_error,
+)
 from openwhisper_worker.protocol import WorkerError, WorkerRequest, WorkerResponse
 
 
@@ -41,6 +45,21 @@ _MIN_PCM_SECONDS = 0.3
 # peaks far above this, even on quiet microphones.
 _SILENT_PCM_PEAK = 100
 _PCM_SCAN_BYTES = 1024 * 1024
+# Shorter prompt fragments are too common to remove from an error message
+# without mangling it.
+_MIN_REDACT_CHARS = 4
+
+
+def _without_private_text(message: str, *private: str) -> str:
+    """Remove the user's prompts from an error message before it leaves the worker.
+
+    Errors can quote the request they came from; the prompts are the user's own
+    words and must not be copied into notices, logs or bug reports.
+    """
+    for value in sorted({p.strip() for p in private}, key=len, reverse=True):
+        if len(value) >= _MIN_REDACT_CHARS:
+            message = message.replace(value, "[redacted]")
+    return message
 
 
 def _normalize_words(text: str) -> str:
@@ -260,8 +279,8 @@ class WorkerServer:
                     ),
                 )
         except Exception as exc:  # noqa: BLE001
-            msg = str(exc).strip() or exc.__class__.__name__
-            session.events.append({"type": "error", "text": msg})
+            msg = _without_private_text(str(exc), session.prompt).strip()
+            session.events.append({"type": "error", "text": msg or exc.__class__.__name__})
             session.finalized = True
             self._remove_audio_file(session)
             return self._ok(request.id, {"final_text": ""})
@@ -283,12 +302,17 @@ class WorkerServer:
             try:
                 text = self._openai.polish(text, session.refine_prompt)
             except Exception as exc:  # noqa: BLE001
-                sys.stderr.write(f"[worker] refine failed session_id={session_id!r} error={exc}\n")
+                # The error text can quote the transcript or custom prompt that
+                # was sent, so report only its type and codes.
+                error = describe_error(exc)
+                sys.stderr.write(
+                    f"[worker] refine failed session_id={session_id!r} error={error}\n"
+                )
                 sys.stderr.flush()
                 session.events.append(
                     {
                         "type": "warning",
-                        "text": f"Refinement failed; using the raw transcript: {exc}",
+                        "text": f"Refinement failed; using the raw transcript ({error})",
                     }
                 )
                 pass  # fall back to raw transcript on any LLM error
