@@ -18,13 +18,19 @@ class OpenAiHttpTranscriptionClient(
     private val generation = AtomicLong(0)
     private val activeConnection = AtomicReference<HttpURLConnection?>(null)
 
+    // Makes cancelling and registering a connection one step each, so a
+    // cancelled call can never replace a newer call's connection.
+    private val connectionLock = Any()
+
     /**
      * Closes the upload in progress, so the background thread is free at once
      * instead of waiting for a result nobody will see.
      */
     override fun cancel() {
-        generation.incrementAndGet()
-        activeConnection.getAndSet(null)?.disconnect()
+        synchronized(connectionLock) {
+            generation.incrementAndGet()
+            activeConnection.getAndSet(null)
+        }?.disconnect()
     }
 
     override fun transcribe(audio: TranscriptionAudio): String {
@@ -82,10 +88,15 @@ class OpenAiHttpTranscriptionClient(
         throwIfCancelled(started)
         val request = requestFactory.create(key, wav, prompt = prompt)
         val connection = openConnection(request.url)
-        activeConnection.set(connection)
-        return try {
+        val registered = synchronized(connectionLock) {
             // A cancel that came just before the connection was registered.
-            throwIfCancelled(started)
+            (generation.get() == started).also { if (it) activeConnection.set(connection) }
+        }
+        if (!registered) {
+            connection.disconnect()
+            throw TranscriptionException(CANCELLED_MESSAGE)
+        }
+        return try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 30_000
             connection.readTimeout = 30 * 60 * 1_000
