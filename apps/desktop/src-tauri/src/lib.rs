@@ -539,13 +539,16 @@ mod text_inserter {
         );
         match decision {
             FinalWrite::Replace { delete_chars } => {
-                release_held_ctrl();
-                press_backspace(delete_chars);
-                paste_restoring_clipboard(text, session.hwnd)?;
+                // The draft is deleted only once the final text is ready on
+                // the clipboard, so a clipboard failure leaves it in place.
+                paste_restoring_clipboard(text, session.hwnd, || {
+                    release_held_ctrl();
+                    press_backspace(delete_chars);
+                })?;
                 Ok(WriteOutcome::Replaced)
             }
             FinalWrite::Paste => {
-                paste_restoring_clipboard(text, session.hwnd)?;
+                paste_restoring_clipboard(text, session.hwnd, || {})?;
                 Ok(WriteOutcome::Pasted)
             }
             FinalWrite::KeepDraft => Ok(WriteOutcome::Kept),
@@ -634,7 +637,12 @@ mod text_inserter {
 
     /// Paste `text` with Ctrl+V, then restore what the user had copied,
     /// unless something else changed the clipboard in the meantime.
-    fn paste_restoring_clipboard(text: &str, target: isize) -> Result<(), String> {
+    /// `before_paste` runs once `text` is on the clipboard.
+    fn paste_restoring_clipboard(
+        text: &str,
+        target: isize,
+        before_paste: impl FnOnce(),
+    ) -> Result<(), String> {
         let saved = {
             let _open = clipboard_win::Clipboard::new_attempts(CLIPBOARD_OPEN_ATTEMPTS)
                 .map_err(|e| format!("Could not open the clipboard: {e}"))?;
@@ -649,10 +657,13 @@ mod text_inserter {
             saved
         };
         let ours = clipboard_win::raw::seq_num();
+        before_paste();
         paste_shortcut();
         wait_until_pasted(target);
-        if clipboard_win::raw::seq_num() == ours {
-            if let Ok(_open) = clipboard_win::Clipboard::new_attempts(CLIPBOARD_OPEN_ATTEMPTS) {
+        if let Ok(_open) = clipboard_win::Clipboard::new_attempts(CLIPBOARD_OPEN_ATTEMPTS) {
+            // Checked while the clipboard is open, so no other app can copy
+            // between this check and the restore.
+            if clipboard_win::raw::seq_num() == ours {
                 restore_clipboard(&saved);
             }
         }
