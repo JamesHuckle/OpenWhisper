@@ -84,7 +84,6 @@ let streamTextToTarget = false;
 let streamAudioToWorker = false;
 let targetWriteQueue: Promise<void> = Promise.resolve();
 let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
-let mediaRecorder: MediaRecorder | null = null;
 // The settings the menu shows. Every change passes through applySettingsUi,
 // so a recording reads them here instead of asking the app each time.
 let appSettings: AppSettings | null = null;
@@ -96,7 +95,6 @@ let pcmAudioContext: AudioContext | null = null;
 let pcmSource: MediaStreamAudioSourceNode | null = null;
 let pcmProcessor: AudioWorkletNode | null = null;
 let pcmSilentGain: GainNode | null = null;
-let recordingMimeType = "audio/webm";
 let isRecording = false;
 let currentRecordingId: string | null = null;
 let lastFailedRecordingId: string | null = null;
@@ -1047,7 +1045,6 @@ async function startPcmCapture(stream: MediaStream) {
   pcmSource = source;
   pcmProcessor = processor;
   pcmSilentGain = silentGain;
-  recordingMimeType = PCM_MIME_TYPE;
 }
 
 // Asks the worklet for the samples that did not yet fill a chunk, so the end
@@ -1217,11 +1214,6 @@ async function stopRecording() {
   if (pcmAudioContext) {
     await stopPcmCapture();
     flushAudioBatch();
-  } else if (mediaRecorder && mediaRecorder.state !== "inactive") {
-    await new Promise<void>((resolve) => {
-      mediaRecorder!.addEventListener("stop", () => resolve(), { once: true });
-      mediaRecorder!.stop();
-    });
   }
 
   if (currentSessionId) await finalizeRecording();
@@ -1238,7 +1230,7 @@ async function finalizeRecording() {
     if (streamAudioToWorker) {
       await invoke("worker_finalize_session_audio", {
         sessionId,
-        mimeType: recordingMimeType,
+        mimeType: PCM_MIME_TYPE,
       });
     } else {
       // The worker reads the saved backup from disk, so the audio crosses
@@ -1375,12 +1367,8 @@ function cleanup() {
     soundVisualizer = null;
   }
   stopVolumeMonitor();
-  if (mediaRecorder && mediaRecorder.state !== "inactive") {
-    mediaRecorder.stop();
-  }
   if (pcmAudioContext) void stopPcmCapture(false);
   micStream?.getTracks().forEach((t) => t.stop());
-  mediaRecorder = null;
   micStream = null;
   currentSessionId = null;
   audioQueue.reset();

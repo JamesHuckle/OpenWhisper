@@ -368,6 +368,18 @@ describe("desktop regression contracts", () => {
     expect(beginBody).not.toContain("prune_recordings");
   });
 
+  it("records only through the PCM worklet, so a Live finalize always names PCM", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const finalizeBody = main.slice(
+      main.indexOf("async function finalizeRecording("),
+      main.indexOf("async function", main.indexOf("async function finalizeRecording(") + 1),
+    );
+
+    expect(main).not.toContain("MediaRecorder");
+    expect(main).not.toContain("recordingMimeType");
+    expect(finalizeBody).toContain("mimeType: PCM_MIME_TYPE,");
+  });
+
   it("promotes saved transcripts over redundant retranscription", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
 
