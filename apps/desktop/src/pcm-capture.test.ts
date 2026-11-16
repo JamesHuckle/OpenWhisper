@@ -125,7 +125,8 @@ describe("PCM capture worklet", () => {
     // code passed it through at full level as a 9 kHz whistle.
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
 
-    expect(main).toContain("new AudioContext({ sampleRate: PCM_SAMPLE_RATE })");
+    expect(main).toContain("new AudioContext(CAPTURE_CONTEXT_OPTIONS)");
+    expect(main).toContain("sampleRate: PCM_SAMPLE_RATE,\n  sinkId: { type: \"none\" },");
     expect(main).toContain("new AudioWorkletNode(context, PCM_WORKLET_NAME");
     expect(main).toContain('from "./pcm-capture.worklet?worker&url"');
     expect(main).not.toContain("createScriptProcessor");

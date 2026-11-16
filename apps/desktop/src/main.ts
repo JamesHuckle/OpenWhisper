@@ -6,7 +6,6 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
-import { continuousVisualizer } from "sound-visualizer";
 import {
   COLLAPSED_HEIGHT,
   COLLAPSED_WIDTH,
@@ -51,7 +50,9 @@ type AppSettings = {
   showIdlePill: boolean;
   holdToTalk: boolean;
 };
-type WidgetState = "idle" | "recording" | "transcribing" | "error";
+// "starting" shows the listening pill the moment the shortcut is pressed,
+// while the microphone is still opening.
+type WidgetState = "idle" | "starting" | "recording" | "transcribing" | "error";
 type MicDevice = { id: string; label: string };
 type RecordingMetadata = {
   id: string;
@@ -116,7 +117,7 @@ const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
 );
 
 let micStream: MediaStream | null = null;
-let soundVisualizer: { start: () => void; stop: () => void; reset: () => void } | null = null;
+let soundVisualizer: { start: () => void; stop: () => void } | null = null;
 let volumeMonitorFrameId: number | null = null;
 let volumeMonitorDisconnect: (() => void) | null = null;
 const SILENT_THRESHOLD = 14;
@@ -642,13 +643,17 @@ function showToast(msg: string, durationMs = 3000) {
 function setState(next: WidgetState) {
   logDebug(`setState ${state} -> ${next}`);
   state = next;
-  widget.dataset.state = next;
+  // Starting looks like a recording that has not heard sound yet, so the pill
+  // does not change when the microphone comes on.
+  widget.dataset.state = next === "starting" ? "recording" : next;
+  if (next === "starting") widget.dataset.silent = "true";
+  else if (next === "idle") delete widget.dataset.silent;
   syncApiKeyBubble();
   void applyOverlayLayout();
 }
 
 // ---------------------------------------------------------------------------
-// Meter — sound-visualizer (recording) + idle bars (transcribing)
+// Meter — scrolling waveform (recording) + idle bars (transcribing)
 // ---------------------------------------------------------------------------
 const VOLUME_BAR_COUNT = 7;
 
@@ -676,6 +681,74 @@ function toBase64(buf: ArrayBuffer): string {
 // ---------------------------------------------------------------------------
 // Volume monitor — show wobbly line when mic is silent during recording
 // ---------------------------------------------------------------------------
+// The scrolling waveform while recording. It listens on the running
+// capture's source, in the same audio context: a context of its own opened
+// the speakers, which woke Bluetooth headphones and froze the page for about
+// a second on every recording.
+const METER_SLICES = 20;
+const METER_BAR_WIDTH = 3;
+const METER_COLOR = "#9ef0c9";
+
+function startMeterVisualizer(): { start: () => void; stop: () => void } | null {
+  const source = pcmSource;
+  if (!source) return null;
+  const analyser = source.context.createAnalyser();
+  source.connect(analyser);
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  const history: number[] = [];
+  let frameId: number | null = null;
+
+  function draw() {
+    const canvas = meterCanvas;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const { width, height } = canvas;
+    context.fillStyle = METER_COLOR;
+    context.clearRect(0, 0, width, height);
+    context.beginPath();
+    const sliceWidth = width / METER_SLICES;
+    // New bars enter on the right and scroll left.
+    const firstSlice = METER_SLICES - history.length;
+    history.forEach((value, index) => {
+      let fraction = value / 255;
+      if (fraction < 0.05) fraction += 0.05;
+      const top = (height / 2) * fraction;
+      context.rect((firstSlice + index) * sliceWidth, top, METER_BAR_WIDTH, height - 2 * top);
+    });
+    context.fill();
+  }
+
+  function tick() {
+    analyser.getByteTimeDomainData(data);
+    let min = 255;
+    let max = 0;
+    for (const value of data) {
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+    history.push(255 - (max - min));
+    if (history.length > METER_SLICES) history.shift();
+    draw();
+    frameId = requestAnimationFrame(tick);
+  }
+
+  return {
+    start() {
+      if (frameId !== null) cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(tick);
+    },
+    stop() {
+      if (frameId !== null) cancelAnimationFrame(frameId);
+      frameId = null;
+      try {
+        source.disconnect(analyser);
+      } catch {
+        // Stopping the capture already disconnected the source.
+      }
+    },
+  };
+}
+
 // Listens on the running capture's source, in the same audio context.
 function startVolumeMonitor() {
   const source = pcmSource;
@@ -982,10 +1055,20 @@ menuImportAudio.addEventListener("click", () => void transcribeImportedFile());
 // The context runs at the upload rate, so the browser's filtered resampler
 // converts the microphone audio. The worklet only packs it as 16-bit PCM, on
 // the audio thread, so a busy page cannot drop samples.
+//
+// Capture never plays sound, so the context opens no speaker ("none" sink).
+// Opening the default speaker woke Bluetooth headphones on every recording,
+// which held up the microphone by a second or more. Runtimes without this
+// option ignore it and use the default speaker as before.
+const CAPTURE_CONTEXT_OPTIONS = {
+  sampleRate: PCM_SAMPLE_RATE,
+  sinkId: { type: "none" },
+} as AudioContextOptions & { sinkId: { type: "none" } };
+
 function pcmCaptureContext(): Promise<AudioContext> {
   if (!pcmContextReady) {
     const ready = (async () => {
-      const context = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
+      const context = new AudioContext(CAPTURE_CONTEXT_OPTIONS);
       try {
         if (context.sampleRate !== PCM_SAMPLE_RATE) {
           throw new Error(
@@ -1096,6 +1179,9 @@ async function startRecording() {
   if (state !== "idle") return;
   clearWidgetNotice();
   const cancelsBefore = cancelCount;
+  // Show the pill before anything is awaited, so it appears as the shortcut
+  // is pressed. A missing key, when already known, shows only its toast.
+  if (appSettings?.hasOpenaiApiKey !== false) setState("starting");
 
   try {
     const settings = await currentSettings();
@@ -1130,12 +1216,8 @@ async function startRecording() {
       onCaptureStarted: async (stream) => {
         setState("recording");
         widget.dataset.silent = "true";
-        soundVisualizer = continuousVisualizer(stream, meterCanvas, {
-          strokeColor: "#9ef0c9",
-          rectWidth: 3,
-          slices: 20,
-        });
-        soundVisualizer.start();
+        soundVisualizer = startMeterVisualizer();
+        soundVisualizer?.start();
         startVolumeMonitor();
         logDebug(`capture ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
@@ -1531,12 +1613,13 @@ if (import.meta.env.DEV) {
 // Toggle
 // ---------------------------------------------------------------------------
 async function toggleRecording() {
+  // A second press while the microphone is still opening stops the recording
+  // as soon as it starts (and a third press keeps it going after all).
+  if (toggleRecordingStarting && (state === "idle" || state === "starting")) {
+    toggleStopRequestedDuringStart = !toggleStopRequestedDuringStart;
+    return;
+  }
   if (state === "idle") {
-    if (toggleRecordingStarting) {
-      toggleStopRequestedDuringStart = !toggleStopRequestedDuringStart;
-      return;
-    }
-
     toggleRecordingStarting = true;
     toggleStopRequestedDuringStart = false;
     try {

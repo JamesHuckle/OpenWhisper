@@ -368,6 +368,33 @@ describe("desktop regression contracts", () => {
     expect(beginBody).not.toContain("prune_recordings");
   });
 
+  it("shows the listening pill at the shortcut press and never wakes the speakers to record", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const pkg = readFileSync(resolve(import.meta.dirname, "..", "package.json"), "utf8");
+    const startBody = main.slice(
+      main.indexOf("async function startRecording()"),
+      main.indexOf("async function stopRecording()"),
+    );
+
+    // The pill turns on before the first await of a recording start.
+    const starting = startBody.indexOf('setState("starting")');
+    expect(starting).toBeGreaterThan(-1);
+    expect(starting).toBeLessThan(startBody.indexOf("await "));
+    // It looks like a recording that has not heard sound yet.
+    expect(main).toContain('widget.dataset.state = next === "starting" ? "recording" : next;');
+    // A press while the microphone opens stops the recording once it starts.
+    expect(main).toContain(
+      'if (toggleRecordingStarting && (state === "idle" || state === "starting")) {',
+    );
+    // Capture opens no speaker, and the waveform and silence check listen in
+    // the capture context instead of opening contexts (and speakers) of their own.
+    expect(main).toContain('sinkId: { type: "none" }');
+    expect(main.match(/new AudioContext\(/g)).toHaveLength(1);
+    expect(main).toContain("const analyser = source.context.createAnalyser();");
+    expect(main).not.toContain("sound-visualizer\"");
+    expect(pkg).not.toContain("sound-visualizer");
+  });
+
   it("records only through the PCM worklet, so a Live finalize always names PCM", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const finalizeBody = main.slice(
