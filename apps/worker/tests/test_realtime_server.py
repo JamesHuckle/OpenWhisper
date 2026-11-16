@@ -10,6 +10,7 @@ import unittest
 import wave
 from unittest.mock import patch
 
+from openwhisper_worker.audio_rules import NO_AUDIO_MESSAGE
 from openwhisper_worker.protocol import SessionEvent, WorkerRequest
 from openwhisper_worker.server import WorkerServer
 
@@ -115,6 +116,29 @@ def pcm_tone(seconds: float, amplitude: int = 6000, rate: int = 24_000) -> bytes
     )
 
 
+def write_wav(path: str, pcm: bytes, rate: int = 24_000) -> None:
+    with wave.open(path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(pcm)
+
+
+def finalize_saved(server: WorkerServer, session_id: str, pcm: bytes):
+    """Finalize a Standard session as the desktop does: from its saved WAV."""
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "audio.wav")
+        write_wav(path, pcm)
+        return server.handle(
+            request(
+                "finalize_session_audio",
+                session_id=session_id,
+                mime_type="audio/wav",
+                audio_path=path,
+            )
+        )
+
+
 def dictate(
     server: WorkerServer,
     audio: bytes,
@@ -132,16 +156,7 @@ def dictate(
             refine_prompt=refine_prompt,
         )
     ).result["session_id"]
-    server.handle(
-        request(
-            "append_audio_chunk",
-            session_id=session_id,
-            chunk_base64=base64.b64encode(audio).decode("ascii"),
-        )
-    )
-    server.handle(
-        request("finalize_session_audio", session_id=session_id, mime_type="audio/pcm;rate=24000")
-    )
+    finalize_saved(server, session_id, audio)
     return server._emit_sink.events(session_id)
 
 
@@ -212,6 +227,73 @@ class RealtimeWorkerServerTests(unittest.TestCase):
         )
         self.assertEqual(finalized.result["final_text"], "hello world hello world")
 
+    def append_and_finalize(
+        self, chunks: list[bytes], before_finalize=lambda: None
+    ) -> tuple[str, list[dict]]:
+        session_id = self.server.handle(
+            request("start_session", refine_enabled=False)
+        ).result["session_id"]
+        for chunk in chunks:
+            appended = self.server.handle(
+                request(
+                    "append_audio_chunk",
+                    session_id=session_id,
+                    chunk_base64=base64.b64encode(chunk).decode("ascii"),
+                )
+            )
+            self.assertTrue(appended.ok)
+        before_finalize()
+        with patch("sys.stderr", io.StringIO()):
+            self.server.handle(
+                request(
+                    "finalize_session_audio",
+                    session_id=session_id,
+                    mime_type="audio/pcm;rate=24000",
+                )
+            )
+        return session_id, self.log.events(session_id)
+
+    def test_silent_or_too_short_live_audio_reports_no_audio_and_keeps_no_copy(self) -> None:
+        tenth_of_a_second_of_silence = bytes(2_400 * 2)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("tempfile.tempdir", temp_dir):
+                for chunks in (
+                    [tenth_of_a_second_of_silence] * 10,
+                    [pcm_tone(0.1)],
+                ):
+                    # The desktop saves the recording; the worker writes no
+                    # copy, not even while the session is open.
+                    _, events = self.append_and_finalize(
+                        chunks, lambda: self.assertEqual(os.listdir(temp_dir), [])
+                    )
+                    self.assertEqual(events[-1], {"type": "error", "text": NO_AUDIO_MESSAGE})
+                    self.assertNotIn("final", [event["type"] for event in events])
+                    self.assertTrue(self.fake_openai.stream.closed)
+                self.assertEqual(os.listdir(temp_dir), [])
+        self.assertEqual(self.server._sessions, {})
+
+    def test_one_loud_chunk_among_silent_ones_is_speech(self) -> None:
+        silence = bytes(2_400 * 2)
+        _, events = self.append_and_finalize([silence] * 5 + [pcm_tone(0.1)] + [silence] * 5)
+        self.assertEqual(events[-1], {"type": "final", "text": "hello world"})
+
+    def test_a_standard_session_refuses_audio_chunks(self) -> None:
+        server, log = new_server(FakeFileOpenAI("unused"))
+        session_id = server.handle(request("start_session")).result["session_id"]
+
+        appended = server.handle(
+            request(
+                "append_audio_chunk",
+                session_id=session_id,
+                chunk_base64=base64.b64encode(pcm_tone(0.5)).decode("ascii"),
+            )
+        )
+
+        self.assertFalse(appended.ok)
+        self.assertEqual(appended.error.code, "bad_request")
+        self.assertEqual(server._sessions[session_id].audio_bytes, 0)
+        self.assertEqual(log.events(session_id), [])
+
 
 class SessionSettingsWorkerServerTests(unittest.TestCase):
     """Each dictation names its key and model, so saving settings needs no restart."""
@@ -241,16 +323,7 @@ class SessionSettingsWorkerServerTests(unittest.TestCase):
         ).result["session_id"]
 
     def finalize(self, session_id: str) -> None:
-        self.server.handle(
-            request(
-                "append_audio_chunk",
-                session_id=session_id,
-                chunk_base64=base64.b64encode(pcm_tone(1.0)).decode("ascii"),
-            )
-        )
-        self.server.handle(
-            request("finalize_session_audio", session_id=session_id, mime_type="audio/pcm;rate=24000")
-        )
+        finalize_saved(self.server, session_id, pcm_tone(1.0))
 
     def test_dictations_with_the_same_settings_share_one_client(self) -> None:
         first = self.start("key-1", "gpt-transcribe")
@@ -339,14 +412,6 @@ class NoAudioWorkerServerTests(unittest.TestCase):
         server, _ = self.server_returning("Zoon Robotics is hiring.")
         events = dictate(server, pcm_tone(1.0), self.PROMPT)
         self.assertEqual(events[-1], {"type": "final", "text": "Zoon Robotics is hiring."})
-
-
-def write_wav(path: str, pcm: bytes, rate: int = 24_000) -> None:
-    with wave.open(path, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(rate)
-        wav.writeframes(pcm)
 
 
 class SavedFileWorkerServerTests(unittest.TestCase):

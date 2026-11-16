@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -183,16 +184,26 @@ class OpenWhisperOpenAITests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported transcription model"):
                 OpenWhisperOpenAI()
 
-    def test_sixty_minute_pcm_is_transcribed_in_bounded_ordered_chunks(self) -> None:
+    def test_sixty_minute_wav_is_transcribed_in_bounded_ordered_chunks(self) -> None:
         client = OpenWhisperOpenAI()
         pcm_bytes = 60 * 60 * 24_000 * 2
         progress: list[tuple[int, int]] = []
         uploaded_sizes: list[int] = []
 
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "sixty-minutes.pcm"
+            # A saved desktop recording: a 44-byte mono 16-bit 24 kHz WAV header
+            # and an hour of (sparse, silent) samples.
+            path = Path(directory) / "sixty-minutes.wav"
             with path.open("wb") as audio:
-                audio.truncate(pcm_bytes)
+                audio.write(
+                    b"RIFF"
+                    + struct.pack("<I", 36 + pcm_bytes)
+                    + b"WAVEfmt "
+                    + struct.pack("<IHHIIHH", 16, 1, 1, 24_000, 24_000 * 2, 2, 16)
+                    + b"data"
+                    + struct.pack("<I", pcm_bytes)
+                )
+                audio.truncate(44 + pcm_bytes)
 
             def fake_transcribe(wav: bytes, mime_type: str, prompt: str = "") -> str:
                 self.assertEqual(mime_type, "audio/wav")
@@ -204,7 +215,7 @@ class OpenWhisperOpenAITests(unittest.TestCase):
             with patch.object(client, "transcribe_bytes", side_effect=fake_transcribe):
                 transcript = client.transcribe_file(
                     path,
-                    "audio/pcm;rate=24000",
+                    "audio/wav",
                     on_progress=lambda current, total: progress.append((current, total)),
                 )
 

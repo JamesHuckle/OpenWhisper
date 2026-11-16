@@ -5,13 +5,14 @@ import io
 import json
 import os
 import queue
+import tempfile
 import threading
 import unittest
 from unittest.mock import patch
 
 from openwhisper_worker.protocol import WorkerRequest
 from openwhisper_worker.server import WorkerServer, serve
-from test_realtime_server import EventLog, FakeRealtimeOpenAI, pcm_tone
+from test_realtime_server import EventLog, FakeRealtimeOpenAI, pcm_tone, write_wav
 
 _WAIT_SECONDS = 5
 
@@ -109,6 +110,14 @@ class CancelTests(unittest.TestCase):
         stderr.start()
         self.addCleanup(stderr.stop)
 
+    def saved_recording(self) -> str:
+        """A second of speech saved as the desktop saves a recording."""
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = os.path.join(folder.name, "audio.wav")
+        write_wav(path, pcm_tone(1.0))
+        return path
+
     def test_cancel_answers_while_a_long_transcription_is_still_running(self) -> None:
         openai = SlowFileOpenAI(parts=3)
         worker = RunningWorker(openai)
@@ -118,16 +127,14 @@ class CancelTests(unittest.TestCase):
 
         worker.send(line("start", "start_session", refine_enabled=True))
         session_id = worker.response("start", seen)["result"]["session_id"]
-        audio = base64.b64encode(pcm_tone(1.0)).decode("ascii")
-        worker.send(line("append", "append_audio_chunk", session_id=session_id, chunk_base64=audio))
-        worker.response("append", seen)
 
         worker.send(
             line(
                 "finalize",
                 "finalize_session_audio",
                 session_id=session_id,
-                mime_type="audio/pcm;rate=24000",
+                mime_type="audio/wav",
+                audio_path=self.saved_recording(),
             )
         )
         self.assertTrue(openai.part_started.wait(_WAIT_SECONDS))
@@ -166,16 +173,6 @@ class CancelTests(unittest.TestCase):
         session_id = server.handle(
             WorkerRequest(id="start", method="start_session", params={"refine_enabled": True})
         ).result["session_id"]
-        server.handle(
-            WorkerRequest(
-                id="append",
-                method="append_audio_chunk",
-                params={
-                    "session_id": session_id,
-                    "chunk_base64": base64.b64encode(pcm_tone(1.0)).decode("ascii"),
-                },
-            )
-        )
         stop = WorkerRequest(id="stop", method="stop_session", params={"session_id": session_id})
         openai.on_transcribed = lambda: self.assertTrue(server.handle(stop).ok)
 
@@ -183,7 +180,11 @@ class CancelTests(unittest.TestCase):
             WorkerRequest(
                 id="finalize",
                 method="finalize_session_audio",
-                params={"session_id": session_id, "mime_type": "audio/pcm;rate=24000"},
+                params={
+                    "session_id": session_id,
+                    "mime_type": "audio/wav",
+                    "audio_path": self.saved_recording(),
+                },
             )
         )
 
@@ -212,9 +213,10 @@ class CancelTests(unittest.TestCase):
         self.assertEqual(server._sessions, {})
 
 
-    def test_a_chunk_that_arrives_after_stop_leaves_no_audio_file(self) -> None:
+    def test_a_chunk_that_arrives_after_stop_is_refused(self) -> None:
+        openai = FakeRealtimeOpenAI()
         server = WorkerServer(emit=EventLog())
-        server._openai = SlowFileOpenAI()
+        server._openai = openai
         session_id = server.handle(
             WorkerRequest(id="start", method="start_session")
         ).result["session_id"]
@@ -236,7 +238,8 @@ class CancelTests(unittest.TestCase):
             )
 
         self.assertFalse(appended.ok)
-        self.assertEqual(session.audio_path, "")
+        self.assertEqual(session.audio_bytes, 0)
+        self.assertEqual(openai.stream.chunks, [])
 
     def test_stop_during_live_rotation_opens_no_new_stream(self) -> None:
         openai = FakeRealtimeOpenAI()

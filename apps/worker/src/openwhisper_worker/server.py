@@ -4,7 +4,6 @@ import base64
 import os
 import re
 import sys
-import tempfile
 import threading
 import uuid
 import wave
@@ -43,10 +42,11 @@ class Session:
     # The OpenAI client for the key and model this session started with. A
     # later dictation with other settings never changes it.
     openai: OpenWhisperOpenAI
-    # The worker's own copy of appended chunks, created by the first chunk.
-    # A session finalized from a saved file never appends and never has one.
-    audio_path: str = ""
+    # Counters over the chunks a Live session appends, for the no-speech
+    # check at the end. The desktop already saves the audio, so the worker
+    # keeps no copy. A session finalized from a saved file never appends.
     audio_bytes: int = 0
+    pcm_peak: int = 0
     realtime_stream: RealtimeTranscriptionStream | None = None
     realtime_bytes: int = 0
     realtime_segments: list[str] | None = None
@@ -98,22 +98,26 @@ def _echoes_prompt(text: str, prompt: str) -> bool:
     return spoken in hints and len(spoken) >= len(hints) * PROMPT_ECHO_MIN_SHARE
 
 
+def _pcm_peak(block: bytes) -> int:
+    """The loudest 16-bit little-endian sample in `block` (0 when it has none)."""
+    usable = len(block) - (len(block) % 2)
+    if not usable:
+        return 0
+    samples = array("h")
+    samples.frombytes(block[:usable])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return max(max(samples), -min(samples))
+
+
 def _pcm_is_silent(read: Callable[[int], bytes]) -> bool:
     """True when 16-bit samples from `read` never rise above near-silence."""
-    peak = 0
     while True:
         block = read(_PCM_SCAN_BYTES)
         if not block:
             return True
-        usable = len(block) - (len(block) % 2)
-        if usable:
-            samples = array("h")
-            samples.frombytes(block[:usable])
-            if sys.byteorder == "big":
-                samples.byteswap()
-            peak = max(peak, max(samples), -min(samples))
-            if peak >= SILENT_PCM_PEAK:
-                return False
+        if _pcm_peak(block) >= SILENT_PCM_PEAK:
+            return False
 
 
 def _pcm_rate(mime_type: str) -> int | None:
@@ -123,19 +127,22 @@ def _pcm_rate(mime_type: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _no_speech_reason(path: str, mime_type: str, size: int) -> str | None:
-    """Why 16-bit PCM audio (raw or WAV) holds no speech, or None.
+def _no_speech_reason_from_counters(size: int, peak: int, rate: int) -> str | None:
+    """Why raw 16-bit mono PCM of `size` bytes at `rate` Hz, whose loudest
+    sample is `peak`, holds no speech, or None. Live sessions count their
+    appended chunks this way instead of keeping them."""
+    seconds = size / (rate * 2)
+    if seconds < MIN_SPEECH_SECONDS:
+        return f"too_short={seconds:.2f}s"
+    return "silent" if peak < SILENT_PCM_PEAK else None
 
-    Raw PCM is what the worker collects from appended chunks; WAV is how the
-    desktop saves a microphone recording. Other audio is left to the model.
+
+def _no_speech_reason(path: str, mime_type: str, size: int) -> str | None:
+    """Why a saved 16-bit PCM WAV holds no speech, or None.
+
+    WAV is how the desktop saves a microphone recording. Other audio is left
+    to the model.
     """
-    rate = _pcm_rate(mime_type)
-    if rate:
-        seconds = size / (rate * 2)
-        if seconds < MIN_SPEECH_SECONDS:
-            return f"too_short={seconds:.2f}s"
-        with open(path, "rb") as source:
-            return "silent" if _pcm_is_silent(source.read) else None
     if mime_type not in {"audio/wav", "audio/x-wav"}:
         return None
     try:
@@ -294,20 +301,20 @@ class WorkerServer:
     def _cancel(self, session: Session) -> None:
         with session.lock:
             session.cancelled.set()
-            finalizing = session.finalizing
             stream = session.realtime_stream
         if stream:
             stream.close()
-        # A running transcription may still read the audio file; it removes
-        # the file itself when it stops.
-        if not finalizing:
-            self._remove_audio_file(session)
 
     def _handle_append_audio_chunk(self, request: WorkerRequest) -> WorkerResponse:
         chunk_b64 = str(request.params.get("chunk_base64", ""))
         session = self._session(request)
         if session is None:
             return self._err(request.id, "bad_request", "Unknown session_id")
+        if not session.openai.is_live:
+            # Standard sessions are finalized from the desktop's saved file.
+            return self._err(
+                request.id, "bad_request", "Only Live sessions take audio chunks"
+            )
         if not chunk_b64:
             return self._err(request.id, "bad_request", "chunk_base64 is required")
         try:
@@ -315,24 +322,15 @@ class WorkerServer:
         except Exception as exc:  # noqa: BLE001
             return self._err(request.id, "bad_request", f"Invalid base64 chunk: {exc}")
 
-        # Under the lock, so stop_session cannot remove the file (or miss a
-        # new one) mid-write and finalizing never reads a half-written chunk.
+        # Under the lock, so finalizing never reads counters a chunk has only
+        # half updated. The desktop sends whole 16-bit samples in each chunk.
         with session.lock:
             if session.cancelled.is_set():
                 return self._err(request.id, "bad_request", "Unknown session_id")
             if session.finalizing:
                 return self._err(request.id, "bad_request", "Session is already finalizing")
-            if not session.audio_path:
-                audio_file = tempfile.NamedTemporaryFile(
-                    prefix=f"openwhisper-{session.session_id}-",
-                    suffix=".audio",
-                    delete=False,
-                )
-                audio_file.close()
-                session.audio_path = audio_file.name
-            with open(session.audio_path, "ab") as audio_file:
-                audio_file.write(chunk)
             session.audio_bytes += len(chunk)
+            session.pcm_peak = max(session.pcm_peak, _pcm_peak(chunk))
         if session.realtime_stream:
             if session.realtime_bytes and (
                 session.realtime_bytes + len(chunk) > _REALTIME_ROTATE_BYTES
@@ -355,9 +353,6 @@ class WorkerServer:
                 session.realtime_bytes = 0
             session.realtime_stream.append(chunk)
             session.realtime_bytes += len(chunk)
-        else:
-            kb = session.audio_bytes // 1024
-            self._emit(session, {"type": "partial", "text": f"Captured {kb} KB of audio..."})
         return self._ok(request.id, {"buffered_bytes": session.audio_bytes})
 
     def _handle_finalize_session_audio(self, request: WorkerRequest) -> WorkerResponse:
@@ -383,7 +378,6 @@ class WorkerServer:
             # Finalizing always ends a session, even when it fails.
             with self._sessions_lock:
                 self._sessions.pop(session.session_id, None)
-            self._remove_audio_file(session)
 
     def _check_cancelled(self, session: Session) -> None:
         if session.cancelled.is_set():
@@ -407,19 +401,27 @@ class WorkerServer:
             )
             return self._ok(request_id, {"final_text": ""})
         if audio_path:
-            source_path = audio_path
             try:
                 source_bytes = os.path.getsize(audio_path)
             except OSError:
                 source_bytes = 0
         else:
-            source_path = session.audio_path
+            # Only a Live session appends chunks; any other session finalized
+            # without a saved file has no audio.
             source_bytes = session.audio_bytes
         if source_bytes == 0:
             return self._finish_without_audio(request_id, session, "no_bytes")
 
         if not session.realtime_segments:
-            reason = _no_speech_reason(source_path, mime_type, source_bytes)
+            if audio_path:
+                reason = _no_speech_reason(audio_path, mime_type, source_bytes)
+            else:
+                rate = _pcm_rate(mime_type)
+                reason = (
+                    _no_speech_reason_from_counters(source_bytes, session.pcm_peak, rate)
+                    if rate
+                    else None
+                )
             if reason:
                 return self._finish_without_audio(request_id, session, reason)
 
@@ -440,7 +442,7 @@ class WorkerServer:
                 ).strip()
             else:
                 text = session.openai.transcribe_file(
-                    source_path,
+                    audio_path,
                     mime_type=mime_type,
                     prompt=session.prompt,
                     on_progress=on_progress,
@@ -530,17 +532,6 @@ class WorkerServer:
             session.realtime_stream = None
         self._emit(session, {"type": "error", "text": NO_AUDIO_MESSAGE})
         return self._ok(request_id, {"final_text": ""})
-
-    @staticmethod
-    def _remove_audio_file(session: Session) -> None:
-        if not session.audio_path:
-            return
-        try:
-            os.remove(session.audio_path)
-        except OSError:
-            # Already gone, or (on Windows) still open elsewhere; stopping a
-            # session must not fail because of it.
-            pass
 
     @staticmethod
     def _ok(request_id: str, result: dict[str, Any]) -> WorkerResponse:

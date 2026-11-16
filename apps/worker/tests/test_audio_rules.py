@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest
 import wave
 from pathlib import Path
 
 from openwhisper_worker import audio_rules
-from openwhisper_worker.server import _echoes_prompt, _no_speech_reason
+from openwhisper_worker.server import (
+    _echoes_prompt,
+    _no_speech_reason,
+    _no_speech_reason_from_counters,
+    _pcm_peak,
+)
 
 PROTOCOL_DIR = Path(__file__).resolve().parents[3] / "packages" / "protocol"
 SHARED_FILE = PROTOCOL_DIR / "audio-rules.json"
@@ -43,18 +47,19 @@ class SharedAudioRulesTests(unittest.TestCase):
                 self.assertEqual(answer, case["expected"])
 
     def test_example_recordings_sent_as_raw_pcm_get_the_same_answer(self) -> None:
-        # The desktop's live dictation sends raw PCM chunks, not a WAV file.
+        # The desktop's live dictation sends raw PCM chunks, not a WAV file,
+        # and the worker only counts them.
         for case in shared_cases()["audio"]:
             with self.subTest(file=case["file"]):
                 with wave.open(str(EXAMPLES_DIR / case["file"]), "rb") as source:
                     rate = source.getframerate()
                     pcm = source.readframes(source.getnframes())
-                with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as raw:
-                    raw.write(pcm)
-                try:
-                    reason = _no_speech_reason(raw.name, f"audio/pcm;rate={rate}", len(pcm))
-                finally:
-                    Path(raw.name).unlink()
+                chunk_bytes = rate // 10 * 2
+                peak = max(
+                    (_pcm_peak(pcm[i : i + chunk_bytes]) for i in range(0, len(pcm), chunk_bytes)),
+                    default=0,
+                )
+                reason = _no_speech_reason_from_counters(len(pcm), peak, rate)
                 answer = reason.split("=")[0] if reason else "speech"
                 self.assertEqual(answer, case["expected"])
 

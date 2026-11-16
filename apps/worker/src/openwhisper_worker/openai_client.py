@@ -456,15 +456,6 @@ class OpenWhisperOpenAI:
         if not audio_path.exists() or audio_path.stat().st_size == 0:
             raise RuntimeError("No audio bytes provided")
 
-        if mime_type.startswith("audio/pcm"):
-            sample_rate = self._sample_rate_from_mime(mime_type)
-            return self._transcribe_pcm_file(
-                audio_path,
-                sample_rate,
-                prompt,
-                on_progress,
-            )
-
         size = audio_path.stat().st_size
         if mime_type in {"audio/wav", "audio/x-wav"} and size > MAX_UPLOAD_BYTES:
             return self._transcribe_wav_file(audio_path, prompt, on_progress)
@@ -514,44 +505,6 @@ class OpenWhisperOpenAI:
                 )
         return " ".join(part for part in transcripts if part).strip()
 
-    def _transcribe_pcm_file(
-        self,
-        path: Path,
-        sample_rate: int,
-        prompt: str,
-        on_progress: Callable[[int, int], None] | None,
-    ) -> str:
-        bytes_per_frame = 2
-        max_pcm_bytes = MAX_UPLOAD_BYTES - 44
-        max_pcm_bytes -= max_pcm_bytes % bytes_per_frame
-        total_bytes = path.stat().st_size
-        total_chunks = max(1, (total_bytes + max_pcm_bytes - 1) // max_pcm_bytes)
-        transcripts: list[str] = []
-
-        with path.open("rb") as source:
-            for chunk_index in range(total_chunks):
-                pcm = source.read(max_pcm_bytes)
-                if not pcm:
-                    break
-                if on_progress:
-                    on_progress(chunk_index + 1, total_chunks)
-                contextual_prompt = prompt
-                if transcripts:
-                    previous_tail = transcripts[-1][-1200:]
-                    contextual_prompt = (
-                        f"{prompt}\nPrevious segment transcript: {previous_tail}"
-                    ).strip()
-                wav = self._pcm_to_wav(pcm, sample_rate)
-                transcripts.append(
-                    self.transcribe_bytes(wav, "audio/wav", contextual_prompt).strip()
-                )
-
-        return " ".join(part for part in transcripts if part).strip()
-
-    @staticmethod
-    def _pcm_to_wav(pcm: bytes, sample_rate: int) -> bytes:
-        return OpenWhisperOpenAI._audio_frames_to_wav(pcm, 1, 2, sample_rate)
-
     @staticmethod
     def _audio_frames_to_wav(
         frames: bytes,
@@ -566,16 +519,6 @@ class OpenWhisperOpenAI:
             wav.setframerate(sample_rate)
             wav.writeframes(frames)
         return output.getvalue()
-
-    @staticmethod
-    def _sample_rate_from_mime(mime_type: str) -> int:
-        match = re.search(r"(?:rate|samplerate)=(\d+)", mime_type, re.IGNORECASE)
-        if not match:
-            raise RuntimeError("PCM audio is missing its sample rate")
-        sample_rate = int(match.group(1))
-        if sample_rate <= 0:
-            raise RuntimeError("PCM audio has an invalid sample rate")
-        return sample_rate
 
     def _transcribe_streaming(
         self, client: OpenAI, audio_file: io.BytesIO, prompt: str
