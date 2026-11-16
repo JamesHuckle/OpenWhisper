@@ -90,4 +90,26 @@ mod tests {
             assert!(is_supported_transcription_model(replacement), "{replacement}");
         }
     }
+
+    #[test]
+    fn transcription_model_allowlist_matches_settings_ui() {
+        assert!(is_supported_transcription_model("gpt-transcribe"));
+        assert!(is_supported_transcription_model("gpt-live-transcribe"));
+        assert!(!is_supported_transcription_model("gpt-4o-mini-transcribe"));
+        assert!(!is_supported_transcription_model("gpt-5.4"));
+    }
+
+    #[test]
+    fn saved_legacy_transcription_models_migrate() {
+        assert_eq!(migrate_transcription_model("gpt-4o-mini-transcribe"), "gpt-transcribe");
+        assert_eq!(migrate_transcription_model("gpt-4o-transcribe"), "gpt-transcribe");
+        assert_eq!(
+            migrate_transcription_model("gpt-realtime-transcribe"),
+            "gpt-live-transcribe"
+        );
+        assert_eq!(
+            migrate_transcription_model("gpt-live-transcribe"),
+            "gpt-live-transcribe"
+        );
+    }
 }

@@ -17,5 +17,7 @@ mod models;
 mod paste_target;
 #[path = "../src/recording_store.rs"]
 mod recording_store;
+#[path = "../src/settings.rs"]
+mod settings;
 #[path = "../src/worker_connection.rs"]
 mod worker_connection;

@@ -10,6 +10,7 @@ mod models;
 #[cfg(target_os = "windows")]
 mod overlay_positioner;
 mod recording_store;
+mod settings;
 // Writes dictated text into the field focused when recording began.
 #[cfg(target_os = "windows")]
 mod text_inserter;
@@ -18,12 +19,11 @@ mod worker_connection;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use models::{
-    default_transcription_model, is_supported_transcription_model, migrate_transcription_model,
-};
+use models::{is_supported_transcription_model, migrate_transcription_model};
 use recording_store::PcmWavWriter;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use settings::{frontend_settings_from, start_session_params, AppSettings, FrontendSettings};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -80,80 +80,6 @@ fn cursor_overlay_anchor() -> Option<OverlayAnchor> {
             dpi,
         }
     })
-}
-
-fn default_transcription_prompt() -> String {
-    "I was editing @README.md and checking @package.json in my IDE. Let me also look at @tsconfig.json and the @src directory.".to_string()
-}
-
-fn default_refine_enabled() -> bool {
-    true
-}
-
-fn default_show_idle_pill() -> bool {
-    true
-}
-
-fn default_hold_to_talk() -> bool {
-    true
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct AppSettings {
-    /// The key in use. It is kept in the OS credential store, never written
-    /// to the settings file.
-    #[serde(skip)]
-    openai_api_key: String,
-    /// A plain-text key in the settings file, from versions before the
-    /// credential store. It is moved out on start and stays only while that
-    /// move keeps failing.
-    #[serde(
-        default,
-        rename = "openaiApiKey",
-        skip_serializing_if = "String::is_empty"
-    )]
-    plain_openai_api_key: String,
-    #[serde(default = "default_transcription_model")]
-    transcription_model: String,
-    #[serde(default = "default_transcription_prompt")]
-    transcription_prompt: String,
-    #[serde(default = "default_refine_enabled")]
-    refine_enabled: bool,
-    #[serde(default)]
-    refine_prompt: String,
-    #[serde(default = "default_show_idle_pill")]
-    show_idle_pill: bool,
-    #[serde(default = "default_hold_to_talk")]
-    hold_to_talk: bool,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            openai_api_key: String::new(),
-            plain_openai_api_key: String::new(),
-            transcription_model: default_transcription_model(),
-            transcription_prompt: default_transcription_prompt(),
-            refine_enabled: true,
-            refine_prompt: String::new(),
-            show_idle_pill: true,
-            hold_to_talk: true,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct FrontendSettings {
-    has_openai_api_key: bool,
-    openai_api_key_preview: Option<String>,
-    transcription_model: String,
-    transcription_prompt: String,
-    refine_enabled: bool,
-    refine_prompt: String,
-    show_idle_pill: bool,
-    hold_to_talk: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -439,49 +365,6 @@ fn position_main_window_before_reveal(app: &AppHandle) -> Result<bool, String> {
         PlacementVisibility::Keep,
     )?;
     Ok(true)
-}
-
-fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
-    let openai_api_key_preview = masked_api_key_preview(&settings.openai_api_key);
-    FrontendSettings {
-        has_openai_api_key: openai_api_key_preview.is_some(),
-        openai_api_key_preview,
-        transcription_model: settings.transcription_model.clone(),
-        transcription_prompt: settings.transcription_prompt.clone(),
-        refine_enabled: settings.refine_enabled,
-        refine_prompt: settings.refine_prompt.clone(),
-        show_idle_pill: settings.show_idle_pill,
-        hold_to_talk: settings.hold_to_talk,
-    }
-}
-
-/// The worker's `start_session` request. It names the key and model as well
-/// as the prompts, so the running worker uses the settings saved at that
-/// moment. An empty key lets the worker fall back to its `OPENAI_API_KEY`.
-fn start_session_params(settings: &AppSettings, profile_id: &str) -> serde_json::Value {
-    json!({
-        "profile_id": profile_id,
-        "openai_api_key": settings.openai_api_key.trim(),
-        "transcription_model": settings.transcription_model,
-        "prompt": settings.transcription_prompt,
-        "refine_enabled": settings.refine_enabled,
-        "refine_prompt": settings.refine_prompt,
-    })
-}
-
-fn masked_api_key_preview(api_key: &str) -> Option<String> {
-    let trimmed = api_key.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let prefix: String = trimmed.chars().take(4).collect();
-    let total_chars = trimmed.chars().count();
-    if total_chars <= 4 {
-        Some(prefix)
-    } else {
-        Some(format!("{prefix}{}", "*".repeat(8)))
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1712,75 +1595,6 @@ mod tests {
     }
 
     #[test]
-    fn settings_file_never_contains_the_api_key() {
-        let settings = AppSettings {
-            openai_api_key: "sk-secret".into(),
-            ..AppSettings::default()
-        };
-        let json = serde_json::to_string(&settings).unwrap();
-        assert!(!json.contains("sk-secret"));
-        assert!(!json.contains("openaiApiKey"));
-    }
-
-    #[test]
-    fn each_dictation_sends_the_saved_key_model_and_prompts() {
-        let settings = AppSettings {
-            openai_api_key: " sk-saved \n".into(),
-            transcription_model: "gpt-live-transcribe".into(),
-            transcription_prompt: "Glossary: Zoon".into(),
-            refine_enabled: false,
-            refine_prompt: "Use British spelling.".into(),
-            ..AppSettings::default()
-        };
-        assert_eq!(
-            start_session_params(&settings, "default"),
-            json!({
-                "profile_id": "default",
-                "openai_api_key": "sk-saved",
-                "transcription_model": "gpt-live-transcribe",
-                "prompt": "Glossary: Zoon",
-                "refine_enabled": false,
-                "refine_prompt": "Use British spelling.",
-            })
-        );
-        let without_key = start_session_params(&AppSettings::default(), "default");
-        assert_eq!(without_key["openai_api_key"], "");
-    }
-
-    #[test]
-    fn start_session_params_match_the_shared_protocol_example() {
-        let exchange: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../packages/protocol/examples/start_session.json"
-        ))
-        .unwrap();
-        let params = &exchange["request"]["params"];
-        let settings = AppSettings {
-            openai_api_key: params["openai_api_key"].as_str().unwrap().into(),
-            transcription_model: params["transcription_model"].as_str().unwrap().into(),
-            transcription_prompt: params["prompt"].as_str().unwrap().into(),
-            refine_enabled: params["refine_enabled"].as_bool().unwrap(),
-            refine_prompt: params["refine_prompt"].as_str().unwrap().into(),
-            ..AppSettings::default()
-        };
-
-        assert_eq!(
-            start_session_params(&settings, params["profile_id"].as_str().unwrap()),
-            *params
-        );
-    }
-
-    #[test]
-    fn plain_key_from_older_versions_is_read_and_kept_until_moved() {
-        let settings: AppSettings =
-            serde_json::from_str(r#"{"openaiApiKey":"sk-legacy","holdToTalk":false}"#).unwrap();
-        assert_eq!(settings.plain_openai_api_key, "sk-legacy");
-        assert_eq!(settings.openai_api_key, "");
-        assert!(!settings.hold_to_talk);
-        let json = serde_json::to_string(&settings).unwrap();
-        assert!(json.contains(r#""openaiApiKey":"sk-legacy""#));
-    }
-
-    #[test]
     fn recording_store_keeps_ten_readable_wavs() {
         let root = std::env::temp_dir().join(format!("openwhisper-store-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -1951,44 +1765,6 @@ mod tests {
             overlay_window_position_for_anchor(anchor, 188, 72),
             PhysicalPosition::new(866, -82)
         );
-    }
-
-    #[test]
-    fn transcription_model_allowlist_matches_settings_ui() {
-        assert!(is_supported_transcription_model("gpt-transcribe"));
-        assert!(is_supported_transcription_model("gpt-live-transcribe"));
-        assert!(!is_supported_transcription_model("gpt-4o-mini-transcribe"));
-        assert!(!is_supported_transcription_model("gpt-5.4"));
-    }
-
-    #[test]
-    fn saved_legacy_transcription_models_migrate() {
-        assert_eq!(migrate_transcription_model("gpt-4o-mini-transcribe"), "gpt-transcribe");
-        assert_eq!(migrate_transcription_model("gpt-4o-transcribe"), "gpt-transcribe");
-        assert_eq!(
-            migrate_transcription_model("gpt-realtime-transcribe"),
-            "gpt-live-transcribe"
-        );
-        assert_eq!(
-            migrate_transcription_model("gpt-live-transcribe"),
-            "gpt-live-transcribe"
-        );
-    }
-
-    #[test]
-    fn settings_without_idle_pill_preference_keep_showing_it() {
-        let settings: AppSettings = serde_json::from_value(json!({})).unwrap();
-
-        assert!(settings.show_idle_pill);
-        assert!(frontend_settings_from(&settings).show_idle_pill);
-    }
-
-    #[test]
-    fn settings_without_shortcut_preference_keep_hold_to_talk() {
-        let settings: AppSettings = serde_json::from_value(json!({})).unwrap();
-
-        assert!(settings.hold_to_talk);
-        assert!(frontend_settings_from(&settings).hold_to_talk);
     }
 
     #[test]
