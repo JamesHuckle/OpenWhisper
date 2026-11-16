@@ -12,7 +12,12 @@ path = "lib.rs"
 
 [dependencies]
 anyhow = "1.0"
+flacenc = { version = "0.5", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.40.0", features = ["io-util", "sync", "rt-multi-thread", "macros", "time"] }
 uuid = { version = "1.10.0", features = ["v4"] }
+
+[dev-dependencies]
+# Decodes the FLAC upload copy in its round-trip test.
+claxon = "0.4"

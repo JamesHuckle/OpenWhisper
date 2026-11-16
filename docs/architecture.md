@@ -40,7 +40,13 @@ WhisperFlow is split into three runtime layers:
 5. Desktop finalizes transcription using `finalize_session_audio`. For
    standard transcription the shell closes the WAV file and passes its
    `audio_path`, and the worker reads it from disk in parts
-   (`recording_transcribe`). Retrying a saved recording sends only its id
+   (`recording_transcribe`). For a microphone recording the shell first
+   writes a lossless FLAC copy beside the WAV (`src-tauri/src/flac_upload.rs`,
+   about half the bytes for speech) and passes it as `upload_path`; the
+   worker checks the WAV for silence, uploads the FLAC in one request, and
+   falls back to the WAV when the copy is too large or the service refuses
+   it. The shell deletes the copy when the request finishes. Retrying a saved
+   recording sends only its id
    the same way, and an imported file is copied on disk after the native
    file picker returns its path, so audio never passes through the UI.
 6. Native insertion engine writes the text into the field that was focused when
@@ -78,7 +84,7 @@ Audio pipeline methods:
 ```
 
 ```json
-{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav" } }
+{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav", "upload_path": "C:\\...\\audio.flac", "upload_mime_type": "audio/flac" } }
 ```
 
 Each response from worker:

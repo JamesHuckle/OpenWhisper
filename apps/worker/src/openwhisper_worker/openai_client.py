@@ -568,5 +568,7 @@ class OpenWhisperOpenAI:
             "audio/mp4": ".m4a",
             "audio/x-m4a": ".m4a",
             "audio/ogg": ".ogg",
+            "audio/flac": ".flac",
+            "audio/x-flac": ".flac",
         }
         return mime_map.get(mime_type, ".webm")

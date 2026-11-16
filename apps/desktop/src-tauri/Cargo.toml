@@ -14,6 +14,8 @@ tauri-build = { version = "2.0.0", features = [] }
 anyhow = "1.0"
 arboard = "3"
 base64 = "0.22"
+# Lossless upload copy of each microphone recording (src/flac_upload.rs).
+flacenc = { version = "0.5", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri = { version = "2.0.0", features = ["tray-icon", "image-png"] }
@@ -39,3 +41,7 @@ keyring = { version = "3", features = ["async-secret-service", "crypto-rust", "a
 clipboard-win = "5.4"
 keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.61", features = ["Win32_System_Com", "Win32_UI_Accessibility"] }
+
+[dev-dependencies]
+# Decodes the FLAC upload copy in its round-trip test.
+claxon = "0.4"

@@ -140,3 +140,24 @@ a saved file.
   "params": { "session_id": "uuid", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav" }
 }
 ```
+
+For a microphone recording the desktop also writes a smaller lossless copy
+(FLAC) beside the WAV and names it in `upload_path` and `upload_mime_type`.
+The worker still checks the WAV for silence or a quick tap, then uploads the
+copy in one request. It sends the WAV instead when the copy is missing, empty
+or larger than one upload, and once more when the service refuses the copy
+(HTTP 400). The desktop removes the copy when the request finishes.
+
+```json
+{
+  "id": "uuid",
+  "method": "finalize_session_audio",
+  "params": {
+    "session_id": "uuid",
+    "mime_type": "audio/wav",
+    "audio_path": "C:\\...\\audio.wav",
+    "upload_path": "C:\\...\\audio.flac",
+    "upload_mime_type": "audio/flac"
+  }
+}
+```

@@ -161,6 +161,17 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "requires 24 kHz PCM"):
             client.transcribe_bytes(b"webm", "audio/webm")
 
+    def test_flac_upload_is_named_as_flac(self) -> None:
+        client = OpenWhisperOpenAI(api_key="sk-test", model="gpt-transcribe")
+        api = Mock()
+        with patch.object(client, "_get_client", return_value=api), patch.object(
+            client, "_transcribe_streaming", return_value="hello"
+        ) as transcribe:
+            self.assertEqual(client.transcribe_bytes(b"fLaC", "audio/flac"), "hello")
+        audio_file = transcribe.call_args.args[1]
+        self.assertEqual(audio_file.name, "session_audio.flac")
+        self.assertEqual(audio_file.getvalue(), b"fLaC")
+
     def test_a_given_key_and_model_win_over_the_environment(self) -> None:
         environment = {"OPENAI_API_KEY": "env-key", "OPENWHISPER_MODEL": "gpt-transcribe"}
         with patch.dict(os.environ, environment, clear=True):

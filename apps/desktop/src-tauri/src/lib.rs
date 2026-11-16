@@ -1,4 +1,5 @@
 mod api_key_store;
+mod flac_upload;
 #[cfg(target_os = "windows")]
 mod foreground_app;
 // Parts of the insertion rules are used only by the Windows writer.
@@ -1957,23 +1958,52 @@ async fn recording_transcribe(
     close_active_recording(&state, &root, &recording_id)?;
     let metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
     let audio_path = root.join(&recording_id).join(&metadata.file_name);
+    let mut params = json!({
+        "session_id": session_id,
+        "mime_type": metadata.mime_type,
+        "audio_path": audio_path.to_string_lossy(),
+    });
+    let mut upload_path = None;
     if metadata.source == "microphone" {
         // A recording the app did not finish (it stopped while recording)
         // has a header up to a second behind its audio.
         recording_store::repair_wav_header(&audio_path, recording_store::MICROPHONE_SAMPLE_RATE)
             .map_err(|e| format!("Could not read saved recording: {e}"))?;
+        upload_path = flac_upload_copy(audio_path.clone()).await;
+        if let Some(path) = &upload_path {
+            params["upload_path"] = json!(path.to_string_lossy());
+            params["upload_mime_type"] = json!(flac_upload::MIME_TYPE);
+        }
     }
-    with_worker_request(
-        &app_handle,
-        &state,
-        "finalize_session_audio",
-        json!({
-            "session_id": session_id,
-            "mime_type": metadata.mime_type,
-            "audio_path": audio_path.to_string_lossy(),
-        }),
-    )
-    .await
+    let result = with_worker_request(&app_handle, &state, "finalize_session_audio", params).await;
+    if let Some(path) = upload_path {
+        let _ = fs::remove_file(path);
+    }
+    result
+}
+
+/// Writes the smaller, lossless FLAC copy of a microphone recording that the
+/// worker uploads in place of its WAV. None when there is no copy: the worker
+/// then sends the WAV, as it does for a copy the service refuses.
+async fn flac_upload_copy(wav_path: PathBuf) -> Option<PathBuf> {
+    let flac_path = wav_path.with_file_name(flac_upload::FILE_NAME);
+    let target = flac_path.clone();
+    let written = tauri::async_runtime::spawn_blocking(move || {
+        flac_upload::write_upload_copy(&wav_path, &target, flac_upload::max_upload_bytes())
+    })
+    .await;
+    match written {
+        Ok(Ok(true)) => Some(flac_path),
+        Ok(Ok(false)) => None,
+        Ok(Err(error)) => {
+            debug_log_line("recording", &format!("FLAC upload copy failed: {error}"));
+            None
+        }
+        Err(error) => {
+            debug_log_line("recording", &format!("FLAC upload copy stopped: {error}"));
+            None
+        }
+    }
 }
 
 #[tauri::command]

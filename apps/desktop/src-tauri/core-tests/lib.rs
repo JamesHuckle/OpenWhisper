@@ -5,6 +5,8 @@
 
 #[path = "../src/api_key_store.rs"]
 mod api_key_store;
+#[path = "../src/flac_upload.rs"]
+mod flac_upload;
 #[path = "../src/foreground_app.rs"]
 mod foreground_app;
 #[path = "../src/models.rs"]

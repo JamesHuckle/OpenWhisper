@@ -12,7 +12,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import IO, Any, Callable
 
+import openai
+
 from openwhisper_worker.audio_rules import (
+    MAX_UPLOAD_BYTES,
     MIN_SPEECH_SECONDS,
     NO_AUDIO_MESSAGE,
     PROMPT_ECHO_MIN_SHARE,
@@ -157,6 +160,19 @@ def _no_speech_reason(path: str, mime_type: str, size: int) -> str | None:
             return "silent" if silent else None
     except (wave.Error, EOFError, OSError):
         # Not a plain PCM WAV; the model decides what it holds.
+        return None
+
+
+def _read_upload_copy(path: str) -> bytes | None:
+    """The desktop's smaller copy of a saved recording, or None when it is
+    missing, empty or too large for one request."""
+    try:
+        size = os.path.getsize(path)
+        if not 0 < size <= MAX_UPLOAD_BYTES:
+            return None
+        with open(path, "rb") as source:
+            return source.read()
+    except OSError:
         return None
 
 
@@ -360,6 +376,10 @@ class WorkerServer:
         # A saved recording on disk, given in place of appended chunks. The
         # worker reads it in parts and never changes or removes it.
         audio_path = str(request.params.get("audio_path") or "")
+        # A smaller lossless copy of that file (FLAC) to upload in its place.
+        # The desktop removes it once this request finishes.
+        upload_path = str(request.params.get("upload_path") or "")
+        upload_mime_type = str(request.params.get("upload_mime_type") or "")
         session = self._session(request)
         if session is None:
             return self._err(request.id, "bad_request", "Unknown session_id")
@@ -371,7 +391,9 @@ class WorkerServer:
             session.finalizing = True
 
         try:
-            return self._finalize(request.id, session, mime_type, audio_path)
+            return self._finalize(
+                request.id, session, mime_type, audio_path, upload_path, upload_mime_type
+            )
         except _Cancelled:
             return self._cancelled(request.id, session)
         finally:
@@ -384,7 +406,13 @@ class WorkerServer:
             raise _Cancelled()
 
     def _finalize(
-        self, request_id: str, session: Session, mime_type: str, audio_path: str = ""
+        self,
+        request_id: str,
+        session: Session,
+        mime_type: str,
+        audio_path: str = "",
+        upload_path: str = "",
+        upload_mime_type: str = "",
     ) -> WorkerResponse:
         session_id = session.session_id
         if audio_path and session.realtime_stream:
@@ -441,11 +469,8 @@ class WorkerServer:
                     [*(session.realtime_segments or []), final_segment]
                 ).strip()
             else:
-                text = session.openai.transcribe_file(
-                    audio_path,
-                    mime_type=mime_type,
-                    prompt=session.prompt,
-                    on_progress=on_progress,
+                text = self._transcribe_saved(
+                    session, audio_path, mime_type, upload_path, upload_mime_type, on_progress
                 )
         except _Cancelled:
             raise
@@ -511,6 +536,39 @@ class WorkerServer:
 
         self._emit(session, {"type": "final", "text": text})
         return self._ok(request_id, {"final_text": text})
+
+    def _transcribe_saved(
+        self,
+        session: Session,
+        audio_path: str,
+        mime_type: str,
+        upload_path: str,
+        upload_mime_type: str,
+        on_progress: Callable[[int, int], None],
+    ) -> str:
+        """Transcribes a saved recording. Its upload copy goes in one request
+        when there is one; the saved file itself, in parts when it is long,
+        when there is none or the service refuses the copy."""
+        upload = _read_upload_copy(upload_path) if upload_path and upload_mime_type else None
+        if upload is not None:
+            try:
+                return session.openai.transcribe_bytes(
+                    upload, upload_mime_type, prompt=session.prompt
+                )
+            except openai.BadRequestError as exc:
+                self._check_cancelled(session)
+                sys.stderr.write(
+                    f"[worker] upload copy refused session_id={session.session_id!r} "
+                    f"mime_type={upload_mime_type!r} error={describe_error(exc)}; "
+                    "sending the saved file\n"
+                )
+                sys.stderr.flush()
+        return session.openai.transcribe_file(
+            audio_path,
+            mime_type=mime_type,
+            prompt=session.prompt,
+            on_progress=on_progress,
+        )
 
     def _cancelled(self, request_id: str, session: Session) -> WorkerResponse:
         sys.stderr.write(
