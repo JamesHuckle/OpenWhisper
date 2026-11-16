@@ -460,6 +460,22 @@ async function refreshMicDevices() {
   renderMicList();
 }
 
+// Opens the picked microphone. One that is gone (headphones switched off or
+// unplugged) falls back to the Windows default, which becomes the choice.
+async function openMicrophone(constraints: MediaStreamConstraints): Promise<MediaStream> {
+  try {
+    return await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (error) {
+    const name = error instanceof DOMException ? error.name : "";
+    const deviceGone = name === "OverconstrainedError" || name === "NotFoundError";
+    if (selectedMicId === "default" || !deviceGone) throw error;
+    logDebug(`picked microphone unavailable (${name}); using the system default`);
+    selectedMicId = "default";
+    renderMicList();
+    return navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+}
+
 function renderMicList() {
   micList.innerHTML = "";
   const all: MicDevice[] = [{ id: "default", label: "System default" }, ...micDevices];
@@ -1209,7 +1225,7 @@ async function startRecording() {
       // Capture is deliberately attached before the backup file, the worker
       // or any network startup. Its opening chunks wait until those are ready.
       startCapture: async () => {
-        micStream = await navigator.mediaDevices.getUserMedia(constraints);
+        micStream = await openMicrophone(constraints);
         await startPcmCapture(micStream);
         isRecording = true;
         return micStream;

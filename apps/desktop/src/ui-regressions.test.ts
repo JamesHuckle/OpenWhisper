@@ -395,6 +395,18 @@ describe("desktop regression contracts", () => {
     expect(pkg).not.toContain("sound-visualizer");
   });
 
+  it("records from the Windows default microphone unless one is picked, and falls back when it is gone", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+
+    expect(main).toContain('let selectedMicId = "default";');
+    expect(main).toContain(
+      'audio: selectedMicId === "default" ? true : { deviceId: { exact: selectedMicId } },',
+    );
+    expect(main).toContain("micStream = await openMicrophone(constraints);");
+    expect(main).toContain('name === "OverconstrainedError" || name === "NotFoundError"');
+    expect(main).toContain("return navigator.mediaDevices.getUserMedia({ audio: true });");
+  });
+
   it("records only through the PCM worklet, so a Live finalize always names PCM", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const finalizeBody = main.slice(
