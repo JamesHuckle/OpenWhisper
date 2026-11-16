@@ -140,12 +140,82 @@ class OpenAiHttpTranscriptionClientTest {
         assertTrue(service.uploads.all { it.size <= AudioRules.MAX_UPLOAD_BYTES + 1_024 })
     }
 
-    private class FakeService(vararg responses: String) {
+    @Test
+    fun partsAreUploadedAsLosslessFlacWhenThePhoneCanEncodeIt() {
+        val encoded = mutableListOf<Int>()
+        val service = FakeService("Hello.", encodeFlac = { pcm, rate ->
+            encoded += rate
+            "fLaC".encodeToByteArray() + pcm.copyOf(pcm.size / 2)
+        })
+
+        assertEquals("Hello.", service.client.transcribe(pcmAudio()))
+
+        assertEquals(listOf(16_000), encoded)
+        assertEquals(1, service.uploads.size)
+        val upload = service.uploads.single().decodeToString()
+        assertTrue(upload.contains("filename=\"dictation.flac\"\r\nContent-Type: audio/flac\r\n\r\nfLaC"))
+    }
+
+    @Test
+    fun aPhoneThatCannotEncodeFlacUploadsWav() {
+        val service = FakeService("Hello.")
+
+        assertEquals("Hello.", service.client.transcribe(pcmAudio()))
+
+        val upload = service.uploads.single().decodeToString()
+        assertTrue(upload.contains("filename=\"dictation.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF"))
+    }
+
+    @Test
+    fun refusedFlacIsSentOnceMoreAsWavAndSkippedAfterwards() {
+        var encoded = 0
+        val service = FakeService(
+            "Unsupported file", "Hello.", "Again.",
+            statuses = listOf(400),
+            encodeFlac = { _, _ -> encoded += 1; "fLaC1234".encodeToByteArray() },
+        )
+
+        assertEquals("Hello.", service.client.transcribe(pcmAudio()))
+        assertEquals("Again.", service.client.transcribe(pcmAudio()))
+
+        val types = service.uploads.map {
+            Regex("Content-Type: (audio/[a-z]+)").find(it.decodeToString())?.groupValues?.get(1)
+        }
+        assertEquals(listOf("audio/flac", "audio/wav", "audio/wav"), types)
+        assertEquals(1, encoded)
+    }
+
+    @Test
+    fun otherServiceErrorsAreReportedWithoutASecondUpload() {
+        val service = FakeService(
+            "Incorrect API key",
+            statuses = listOf(401),
+            encodeFlac = { _, _ -> "fLaC1234".encodeToByteArray() },
+        )
+
+        val error = assertThrows(TranscriptionHttpException::class.java) {
+            service.client.transcribe(pcmAudio())
+        }
+
+        assertEquals(401, error.statusCode)
+        assertEquals("Incorrect API key", error.message)
+        assertEquals(1, service.uploads.size)
+    }
+
+    private class FakeService(
+        vararg responses: String,
+        statuses: List<Int> = emptyList(),
+        encodeFlac: (ByteArray, Int) -> ByteArray = { _, _ -> error("No FLAC encoder in unit tests") },
+    ) {
         private val texts = ArrayDeque(responses.toList())
+        private val statuses = ArrayDeque(statuses)
         val uploads = mutableListOf<ByteArray>()
         val client = OpenAiHttpTranscriptionClient(
             apiKey = { "sk-test" },
-            openConnection = { url -> FakeConnection(URL(url), texts.removeFirst(), uploads) },
+            openConnection = { url ->
+                FakeConnection(URL(url), texts.removeFirst(), uploads, this.statuses.removeFirstOrNull() ?: 200)
+            },
+            encodeFlac = encodeFlac,
         )
     }
 
@@ -153,6 +223,7 @@ class OpenAiHttpTranscriptionClientTest {
         url: URL,
         private val text: String,
         private val uploads: MutableList<ByteArray>,
+        private val status: Int = 200,
     ) : HttpURLConnection(url) {
         private val body = object : ByteArrayOutputStream() {
             override fun close() {
@@ -164,9 +235,11 @@ class OpenAiHttpTranscriptionClientTest {
         override fun disconnect() = Unit
         override fun usingProxy() = false
         override fun getOutputStream(): OutputStream = body
-        override fun getResponseCode() = 200
+        override fun getResponseCode() = status
         override fun getInputStream(): InputStream =
             "{\"text\":\"$text\"}".byteInputStream()
+        override fun getErrorStream(): InputStream =
+            "{\"error\":{\"message\":\"$text\"}}".byteInputStream()
     }
 
     private class BlockingConnection(

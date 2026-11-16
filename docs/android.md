@@ -46,7 +46,12 @@ during dictation still cancel insertion.
   password state, and sensitivity. Commit is refused if focus or content
   changed during dictation.
 - `AndroidAudioRecorder` captures mono 16 kHz PCM and `WavEncoder` writes every
-  WAV header: the saved recording's and each upload's.
+  WAV header: the saved recording's and each WAV upload's.
+- `FlacFileEncoder` turns each upload part into lossless FLAC with the phone's
+  own `MediaCodec` encoder, about half the bytes of WAV for speech. If the
+  phone cannot encode FLAC the part goes as WAV, and if the service refuses
+  the FLAC (HTTP 400) the part is sent once more as WAV and later parts skip
+  FLAC.
 - `OpenAiHttpTranscriptionClient` sends multipart form data directly to
   `POST /v1/audio/transcriptions` using `gpt-transcribe`. This request
   shape and model are supported by the current
@@ -87,8 +92,8 @@ The test command performs a clean build and runs:
 
 - JVM tests for cursor/selection preservation, password/sensitive rejection,
   stale focus/content rejection, overlay placement, state transitions,
-  cancellation, error recovery, WAV encoding, multipart requests, response
-  parsing, and microphone shutdown races;
+  cancellation, error recovery, WAV encoding, FLAC upload with WAV fallback,
+  multipart requests, response parsing, and microphone shutdown races;
 - Android Keystore instrumentation tests proving encrypted round-trip, clear,
   and absence of plaintext in preferences;
 - an offline end-to-end device test that enables the accessibility service,

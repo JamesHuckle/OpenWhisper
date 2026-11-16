@@ -14,6 +14,10 @@ data class TranscriptionHttpRequest(
 open class TranscriptionException(message: String, cause: Throwable? = null) :
     Exception(message, cause)
 
+/** The service answered with an error status, such as 400 for audio it cannot read. */
+class TranscriptionHttpException(val statusCode: Int, message: String) :
+    TranscriptionException(message)
+
 data class TranscriptionAudio(
     val file: File,
     val mimeType: String,
@@ -34,12 +38,14 @@ class OpenAiRequestFactory(
 ) {
     fun create(
         apiKey: String,
-        wav: ByteArray,
+        audio: ByteArray,
         model: String = "gpt-transcribe",
         prompt: String = "",
+        mimeType: String = WAV_MIME_TYPE,
     ): TranscriptionHttpRequest {
         require(apiKey.isNotBlank()) { "API key is required" }
-        require(wav.isNotEmpty()) { "WAV audio is required" }
+        require(audio.isNotEmpty()) { "Audio is required" }
+        val extension = if (mimeType == FLAC_MIME_TYPE) "flac" else "wav"
         val boundary = boundaryFactory()
         val output = ByteArrayOutputStream()
 
@@ -56,10 +62,10 @@ class OpenAiRequestFactory(
         output.writeUtf8("--$boundary\r\n")
         output.writeUtf8(
             "Content-Disposition: form-data; name=\"file\"; " +
-                "filename=\"dictation.wav\"\r\n",
+                "filename=\"dictation.$extension\"\r\n",
         )
-        output.writeUtf8("Content-Type: audio/wav\r\n\r\n")
-        output.write(wav)
+        output.writeUtf8("Content-Type: $mimeType\r\n\r\n")
+        output.write(audio)
         output.writeUtf8("\r\n--$boundary--\r\n")
 
         return TranscriptionHttpRequest(
@@ -76,6 +82,11 @@ class OpenAiRequestFactory(
     private fun ByteArrayOutputStream.writeUtf8(value: String) {
         write(value.encodeToByteArray())
     }
+
+    companion object {
+        const val WAV_MIME_TYPE = "audio/wav"
+        const val FLAC_MIME_TYPE = "audio/flac"
+    }
 }
 
 object OpenAiResponseParser {
@@ -84,7 +95,7 @@ object OpenAiResponseParser {
             val message = runCatching {
                 JSONObject(body).getJSONObject("error").getString("message")
             }.getOrDefault("Transcription request failed with HTTP $statusCode")
-            throw TranscriptionException(message)
+            throw TranscriptionHttpException(statusCode, message)
         }
 
         // An empty text is a valid answer: a silent part of a long recording.

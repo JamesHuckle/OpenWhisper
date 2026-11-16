@@ -11,7 +11,7 @@ class OpenAiRequestFactoryTest {
         val wav = byteArrayOf(0, 1, 2, 3, 13, 10, -1)
         val request = OpenAiRequestFactory(boundaryFactory = { "test-boundary" }).create(
             apiKey = "sk-test-secret",
-            wav = wav,
+            audio = wav,
             model = "gpt-transcribe",
         )
 

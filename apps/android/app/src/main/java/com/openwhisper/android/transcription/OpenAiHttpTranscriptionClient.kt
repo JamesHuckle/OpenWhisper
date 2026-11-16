@@ -1,10 +1,12 @@
 package com.openwhisper.android.transcription
 
+import com.openwhisper.android.audio.FlacFileEncoder
 import com.openwhisper.android.audio.WavEncoder
 import java.io.File
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -14,8 +16,14 @@ class OpenAiHttpTranscriptionClient(
     private val openConnection: (String) -> HttpURLConnection = { url ->
         URL(url).openConnection() as HttpURLConnection
     },
+    /** Encodes 16-bit mono PCM at a sample rate to FLAC, or throws. */
+    private val encodeFlac: (ByteArray, Int) -> ByteArray = FlacFileEncoder::encodePcm16Mono,
 ) : TranscriptionClient {
     private val generation = AtomicLong(0)
+
+    // Set when the service refused this phone's FLAC but took the same audio
+    // as WAV, so later parts and dictations skip the refused upload.
+    private val flacRefused = AtomicBoolean(false)
     private val activeConnection = AtomicReference<HttpURLConnection?>(null)
 
     // Makes cancelling and registering a connection one step each, so a
@@ -47,7 +55,7 @@ class OpenAiHttpTranscriptionClient(
                     "Use a smaller MP3/M4A, split the file, or import a PCM WAV file.",
             )
         }
-        return transcribeRequest(key, audio.file.readBytes(), "", started).trim()
+        return transcribeRequest(key, audio.file.readBytes(), WAV, "", started).trim()
             .ifBlank { throw NoSpeechException("empty_transcript") }
     }
 
@@ -67,9 +75,8 @@ class OpenAiHttpTranscriptionClient(
             for (count in pcmChunkSizes(audio.pcmDataLength, AudioRules.MAX_PCM_BYTES_PER_UPLOAD)) {
                 val pcm = ByteArray(count)
                 source.readFully(pcm)
-                val wav = WavEncoder.encodePcm16Mono(pcm, sampleRate)
                 val prompt = transcripts.lastOrNull(String::isNotBlank)?.takeLast(1_200).orEmpty()
-                val text = transcribeRequest(key, wav, prompt, started).trim()
+                val text = transcribePart(key, pcm, sampleRate, prompt, started).trim()
                 // Each later part is sent with the previous part's text as its
                 // prompt; a silent part makes the model repeat it.
                 transcripts += if (AudioRules.echoesPrompt(text, prompt)) "" else text
@@ -79,14 +86,48 @@ class OpenAiHttpTranscriptionClient(
             .ifBlank { throw NoSpeechException("empty_transcript") }
     }
 
+    /**
+     * Sends one part as lossless FLAC, about half the bytes of WAV for
+     * speech. It goes as WAV when the phone cannot encode FLAC, and once more
+     * as WAV when the service refuses the FLAC.
+     */
+    private fun transcribePart(
+        key: String,
+        pcm: ByteArray,
+        sampleRate: Int,
+        prompt: String,
+        started: Long,
+    ): String {
+        val flac = if (flacRefused.get()) {
+            null
+        } else {
+            try {
+                encodeFlac(pcm, sampleRate).takeIf(ByteArray::isNotEmpty)
+            } catch (_: Exception) {
+                null
+            }
+        }
+        if (flac != null) {
+            try {
+                return transcribeRequest(key, flac, FLAC, prompt, started)
+            } catch (error: TranscriptionHttpException) {
+                if (error.statusCode != 400) throw error
+            }
+        }
+        val wav = WavEncoder.encodePcm16Mono(pcm, sampleRate)
+        return transcribeRequest(key, wav, WAV, prompt, started)
+            .also { if (flac != null) flacRefused.set(true) }
+    }
+
     private fun transcribeRequest(
         key: String,
-        wav: ByteArray,
+        audio: ByteArray,
+        mimeType: String,
         prompt: String,
         started: Long,
     ): String {
         throwIfCancelled(started)
-        val request = requestFactory.create(key, wav, prompt = prompt)
+        val request = requestFactory.create(key, audio, prompt = prompt, mimeType = mimeType)
         val connection = openConnection(request.url)
         val registered = synchronized(connectionLock) {
             // A cancel that came just before the connection was registered.
@@ -131,6 +172,8 @@ class OpenAiHttpTranscriptionClient(
 
     companion object {
         const val CANCELLED_MESSAGE = "Transcription cancelled"
+        private const val WAV = OpenAiRequestFactory.WAV_MIME_TYPE
+        private const val FLAC = OpenAiRequestFactory.FLAC_MIME_TYPE
     }
 }
 
