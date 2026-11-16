@@ -1,4 +1,6 @@
 mod api_key_store;
+#[cfg(target_os = "windows")]
+mod foreground_app;
 // Parts of the insertion rules are used only by the Windows writer.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod paste_target;
@@ -64,9 +66,11 @@ fn overlay_bottom_anchor(monitor_bottom: i32, work_bottom: i32, is_primary: bool
 // text is kept out of clipboard history and cloud sync.
 #[cfg(target_os = "windows")]
 mod text_inserter {
+    use crate::foreground_app::ForegroundApp;
     use crate::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
     use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
-    use std::sync::Mutex;
+    use std::sync::mpsc::Sender;
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     static TRACKED_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -86,6 +90,10 @@ mod text_inserter {
     /// while a piece is being typed is still seen at the next check.
     static USER_INPUT_COUNT: AtomicU64 = AtomicU64::new(0);
     static SESSION: Mutex<Option<PasteSession>> = Mutex::new(None);
+    static FOREGROUND_APP: Mutex<ForegroundApp> = Mutex::new(ForegroundApp::new());
+    /// Wakes the dispatcher thread in `run()` when a shortcut flag is set or
+    /// the followed window changes. Nothing polls the flags.
+    static DISPATCHER_WAKE: OnceLock<Sender<()>> = OnceLock::new();
 
     /// The target locked for one recording and the live draft typed into it.
     struct PasteSession {
@@ -121,6 +129,10 @@ mod text_inserter {
 
     const WH_KEYBOARD_LL: i32 = 13;
     const WH_MOUSE_LL: i32 = 14;
+    const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
+    const EVENT_OBJECT_FOCUS: u32 = 0x8005;
+    const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
+    const WINEVENT_SKIPOWNPROCESS: u32 = 0x0002;
     const WM_NULL: u32 = 0x0000;
     const WM_KEYDOWN: u32 = 0x0100;
     const WM_KEYUP: u32 = 0x0101;
@@ -249,6 +261,15 @@ mod text_inserter {
             dw_thread_id: u32,
         ) -> isize;
         fn CallNextHookEx(hhk: isize, n_code: i32, w_param: usize, l_param: isize) -> isize;
+        fn SetWinEventHook(
+            event_min: u32,
+            event_max: u32,
+            hmod_win_event_proc: isize,
+            pfn_win_event_proc: unsafe extern "system" fn(isize, u32, isize, i32, i32, u32, u32),
+            id_process: u32,
+            id_thread: u32,
+            dw_flags: u32,
+        ) -> isize;
         fn GetMessageW(
             lp_msg: *mut u64,
             h_wnd: isize,
@@ -303,13 +324,22 @@ mod text_inserter {
         }
     }
 
+    fn wake_dispatcher() {
+        if let Some(wake) = DISPATCHER_WAKE.get() {
+            let _ = wake.send(());
+        }
+    }
+
     /// Follow the current foreground window, ignoring our own process. Runs
-    /// every 20 ms; it never changes the target locked for a recording.
+    /// whenever Windows reports a focus change (see `install_input_hooks`);
+    /// it never changes the target locked for a recording.
     pub fn track_foreground() {
         let hwnd = unsafe { GetForegroundWindow() };
         if hwnd != 0 && !is_own_process(hwnd) {
-            TRACKED_HWND.store(hwnd, Ordering::Relaxed);
             TRACKED_FOCUS_HWND.store(focused_control(hwnd), Ordering::Relaxed);
+            if TRACKED_HWND.swap(hwnd, Ordering::Relaxed) != hwnd {
+                wake_dispatcher();
+            }
         }
     }
 
@@ -326,7 +356,12 @@ mod text_inserter {
         *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
     }
 
-    /// Returns the executable name (without `.exe`) of the tracked foreground window.
+    fn lock_foreground_app() -> std::sync::MutexGuard<'static, ForegroundApp> {
+        FOREGROUND_APP.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Returns the executable name (without `.exe`) of the tracked foreground
+    /// window, looked up once per process.
     pub fn foreground_app_name() -> Option<String> {
         let hwnd = TRACKED_HWND.load(Ordering::Relaxed);
         if hwnd == 0 {
@@ -334,9 +369,17 @@ mod text_inserter {
         }
         let mut pid: u32 = 0;
         unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-        if pid == 0 {
-            return None;
-        }
+        lock_foreground_app().name_for(pid, process_name)
+    }
+
+    /// The foreground program's name when it changed since the last call,
+    /// for the settings menu.
+    pub fn foreground_app_change() -> Option<Option<String>> {
+        let name = foreground_app_name();
+        lock_foreground_app().report(name)
+    }
+
+    fn process_name(pid: u32) -> Option<String> {
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle == 0 {
             return None;
@@ -779,9 +822,16 @@ mod text_inserter {
         }
     }
 
+    /// Notes a Ctrl or Space event for the debug log and wakes the dispatcher,
+    /// which then reads the shortcut flags set just before.
+    fn record_key_event(bit: u32) {
+        DEBUG_EVENT_BITS.fetch_or(bit, Ordering::SeqCst);
+        wake_dispatcher();
+    }
+
     // The hook procs must stay extremely small to avoid Windows timing them
-    // out. They only flip atomics and swallow Space while the Ctrl+Space
-    // gesture is active.
+    // out. They only flip atomics, wake the dispatcher and swallow Space while
+    // the Ctrl+Space gesture is active.
     unsafe extern "system" fn ll_keyboard_proc(
         n_code: i32,
         w_param: usize,
@@ -799,43 +849,43 @@ mod text_inserter {
                     VK_CONTROL_CODE | VK_LCONTROL_CODE | VK_RCONTROL_CODE => {
                         if down {
                             CTRL_HELD.store(true, Ordering::SeqCst);
-                            DEBUG_EVENT_BITS.fetch_or(DBG_CTRL_DOWN, Ordering::SeqCst);
+                            record_key_event(DBG_CTRL_DOWN);
                         } else if up {
                             CTRL_HELD.store(false, Ordering::SeqCst);
-                            DEBUG_EVENT_BITS.fetch_or(DBG_CTRL_UP, Ordering::SeqCst);
+                            record_key_event(DBG_CTRL_UP);
                             if PRESS_TO_TALK_ACTIVE.swap(false, Ordering::SeqCst) {
                                 PRESS_TO_TALK_STOP.store(true, Ordering::SeqCst);
-                                DEBUG_EVENT_BITS.fetch_or(DBG_STOP_BY_CTRL, Ordering::SeqCst);
+                                record_key_event(DBG_STOP_BY_CTRL);
                             }
                         }
                     }
                     VK_SPACE => {
                         // Check repeat first: if we're already in press-to-talk, subsequent downs are key repeat
                         if SPACE_SWALLOWED.load(Ordering::SeqCst) && down {
-                            DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_REPEAT, Ordering::SeqCst);
+                            record_key_event(DBG_SPACE_REPEAT);
                             return 1;
                         }
 
                         if down && CTRL_HELD.load(Ordering::SeqCst) {
                             SPACE_SWALLOWED.store(true, Ordering::SeqCst);
-                            DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_DOWN, Ordering::SeqCst);
+                            record_key_event(DBG_SPACE_DOWN);
                             if HOLD_TO_TALK_ENABLED.load(Ordering::SeqCst) {
                                 if !PRESS_TO_TALK_ACTIVE.swap(true, Ordering::SeqCst) {
                                     PRESS_TO_TALK_START.store(true, Ordering::SeqCst);
-                                    DEBUG_EVENT_BITS.fetch_or(DBG_START_FLAG, Ordering::SeqCst);
+                                    record_key_event(DBG_START_FLAG);
                                 }
                             } else {
                                 TOGGLE_RECORDING.store(true, Ordering::SeqCst);
-                                DEBUG_EVENT_BITS.fetch_or(DBG_TOGGLE_FLAG, Ordering::SeqCst);
+                                record_key_event(DBG_TOGGLE_FLAG);
                             }
                             return 1;
                         }
 
                         if SPACE_SWALLOWED.swap(false, Ordering::SeqCst) && up {
-                            DEBUG_EVENT_BITS.fetch_or(DBG_SPACE_UP, Ordering::SeqCst);
+                            record_key_event(DBG_SPACE_UP);
                             if PRESS_TO_TALK_ACTIVE.swap(false, Ordering::SeqCst) {
                                 PRESS_TO_TALK_STOP.store(true, Ordering::SeqCst);
-                                DEBUG_EVENT_BITS.fetch_or(DBG_STOP_BY_SPACE, Ordering::SeqCst);
+                                record_key_event(DBG_STOP_BY_SPACE);
                             }
                             return 1;
                         }
@@ -891,14 +941,45 @@ mod text_inserter {
         )
     }
 
-    /// Installs the low-level keyboard and mouse hooks and runs a blocking
-    /// message pump. Blocks forever — must be called from a dedicated thread.
-    pub fn install_input_hooks() {
+    /// Windows calls this on this thread's message pump whenever another
+    /// program's window comes to the front or a control in it takes focus.
+    unsafe extern "system" fn focus_event_proc(
+        _hook: isize,
+        _event: u32,
+        _hwnd: isize,
+        _id_object: i32,
+        _id_child: i32,
+        _event_thread: u32,
+        _event_time: u32,
+    ) {
+        track_foreground();
+    }
+
+    /// Installs the low-level keyboard and mouse hooks and the focus-change
+    /// hooks, then runs a blocking message pump. `wake` is signalled whenever
+    /// a shortcut flag is set or the followed window changes. Blocks forever —
+    /// must be called from a dedicated thread.
+    pub fn install_input_hooks(wake: Sender<()>) {
+        let _ = DISPATCHER_WAKE.set(wake);
         let h_mod = unsafe { GetModuleHandleW(std::ptr::null()) };
         let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, h_mod, 0) };
         HOOK_HANDLE.store(hook, Ordering::Relaxed);
         let mouse_hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, ll_mouse_proc, h_mod, 0) };
         MOUSE_HOOK_HANDLE.store(mouse_hook, Ordering::Relaxed);
+        for event in [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS] {
+            unsafe {
+                SetWinEventHook(
+                    event,
+                    event,
+                    0,
+                    focus_event_proc,
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                )
+            };
+        }
+        track_foreground();
 
         let mut msg_buf = [0u64; 8];
         loop {
@@ -1314,7 +1395,11 @@ enum PlacementVisibility {
     Show,
 }
 
-const MONITOR_SWITCH_STABLE_SAMPLES: u8 = 5;
+/// How often the pill checks which monitor the cursor is on.
+#[cfg(target_os = "windows")]
+const MONITOR_FOLLOW_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+/// Consecutive same-monitor checks needed before the pill moves.
+const MONITOR_SWITCH_STABLE_SAMPLES: u8 = 2;
 
 #[derive(Default)]
 struct MonitorTransitionDebouncer {
@@ -2657,38 +2742,19 @@ pub fn run() {
 
             #[cfg(target_os = "windows")]
             {
-                std::thread::spawn(|| text_inserter::install_input_hooks());
+                let (wake, woken) = std::sync::mpsc::channel();
+                std::thread::spawn(move || text_inserter::install_input_hooks(wake));
 
-                let poll_handle = app.handle().clone();
+                // Sleeps until the hook thread reports a shortcut or a focus
+                // change, so an idle app does no work here.
+                let shortcut_handle = app.handle().clone();
                 std::thread::spawn(move || {
                     let mut last_hook_log = std::time::Instant::now();
                     let mut last_hook_event = String::new();
-                    let mut monitor_transition = MonitorTransitionDebouncer::default();
-                    loop {
-                        text_inserter::track_foreground();
-                        if let Some(cursor_anchor) = cursor_overlay_anchor() {
-                            let current_anchor = poll_handle
-                                .state::<Arc<AppState>>()
-                                .overlay_anchor
-                                .lock()
-                                .ok()
-                                .and_then(|guard| *guard);
-
-                            // Require five consecutive 20 ms observations before
-                            // gathering and committing the destination geometry.
-                            if let Some(target) =
-                                monitor_transition.observe(current_anchor, cursor_anchor)
-                            {
-                                match sync_overlay_window_to_anchor(&poll_handle, target) {
-                                    Ok(true) => monitor_transition.reset(),
-                                    Ok(false) => {}
-                                    Err(err) => debug_log_line(
-                                        "window",
-                                        &format!("monitor switch failed: {err}"),
-                                    ),
-                                }
-                            }
-                        }
+                    while woken.recv().is_ok() {
+                        // One key press can send several wake-ups; the flags
+                        // below already hold all of them.
+                        while woken.try_recv().is_ok() {}
                         let should_start = text_inserter::take_press_to_talk_start();
                         let should_stop = text_inserter::take_press_to_talk_stop();
                         let should_toggle = text_inserter::take_toggle_recording();
@@ -2713,21 +2779,55 @@ pub fn run() {
                         if should_start {
                             debug_log_line("shortcut", "emit press-to-talk-start");
                             text_inserter::track_foreground();
-                            reveal_overlay_window(&poll_handle);
-                            let _ = poll_handle.emit("press-to-talk-start", ());
+                            reveal_overlay_window(&shortcut_handle);
+                            let _ = shortcut_handle.emit("press-to-talk-start", ());
                         }
                         if should_stop {
                             debug_log_line("shortcut", "emit press-to-talk-stop");
-                            let _ = poll_handle.emit("press-to-talk-stop", ());
+                            let _ = shortcut_handle.emit("press-to-talk-stop", ());
                         }
                         if should_toggle {
                             debug_log_line("shortcut", "emit toggle-recording");
                             text_inserter::track_foreground();
-                            reveal_overlay_window(&poll_handle);
-                            let _ = poll_handle.emit("toggle-recording", ());
+                            reveal_overlay_window(&shortcut_handle);
+                            let _ = shortcut_handle.emit("toggle-recording", ());
                         }
+                        if let Some(name) = text_inserter::foreground_app_change() {
+                            let _ = shortcut_handle.emit("foreground-app-changed", name);
+                        }
+                    }
+                });
 
-                        std::thread::sleep(std::time::Duration::from_millis(20));
+                // Moves the pill to the monitor the cursor is on. It runs on
+                // its own thread so a monitor move never delays a shortcut.
+                let monitor_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let mut monitor_transition = MonitorTransitionDebouncer::default();
+                    loop {
+                        if let Some(cursor_anchor) = cursor_overlay_anchor() {
+                            let current_anchor = monitor_handle
+                                .state::<Arc<AppState>>()
+                                .overlay_anchor
+                                .lock()
+                                .ok()
+                                .and_then(|guard| *guard);
+
+                            // Require two consecutive 100 ms observations before
+                            // gathering and committing the destination geometry.
+                            if let Some(target) =
+                                monitor_transition.observe(current_anchor, cursor_anchor)
+                            {
+                                match sync_overlay_window_to_anchor(&monitor_handle, target) {
+                                    Ok(true) => monitor_transition.reset(),
+                                    Ok(false) => {}
+                                    Err(err) => debug_log_line(
+                                        "window",
+                                        &format!("monitor switch failed: {err}"),
+                                    ),
+                                }
+                            }
+                        }
+                        std::thread::sleep(MONITOR_FOLLOW_INTERVAL);
                     }
                 });
             }
