@@ -32,9 +32,10 @@ use overlay_geometry::{
 };
 use recording_store::PcmWavWriter;
 use recordings::{
-    close_active_recording, import_recording, list_recording_metadata, lock_recordings, now_ms,
-    prune_recordings, read_recording_metadata, write_recording_metadata, ActiveRecording,
-    RecordingMetadata, RecordingStartResponse, RECORDING_RETENTION_COUNT,
+    close_active_recording, finish_recording, import_recording, list_recording_metadata,
+    lock_recordings, now_ms, prune_recordings, read_recording_metadata, recording_parts_path,
+    write_recording_metadata, ActiveRecording, RecordingMetadata, RecordingStartResponse,
+    RECORDING_RETENTION_COUNT,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -379,6 +380,9 @@ async fn recording_transcribe(
         "session_id": session_id,
         "mime_type": metadata.mime_type,
         "audio_path": audio_path.to_string_lossy(),
+        // A long recording's finished parts are kept here, so a retry after
+        // a failure sends only the rest. Removed once it completes.
+        "parts_path": recording_parts_path(&root, &recording_id).to_string_lossy(),
     });
     let mut upload_path = None;
     if metadata.source == "microphone" {
@@ -434,12 +438,7 @@ fn recording_finish(
 ) -> Result<(), String> {
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
     close_active_recording(&state.recordings, &root, &recording_id)?;
-    let mut metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
-    metadata.status = status;
-    metadata.transcript = transcript;
-    metadata.error = error;
-    write_recording_metadata(&root, &metadata).map_err(|e| e.to_string())?;
-    prune_recordings(&root, RECORDING_RETENTION_COUNT).map_err(|e| e.to_string())
+    finish_recording(&root, &recording_id, status, transcript, error).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

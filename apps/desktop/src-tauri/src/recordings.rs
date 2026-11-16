@@ -2,6 +2,11 @@
 //! `metadata.json` with its details. Only the newest
 //! [`RECORDING_RETENTION_COUNT`] are kept.
 //!
+//! While a long recording is transcribed in parts, the worker saves each
+//! finished part in the folder's [`PARTS_FILE_NAME`], so a retry sends only
+//! the parts that did not finish. The file goes when the transcription
+//! completes or the recording is pruned.
+//!
 //! This file needs no Tauri, so its tests also run in `core-tests`.
 
 use crate::json_file;
@@ -15,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub const RECORDING_RETENTION_COUNT: usize = 10;
+pub const PARTS_FILE_NAME: &str = "parts.json";
 
 pub struct ActiveRecording {
     pub writer: PcmWavWriter,
@@ -46,6 +52,11 @@ pub fn recording_metadata_path(root: &std::path::Path, id: &str) -> PathBuf {
     root.join(id).join("metadata.json")
 }
 
+/// Where the worker saves the finished parts of this recording's transcription.
+pub fn recording_parts_path(root: &std::path::Path, id: &str) -> PathBuf {
+    root.join(id).join(PARTS_FILE_NAME)
+}
+
 pub fn read_recording_metadata(root: &std::path::Path, id: &str) -> Result<RecordingMetadata> {
     let path = recording_metadata_path(root, id);
     json_file::read_json_file(&path)?.ok_or_else(|| anyhow!("{} is missing", path.display()))
@@ -71,6 +82,31 @@ pub fn list_recording_metadata(root: &std::path::Path) -> Result<Vec<RecordingMe
     }
     recordings.sort_by(|left, right| right.created_at_ms.cmp(&left.created_at_ms));
     Ok(recordings)
+}
+
+/// Saves a recording's status, transcript and error, then prunes old
+/// recordings. A completed transcription no longer needs its saved parts, so
+/// transcribing it again starts fresh.
+pub fn finish_recording(
+    root: &std::path::Path,
+    id: &str,
+    status: String,
+    transcript: String,
+    error: String,
+) -> Result<()> {
+    let mut metadata = read_recording_metadata(root, id)?;
+    let complete = status == "complete";
+    metadata.status = status;
+    metadata.transcript = transcript;
+    metadata.error = error;
+    write_recording_metadata(root, &metadata)?;
+    if complete {
+        match fs::remove_file(recording_parts_path(root, id)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+    }
+    prune_recordings(root, RECORDING_RETENTION_COUNT)
 }
 
 pub fn prune_recordings(root: &std::path::Path, keep: usize) -> Result<()> {
@@ -267,6 +303,41 @@ mod tests {
         assert!(recordings.lock().unwrap().is_empty());
         // Closing again (transcribe, then finish) is harmless.
         close_active_recording(&recordings, &root, id).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn saved_parts_are_kept_for_a_retry_and_removed_once_complete() {
+        let root = std::env::temp_dir().join(format!("openwhisper-parts-test-{}", Uuid::new_v4()));
+        let metadata = RecordingMetadata {
+            id: "long".to_string(),
+            created_at_ms: 1,
+            name: "Long".to_string(),
+            source: "microphone".to_string(),
+            mime_type: "audio/wav".to_string(),
+            file_name: "audio.wav".to_string(),
+            status: "transcribing".to_string(),
+            bytes: 44,
+            transcript: String::new(),
+            error: String::new(),
+        };
+        write_recording_metadata(&root, &metadata).unwrap();
+        let parts = recording_parts_path(&root, "long");
+        assert_eq!(parts, root.join("long").join("parts.json"));
+        fs::write(&parts, b"{\"key\":\"k\",\"parts\":[]}").unwrap();
+
+        for status in ["failed", "cancelled", "transcribing"] {
+            finish_recording(&root, "long", status.into(), String::new(), "Network".into())
+                .unwrap();
+            assert!(parts.exists(), "{status} keeps the finished parts for a retry");
+        }
+        finish_recording(&root, "long", "complete".into(), "Hello.".into(), String::new()).unwrap();
+        assert!(!parts.exists());
+        let finished = read_recording_metadata(&root, "long").unwrap();
+        assert_eq!(finished.status, "complete");
+        assert_eq!(finished.transcript, "Hello.");
+        // Completing again without a parts file is fine.
+        finish_recording(&root, "long", "complete".into(), "Hello.".into(), String::new()).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

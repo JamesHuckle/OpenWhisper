@@ -10,7 +10,7 @@
 //! `rustc --test`.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -110,14 +110,20 @@ impl PcmWavWriter {
 
 /// Makes a saved microphone recording's header match its length, for a file
 /// that was not closed cleanly (the app stopped while recording). Returns the
-/// file's size.
+/// file's size. A header that already matches is left alone, so the file's
+/// modified time stays the same and a retry can reuse its saved parts.
 pub fn repair_wav_header(path: &Path, sample_rate: u32) -> io::Result<u64> {
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     let file_bytes = file.metadata()?.len();
     if file_bytes >= WAV_HEADER_BYTES {
-        file.seek(SeekFrom::Start(0))?;
-        file.write_all(&header_for(file_bytes, sample_rate))?;
-        file.flush()?;
+        let expected = header_for(file_bytes, sample_rate);
+        let mut current = [0; 44];
+        file.read_exact(&mut current)?;
+        if current != expected {
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(&expected)?;
+            file.flush()?;
+        }
     }
     Ok(file_bytes)
 }
@@ -258,6 +264,18 @@ mod tests {
             54
         );
         assert_eq!(declared_pcm_bytes(&fs::read(&path.0).unwrap()), 10);
+
+        // A header that already matches is not written again, so the file
+        // keeps its modified time (the key its saved parts are kept under).
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        fs::File::options()
+            .write(true)
+            .open(&path.0)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        repair_wav_header(&path.0, MICROPHONE_SAMPLE_RATE).unwrap();
+        assert_eq!(fs::metadata(&path.0).unwrap().modified().unwrap(), old);
     }
 
     #[test]
