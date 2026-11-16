@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from openwhisper_worker.protocol import WorkerRequest
 from openwhisper_worker.server import WorkerServer, serve
-from test_realtime_server import EventLog, pcm_tone
+from test_realtime_server import EventLog, FakeRealtimeOpenAI, pcm_tone
 
 _WAIT_SECONDS = 5
 
@@ -211,6 +211,71 @@ class CancelTests(unittest.TestCase):
         self.assertTrue(log.done(session_id))
         self.assertEqual(server._sessions, {})
 
+
+    def test_a_chunk_that_arrives_after_stop_leaves_no_audio_file(self) -> None:
+        server = WorkerServer(emit=EventLog())
+        server._openai = SlowFileOpenAI()
+        session_id = server.handle(
+            WorkerRequest(id="start", method="start_session")
+        ).result["session_id"]
+        session = server._sessions[session_id]
+        stop = WorkerRequest(id="stop", method="stop_session", params={"session_id": session_id})
+        self.assertTrue(server.handle(stop).ok)
+
+        # The append looked the session up before stop_session removed it.
+        with patch.object(server, "_session", return_value=session):
+            appended = server.handle(
+                WorkerRequest(
+                    id="append",
+                    method="append_audio_chunk",
+                    params={
+                        "session_id": session_id,
+                        "chunk_base64": base64.b64encode(pcm_tone(0.1)).decode("ascii"),
+                    },
+                )
+            )
+
+        self.assertFalse(appended.ok)
+        self.assertEqual(session.audio_path, "")
+
+    def test_stop_during_live_rotation_opens_no_new_stream(self) -> None:
+        openai = FakeRealtimeOpenAI()
+        server = WorkerServer(emit=EventLog())
+        server._openai = openai
+        session_id = server.handle(
+            WorkerRequest(id="start", method="start_session", params={"refine_enabled": False})
+        ).result["session_id"]
+        stop = WorkerRequest(id="stop", method="stop_session", params={"session_id": session_id})
+        first = openai.streams[0]
+        finalize = first.finalize
+
+        def finalize_then_stop() -> str:
+            # stop_session arrives while the old stream is being finalized.
+            self.assertTrue(server.handle(stop).ok)
+            return finalize()
+
+        first.finalize = finalize_then_stop
+        session = server._sessions[session_id]
+
+        def append(chunk: bytes):
+            with patch.object(server, "_session", return_value=session):
+                return server.handle(
+                    WorkerRequest(
+                        id="append",
+                        method="append_audio_chunk",
+                        params={
+                            "session_id": session_id,
+                            "chunk_base64": base64.b64encode(chunk).decode("ascii"),
+                        },
+                    )
+                )
+
+        with patch("openwhisper_worker.server._REALTIME_ROTATE_BYTES", 4):
+            self.assertTrue(append(b"\x01\x02\x03\x04").ok)
+            self.assertFalse(append(b"\x05\x06").ok)
+
+        self.assertTrue(all(stream.closed for stream in openai.streams))
+        self.assertEqual(len(openai.streams), 1)
 
 if __name__ == "__main__":
     unittest.main()

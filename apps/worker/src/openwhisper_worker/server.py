@@ -295,7 +295,7 @@ class WorkerServer:
         with session.lock:
             session.cancelled.set()
             finalizing = session.finalizing
-        stream = session.realtime_stream
+            stream = session.realtime_stream
         if stream:
             stream.close()
         # A running transcription may still read the audio file; it removes
@@ -310,25 +310,29 @@ class WorkerServer:
             return self._err(request.id, "bad_request", "Unknown session_id")
         if not chunk_b64:
             return self._err(request.id, "bad_request", "chunk_base64 is required")
-        if session.finalizing:
-            return self._err(request.id, "bad_request", "Session is already finalizing")
-
         try:
             chunk = base64.b64decode(chunk_b64)
         except Exception as exc:  # noqa: BLE001
             return self._err(request.id, "bad_request", f"Invalid base64 chunk: {exc}")
 
-        if not session.audio_path:
-            audio_file = tempfile.NamedTemporaryFile(
-                prefix=f"openwhisper-{session.session_id}-",
-                suffix=".audio",
-                delete=False,
-            )
-            audio_file.close()
-            session.audio_path = audio_file.name
-        with open(session.audio_path, "ab") as audio_file:
-            audio_file.write(chunk)
-        session.audio_bytes += len(chunk)
+        # Under the lock, so stop_session cannot remove the file (or miss a
+        # new one) mid-write and finalizing never reads a half-written chunk.
+        with session.lock:
+            if session.cancelled.is_set():
+                return self._err(request.id, "bad_request", "Unknown session_id")
+            if session.finalizing:
+                return self._err(request.id, "bad_request", "Session is already finalizing")
+            if not session.audio_path:
+                audio_file = tempfile.NamedTemporaryFile(
+                    prefix=f"openwhisper-{session.session_id}-",
+                    suffix=".audio",
+                    delete=False,
+                )
+                audio_file.close()
+                session.audio_path = audio_file.name
+            with open(session.audio_path, "ab") as audio_file:
+                audio_file.write(chunk)
+            session.audio_bytes += len(chunk)
         if session.realtime_stream:
             if session.realtime_bytes and (
                 session.realtime_bytes + len(chunk) > _REALTIME_ROTATE_BYTES
@@ -336,7 +340,18 @@ class WorkerServer:
                 segment = session.realtime_stream.finalize().strip()
                 if segment:
                     session.realtime_segments.append(segment)
-                session.realtime_stream = self._start_realtime(session)
+                if session.cancelled.is_set():
+                    return self._err(request.id, "bad_request", "Unknown session_id")
+                replacement = self._start_realtime(session)
+                # stop_session reads the stream under the same lock, so it
+                # either closes this replacement or we see it was cancelled.
+                with session.lock:
+                    cancelled = session.cancelled.is_set()
+                    if not cancelled:
+                        session.realtime_stream = replacement
+                if cancelled:
+                    replacement.close()
+                    return self._err(request.id, "bad_request", "Unknown session_id")
                 session.realtime_bytes = 0
             session.realtime_stream.append(chunk)
             session.realtime_bytes += len(chunk)
@@ -522,7 +537,9 @@ class WorkerServer:
             return
         try:
             os.remove(session.audio_path)
-        except FileNotFoundError:
+        except OSError:
+            # Already gone, or (on Windows) still open elsewhere; stopping a
+            # session must not fail because of it.
             pass
 
     @staticmethod
