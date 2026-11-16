@@ -26,6 +26,12 @@ WhisperFlow is split into three runtime layers:
      crash while saving never hides a recording or resets the settings. The
      Android app saves recording details with `AtomicFile`, under one lock
      shared by every `RecordingStore` of the same folder.
+   - code layout: `src-tauri/src/lib.rs` holds the Tauri commands, the tray
+     and start-up. Logic that needs no Tauri sits in files beside it
+     (`settings.rs`, `recordings.rs`, `overlay_geometry.rs` and the files
+     named above), and `src-tauri/core-tests` runs their tests on any system.
+     The Windows-only `text_inserter.rs` and `overlay_positioner.rs` make the
+     Win32 calls.
 3. Model worker (`apps/worker`, Python):
    - OpenAI model catalog and routing
    - speech session orchestration

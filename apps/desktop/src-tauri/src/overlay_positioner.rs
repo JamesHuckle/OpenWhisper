@@ -1,7 +1,7 @@
 //! Finds the monitor under the cursor and places the pill window with Win32
 //! calls (Windows only). The placement maths is in `overlay_geometry.rs`.
 
-use super::{PhysicalPosition, PhysicalSize, PlacementVisibility};
+use crate::overlay_geometry::{overlay_bottom_anchor, PlacementVisibility, Position, Size};
 use std::mem::size_of;
 
 const MONITOR_DEFAULTTOPRIMARY: u32 = 1;
@@ -105,7 +105,7 @@ fn monitor_anchor_at(point: Point, fallback: u32) -> Option<(isize, i32, i32, u3
     Some((
         monitor,
         (info.rc_work.left + info.rc_work.right) / 2,
-        super::overlay_bottom_anchor(
+        overlay_bottom_anchor(
             info.rc_monitor.bottom,
             info.rc_work.bottom,
             info.dw_flags & 1 != 0,
@@ -131,8 +131,8 @@ pub fn cursor_monitor_anchor() -> Option<(isize, i32, i32, u32)> {
 
 pub fn set_window_placement(
     hwnd: isize,
-    position: PhysicalPosition<i32>,
-    size: PhysicalSize<u32>,
+    position: Position,
+    size: Size,
     visibility: PlacementVisibility,
 ) -> Result<(), String> {
     let visibility_flags = match visibility {
@@ -187,7 +187,7 @@ pub fn reassert_topmost(hwnd: isize) {
 
 pub fn window_placement(
     hwnd: isize,
-) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>, u32)> {
+) -> Option<(Position, Size, u32)> {
     let mut rect = Rect {
         left: 0,
         top: 0,
@@ -198,8 +198,8 @@ pub fn window_placement(
         return None;
     }
     Some((
-        PhysicalPosition::new(rect.left, rect.top),
-        PhysicalSize::new(
+        Position::new(rect.left, rect.top),
+        Size::new(
             rect.right.saturating_sub(rect.left) as u32,
             rect.bottom.saturating_sub(rect.top) as u32,
         ),

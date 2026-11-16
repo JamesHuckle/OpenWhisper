@@ -98,6 +98,13 @@ describe("desktop regression contracts", () => {
     for (const name of tauriFreeTested) {
       expect(coreTests).toContain(`#[path = "../src/${name}"]`);
     }
+    // These files use other app files (crate::), so the scan above skips them.
+    for (const name of ["settings.rs", "recordings.rs", "overlay_geometry.rs"]) {
+      expect(coreTests).toContain(`#[path = "../src/${name}"]`);
+    }
+    // core-tests cannot build lib.rs, so tests written there would never run.
+    const lib = readFileSync(resolve(nativeSourceDir, "lib.rs"), "utf8");
+    expect(lib).not.toContain("#[cfg(test)]");
     expect(releaseWorkflow).toContain("working-directory: apps/desktop/src-tauri/core-tests");
     expect(releaseWorkflow).toContain("run: cargo test --locked");
   });

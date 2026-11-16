@@ -15,6 +15,8 @@ mod foreground_app;
 mod json_file;
 #[path = "../src/models.rs"]
 mod models;
+#[path = "../src/overlay_geometry.rs"]
+mod overlay_geometry;
 #[path = "../src/paste_target.rs"]
 mod paste_target;
 #[path = "../src/recording_store.rs"]
