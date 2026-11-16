@@ -1,11 +1,13 @@
 package com.openwhisper.android.recordings
 
 import android.content.Context
+import androidx.core.util.AtomicFile
 import com.openwhisper.android.audio.WavEncoder
 import java.io.File
 import java.io.InputStream
 import java.io.RandomAccessFile
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONObject
 
 data class StoredRecording(
@@ -28,11 +30,18 @@ data class PcmRecording(
     val byteCount: Long,
 )
 
+/**
+ * The saved recordings in one folder. The app screen and the accessibility
+ * service each make their own store, so every store of the same folder shares
+ * one lock, and each recording's details are saved with [AtomicFile]: a crash
+ * while saving leaves the previous details, never a half-written file.
+ */
 class RecordingStore private constructor(private val root: File) {
     constructor(context: Context) : this(File(context.filesDir, "recordings"))
 
-    @Synchronized
-    fun beginPcm(name: String, sampleRate: Int): PcmRecordingWriter {
+    internal val lock: Any = lockFor(root)
+
+    fun beginPcm(name: String, sampleRate: Int): PcmRecordingWriter = synchronized(lock) {
         root.mkdirs()
         val id = UUID.randomUUID().toString()
         val directory = File(root, id).apply { mkdirs() }
@@ -55,16 +64,15 @@ class RecordingStore private constructor(private val root: File) {
             ),
         )
         prune()
-        return PcmRecordingWriter(this, id, file, sampleRate)
+        PcmRecordingWriter(this, id, file, sampleRate)
     }
 
-    @Synchronized
     fun import(
         name: String,
         mimeType: String,
         extension: String,
         input: InputStream,
-    ): StoredRecording {
+    ): StoredRecording = synchronized(lock) {
         root.mkdirs()
         val id = UUID.randomUUID().toString()
         val directory = File(root, id).apply { mkdirs() }
@@ -86,11 +94,10 @@ class RecordingStore private constructor(private val root: File) {
         )
         writeMetadata(recording)
         prune()
-        return recording
+        recording
     }
 
-    @Synchronized
-    fun finish(id: String, status: String, transcript: String = "", error: String = "") {
+    fun finish(id: String, status: String, transcript: String = "", error: String = "") = synchronized(lock) {
         val current = get(id) ?: return
         writeMetadata(
             current.copy(
@@ -103,35 +110,37 @@ class RecordingStore private constructor(private val root: File) {
         prune()
     }
 
-    @Synchronized
-    fun list(): List<StoredRecording> {
+    fun list(): List<StoredRecording> = synchronized(lock) {
         if (!root.exists()) return emptyList()
-        return root.listFiles()
+        root.listFiles()
             .orEmpty()
             .asSequence()
             .filter(File::isDirectory)
             .mapNotNull { directory ->
-                runCatching { parseMetadata(File(directory, METADATA_FILE).readText()) }.getOrNull()
+                runCatching {
+                    parseMetadata(metadataFile(directory).readFully().decodeToString())
+                }.getOrNull()
             }
             .sortedByDescending(StoredRecording::createdAtMs)
             .toList()
     }
 
-    @Synchronized
     fun get(id: String): StoredRecording? = list().firstOrNull { it.id == id }
 
     fun file(recording: StoredRecording): File = File(File(root, recording.id), recording.fileName)
 
     internal fun updateCapturedBytes(id: String, bytes: Long) {
-        synchronized(this) {
+        synchronized(lock) {
             val current = get(id) ?: return
             writeMetadata(current.copy(bytes = bytes + WavEncoder.HEADER_BYTES))
         }
     }
 
+    private fun metadataFile(directory: File) = AtomicFile(File(directory, METADATA_FILE))
+
     private fun writeMetadata(recording: StoredRecording) {
         val directory = File(root, recording.id).apply { mkdirs() }
-        File(directory, METADATA_FILE).writeText(
+        val json =
             JSONObject()
                 .put("id", recording.id)
                 .put("createdAtMs", recording.createdAtMs)
@@ -143,8 +152,16 @@ class RecordingStore private constructor(private val root: File) {
                 .put("bytes", recording.bytes)
                 .put("transcript", recording.transcript)
                 .put("error", recording.error)
-                .toString(2),
-        )
+                .toString(2)
+        val file = metadataFile(directory)
+        val output = file.startWrite()
+        try {
+            output.write(json.encodeToByteArray())
+            file.finishWrite(output)
+        } catch (failure: Throwable) {
+            file.failWrite(output)
+            throw failure
+        }
     }
 
     private fun parseMetadata(raw: String): StoredRecording {
@@ -174,6 +191,11 @@ class RecordingStore private constructor(private val root: File) {
         private const val METADATA_FILE = "metadata.json"
         private val SUPPORTED_EXTENSIONS =
             setOf("wav", "mp3", "m4a", "mp4", "mpeg", "mpga", "webm", "ogg")
+
+        private val folderLocks = ConcurrentHashMap<String, Any>()
+
+        private fun lockFor(root: File): Any =
+            folderLocks.computeIfAbsent(root.absoluteFile.normalize().path) { Any() }
 
         internal fun forDirectory(root: File): RecordingStore = RecordingStore(root)
     }

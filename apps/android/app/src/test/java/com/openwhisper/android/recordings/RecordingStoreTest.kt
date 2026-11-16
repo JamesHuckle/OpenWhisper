@@ -4,6 +4,8 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -66,13 +68,80 @@ class RecordingStoreTest {
         }
     }
 
+    @Test
+    fun aHalfWrittenSaveLeftByACrashIsIgnored() {
+        withStore { store ->
+            val stored = store.import(
+                name = "memo.wav",
+                mimeType = "audio/wav",
+                extension = "wav",
+                input = ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)),
+            )
+            val directory = store.file(stored).parentFile!!
+            File(directory, "metadata.json.new").writeText("{\"id\": \"half wri")
+
+            assertEquals("saved", store.get(stored.id)?.status)
+            store.finish(stored.id, "complete", transcript = "Hello")
+            assertEquals("Hello", store.get(stored.id)?.transcript)
+            assertTrue(File(directory, "metadata.json").readText().contains("\"transcript\": \"Hello\""))
+        }
+    }
+
+    @Test
+    fun storesOfTheSameFolderShareOneLock() {
+        withRoot { root ->
+            val screen = RecordingStore.forDirectory(root)
+            val service = RecordingStore.forDirectory(File(root, "../${root.name}"))
+            assertSame(screen.lock, service.lock)
+        }
+    }
+
+    @Test
+    fun twoStoresUpdatingTheSameRecordingNeverDamageIt() {
+        withRoot { root ->
+            val screen = RecordingStore.forDirectory(root)
+            val service = RecordingStore.forDirectory(root)
+            val stored = screen.import(
+                name = "shared.wav",
+                mimeType = "audio/wav",
+                extension = "wav",
+                input = ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)),
+            )
+            val longText = "words ".repeat(2_000)
+            val failures = mutableListOf<Throwable>()
+            val threads = listOf(screen, service).mapIndexed { index, store ->
+                Thread {
+                    try {
+                        repeat(200) { round ->
+                            store.finish(stored.id, "complete", transcript = "$index-$round $longText")
+                            assertNotNull("the recording vanished", store.get(stored.id))
+                        }
+                    } catch (failure: Throwable) {
+                        synchronized(failures) { failures += failure }
+                    }
+                }.apply { start() }
+            }
+            threads.forEach(Thread::join)
+
+            assertEquals(emptyList<Throwable>(), failures)
+            val last = screen.get(stored.id)
+            assertNotNull(last)
+            assertTrue(last!!.transcript.endsWith(longText))
+            assertTrue(last.transcript.startsWith("0-199 ") || last.transcript.startsWith("1-199 "))
+        }
+    }
+
     private fun withStore(block: (RecordingStore) -> Unit) {
+        withRoot { root -> block(RecordingStore.forDirectory(root)) }
+    }
+
+    private fun withRoot(block: (File) -> Unit) {
         val root = File(
             System.getProperty("java.io.tmpdir"),
             "openwhisper-recording-store-${System.nanoTime()}",
         )
         try {
-            block(RecordingStore.forDirectory(root))
+            block(root)
         } finally {
             root.deleteRecursively()
         }
