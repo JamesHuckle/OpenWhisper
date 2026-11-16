@@ -1968,6 +1968,7 @@ async fn app_save_settings(
     show_idle_pill: Option<bool>,
     hold_to_talk: Option<bool>,
 ) -> Result<FrontendSettings, String> {
+    let mut previous_key = None;
     let updated = {
         let mut current = state
             .settings
@@ -1998,13 +1999,24 @@ async fn app_save_settings(
         // Last, after every check above, so a rejected save leaves the stored
         // key untouched.
         if let Some(key) = openai_api_key {
-            current.openai_api_key = api_key_store::replace(&CredentialStore, &key)
+            let key = api_key_store::replace(&CredentialStore, &key)
                 .map_err(|e| format!("Could not save the API key securely: {e}"))?;
+            previous_key = Some(std::mem::replace(&mut current.openai_api_key, key));
             current.plain_openai_api_key.clear();
         }
         current
     };
-    save_settings(&app_handle, &updated).map_err(|e| e.to_string())?;
+    if let Err(err) = save_settings(&app_handle, &updated) {
+        // The settings stay as they were, so the stored key must too.
+        if let Some(previous) = previous_key {
+            if let Err(restore) = api_key_store::replace(&CredentialStore, &previous) {
+                return Err(format!(
+                    "{err}; the previous API key could not be put back: {restore}"
+                ));
+            }
+        }
+        return Err(err.to_string());
+    }
 
     {
         let mut settings = state
