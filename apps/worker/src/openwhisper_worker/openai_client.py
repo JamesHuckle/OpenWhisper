@@ -175,14 +175,20 @@ def describe_error(exc: BaseException) -> str:
 
 # Signs that the default polish pass would change a transcript: filler words
 # and verbal tics, a sentence opened with "so", a tag "right" at the end,
-# self-corrections marked by dashes and stuttered repeats ("the the").
+# self-corrections marked by dashes and stuttered repeats ("the the"), and
+# what may be a spoken formatting command ("Put this in capitals: hello.") or
+# an enumeration the list rule could format (two or more commas).
 _POLISH_NEEDED = re.compile(
     r"\b(?:um+|uh+|uhm|erm|er|ah|hmm+|mm+|you know|i mean|sort of|kind of|basically|literally)\b"
     r"|(?:^|,\s*)like\b|\blike,"
     r"|^so\b"
     r"|,\s*right\W*$"
     r"|--|\u2014|\u2013|\s-\s|\.\.\.|\u2026"
-    r"|\b(\w+)\s+\1\b",
+    r"|\b(\w+)\s+\1\b"
+    r"|[:;]|,[^,]*,"
+    r"|\b(?:capitals?|capitali[sz]e\w*|upper ?case|lower ?case|all caps|bold|italics?"
+    r"|bullets?|bullet points?|numbered|list|new line|new paragraph|full stop|comma"
+    r"|question mark|exclamation (?:mark|point)|quotes?|quotation marks?|format\w*)\b",
     re.IGNORECASE,
 )
 

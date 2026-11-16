@@ -118,6 +118,10 @@ class OpenWhisperOpenAITests(unittest.TestCase):
             "I want\u2014 I think we should go.",
             "I want -- I think we should go.",
             "Send me the the report.",
+            "Put this in capitals: hello.",
+            "Make the next word bold please.",
+            "New line thanks for coming.",
+            "Buy apples, pears, plums and figs.",
         ):
             with self.subTest(text=text):
                 self.assertFalse(is_short_clean_transcript(text))
