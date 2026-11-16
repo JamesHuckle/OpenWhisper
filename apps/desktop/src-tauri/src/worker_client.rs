@@ -32,34 +32,9 @@ impl WorkerClient {
             cfg!(debug_assertions) && env::var("OPENWHISPER_WORKER_BIN").is_err();
 
         if debug_prefers_python {
-            for python_bin in python_candidates(&worker_src) {
-                let mut cmd = Command::new(&python_bin);
-                cmd.arg("-m")
-                    .arg("openwhisper_worker")
-                    .env("PYTHONPATH", &worker_src)
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped());
-                #[cfg(target_os = "windows")]
-                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
-                match cmd.spawn() {
-                    Ok(child) => {
-                        eprintln!(
-                            "[openwhisper][worker] spawned python worker '{}' with PYTHONPATH='{}'",
-                            python_bin, worker_src
-                        );
-                        child_opt = Some(child);
-                        break;
-                    }
-                    Err(err) => {
-                        last_err = Some(anyhow!(
-                            "Failed to spawn worker with '{}': {}",
-                            python_bin,
-                            err
-                        ));
-                    }
-                }
+            match try_spawn_python(&worker_src) {
+                Ok(child) => child_opt = Some(child),
+                Err(err) => last_err = Some(err),
             }
         }
 
@@ -95,34 +70,9 @@ impl WorkerClient {
         }
 
         if child_opt.is_none() && !debug_prefers_python {
-            for python_bin in python_candidates(&worker_src) {
-                let mut cmd = Command::new(&python_bin);
-                cmd.arg("-m")
-                    .arg("openwhisper_worker")
-                    .env("PYTHONPATH", &worker_src)
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped());
-                #[cfg(target_os = "windows")]
-                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
-                match cmd.spawn() {
-                    Ok(child) => {
-                        eprintln!(
-                            "[openwhisper][worker] spawned python worker '{}' with PYTHONPATH='{}'",
-                            python_bin, worker_src
-                        );
-                        child_opt = Some(child);
-                        break;
-                    }
-                    Err(err) => {
-                        last_err = Some(anyhow!(
-                            "Failed to spawn worker with '{}': {}",
-                            python_bin,
-                            err
-                        ));
-                    }
-                }
+            match try_spawn_python(&worker_src) {
+                Ok(child) => child_opt = Some(child),
+                Err(err) => last_err = Some(err),
             }
         }
 
@@ -261,6 +211,40 @@ fn worker_bin_candidates(app_handle: &AppHandle) -> Vec<PathBuf> {
     paths.push(Path::new(env!("CARGO_MANIFEST_DIR")).join(BUNDLED_WORKER));
 
     paths
+}
+
+/// Starts the worker from its Python source with the first Python that runs.
+fn try_spawn_python(worker_src: &str) -> Result<Child> {
+    let mut last_err: Option<anyhow::Error> = None;
+    for python_bin in python_candidates(worker_src) {
+        let mut cmd = Command::new(&python_bin);
+        cmd.arg("-m")
+            .arg("openwhisper_worker")
+            .env("PYTHONPATH", worker_src)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+        match cmd.spawn() {
+            Ok(child) => {
+                eprintln!(
+                    "[openwhisper][worker] spawned python worker '{}' with PYTHONPATH='{}'",
+                    python_bin, worker_src
+                );
+                return Ok(child);
+            }
+            Err(err) => {
+                last_err = Some(anyhow!(
+                    "Failed to spawn worker with '{}': {}",
+                    python_bin,
+                    err
+                ));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("Failed to spawn worker process")))
 }
 
 fn python_candidates(worker_src: &str) -> Vec<String> {

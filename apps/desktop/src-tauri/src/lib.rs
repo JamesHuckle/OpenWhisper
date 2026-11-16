@@ -614,14 +614,6 @@ async fn worker_ping(
 }
 
 #[tauri::command]
-async fn worker_list_models(
-    app_handle: AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<serde_json::Value, String> {
-    with_worker_request(&app_handle, &state, "list_models", json!({})).await
-}
-
-#[tauri::command]
 async fn worker_start_session(
     app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -1278,7 +1270,6 @@ pub fn run() {
             app_get_openai_api_key,
             app_save_settings,
             worker_ping,
-            worker_list_models,
             worker_start_session,
             worker_stop_session,
             worker_append_audio_chunk,

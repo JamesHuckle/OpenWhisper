@@ -380,6 +380,15 @@ describe("desktop regression contracts", () => {
     expect(finalizeBody).toContain("mimeType: PCM_MIME_TYPE,");
   });
 
+  it("starts the Python worker from one place and keeps no unused worker commands", () => {
+    const lib = readFileSync(resolve(nativeSourceDir, "lib.rs"), "utf8");
+    const client = readFileSync(resolve(nativeSourceDir, "worker_client.rs"), "utf8");
+
+    expect(lib).not.toContain("worker_list_models");
+    expect(client.match(/\.arg\("openwhisper_worker"\)/g)).toHaveLength(1);
+    expect(client.match(/try_spawn_python\(&worker_src\)/g)).toHaveLength(2);
+  });
+
   it("promotes saved transcripts over redundant retranscription", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
 
