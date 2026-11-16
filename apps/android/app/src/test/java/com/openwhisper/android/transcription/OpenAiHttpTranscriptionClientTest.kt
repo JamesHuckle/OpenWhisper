@@ -184,9 +184,9 @@ class OpenAiHttpTranscriptionClientTest {
     @Test
     fun partsAreUploadedAsLosslessFlacWhenThePhoneCanEncodeIt() {
         val encoded = mutableListOf<Int>()
-        val service = FakeService("Hello.", encodeFlac = { pcm, rate ->
+        val service = FakeService("Hello.", encodeFlac = { _, _, length, rate ->
             encoded += rate
-            "fLaC".encodeToByteArray() + pcm.copyOf(pcm.size / 2)
+            "fLaC".encodeToByteArray() + ByteArray(length / 2)
         })
 
         assertEquals("Hello.", service.client.transcribe(pcmAudio()))
@@ -213,7 +213,7 @@ class OpenAiHttpTranscriptionClientTest {
         val service = FakeService(
             "Unsupported file", "Hello.", "Again.",
             statuses = listOf(400),
-            encodeFlac = { _, _ -> encoded += 1; "fLaC1234".encodeToByteArray() },
+            encodeFlac = { _, _, _, _ -> encoded += 1; "fLaC1234".encodeToByteArray() },
         )
 
         assertEquals("Hello.", service.client.transcribe(pcmAudio()))
@@ -231,7 +231,7 @@ class OpenAiHttpTranscriptionClientTest {
         val service = FakeService(
             "Incorrect API key",
             statuses = listOf(401),
-            encodeFlac = { _, _ -> "fLaC1234".encodeToByteArray() },
+            encodeFlac = { _, _, _, _ -> "fLaC1234".encodeToByteArray() },
         )
 
         val error = assertThrows(TranscriptionHttpException::class.java) {
@@ -243,18 +243,88 @@ class OpenAiHttpTranscriptionClientTest {
         assertEquals(1, service.uploads.size)
     }
 
+    @Test
+    fun aLongPartIsStreamedFromTheFileInSmallBlocks() {
+        // A full upload of PCM: about 24 MB, sent as one WAV part.
+        val pcm = ByteArray(AudioRules.MAX_PCM_BYTES_PER_UPLOAD) { (it % 50).toByte() }
+        val service = FakeService("Hello.")
+
+        assertEquals("Hello.", service.client.transcribe(pcmAudio(pcm)))
+
+        val connection = service.connections.single()
+        val upload = service.uploads.single()
+        assertEquals(upload.size.toLong(), connection.declaredLength)
+        assertTrue(connection.largestWrite <= UploadAudio.COPY_BUFFER_BYTES)
+        val wavStart = upload.indexOf("RIFF".encodeToByteArray())
+        assertTrue(
+            upload.copyOfRange(wavStart, wavStart + WavEncoder.HEADER_BYTES)
+                .contentEquals(WavEncoder.header(pcm.size.toLong(), 16_000)),
+        )
+        val samples = upload.copyOfRange(
+            wavStart + WavEncoder.HEADER_BYTES,
+            wavStart + WavEncoder.HEADER_BYTES + pcm.size,
+        )
+        assertTrue(samples.contentEquals(pcm))
+    }
+
+    @Test
+    fun aCompressedImportIsSentWithItsOwnNameAndType() {
+        val mp3 = ByteArray(200_000) { (it % 251).toByte() }
+        val file = File.createTempFile("openwhisper-import-", ".mp3").apply {
+            deleteOnExit()
+            writeBytes(mp3)
+        }
+        val service = FakeService("Imported.")
+
+        val transcript = service.client.transcribe(TranscriptionAudio(file = file, mimeType = "audio/mpeg"))
+
+        assertEquals("Imported.", transcript)
+        val upload = service.uploads.single()
+        val fileHeader = "filename=\"${file.name}\"\r\nContent-Type: audio/mpeg\r\n\r\n"
+            .encodeToByteArray()
+        val start = upload.indexOf(fileHeader) + fileHeader.size
+        assertTrue(start >= fileHeader.size)
+        assertTrue(upload.copyOfRange(start, start + mp3.size).contentEquals(mp3))
+        assertEquals(upload.size.toLong(), service.connections.single().declaredLength)
+        assertTrue(service.connections.single().largestWrite <= UploadAudio.COPY_BUFFER_BYTES)
+    }
+
+    @Test
+    fun cancellingStopsCopyingTheAudioIntoTheUpload() {
+        lateinit var service: FakeService
+        service = FakeService("unused", onWrite = { written ->
+            if (written > 4 * UploadAudio.COPY_BUFFER_BYTES) service.client.cancel()
+        })
+        val pcm = ByteArray(AudioRules.MAX_PCM_BYTES_PER_UPLOAD) { (it % 50).toByte() }
+
+        val error = assertThrows(TranscriptionException::class.java) {
+            service.client.transcribe(pcmAudio(pcm))
+        }
+
+        assertEquals(OpenAiHttpTranscriptionClient.CANCELLED_MESSAGE, error.message)
+        assertTrue(service.uploads.single().size < 6 * UploadAudio.COPY_BUFFER_BYTES)
+    }
+
     private class FakeService(
         vararg responses: String,
         statuses: List<Int> = emptyList(),
-        encodeFlac: (ByteArray, Int) -> ByteArray = { _, _ -> error("No FLAC encoder in unit tests") },
+        encodeFlac: (File, Long, Int, Int) -> ByteArray = { _, _, _, _ -> error("No FLAC encoder in unit tests") },
+        private val onWrite: (Int) -> Unit = {},
     ) {
         private val texts = ArrayDeque(responses.toList())
         private val statuses = ArrayDeque(statuses)
         val uploads = mutableListOf<ByteArray>()
+        val connections = mutableListOf<FakeConnection>()
         val client = OpenAiHttpTranscriptionClient(
             apiKey = { "sk-test" },
             openConnection = { url ->
-                FakeConnection(URL(url), texts.removeFirst(), uploads, this.statuses.removeFirstOrNull() ?: 200)
+                FakeConnection(
+                    URL(url),
+                    texts.removeFirst(),
+                    uploads,
+                    this.statuses.removeFirstOrNull() ?: 200,
+                    onWrite,
+                ).also(connections::add)
             },
             encodeFlac = encodeFlac,
         )
@@ -265,8 +335,19 @@ class OpenAiHttpTranscriptionClientTest {
         private val text: String,
         private val uploads: MutableList<ByteArray>,
         private val status: Int = 200,
+        private val onWrite: (Int) -> Unit = {},
     ) : HttpURLConnection(url) {
+        /** The largest single write into the request, to show nothing is sent whole. */
+        var largestWrite = 0
+        val declaredLength: Long get() = fixedContentLengthLong
+
         private val body = object : ByteArrayOutputStream() {
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                largestWrite = maxOf(largestWrite, len)
+                super.write(b, off, len)
+                onWrite(size())
+            }
+
             override fun close() {
                 uploads += toByteArray()
             }
@@ -324,6 +405,13 @@ class OpenAiHttpTranscriptionClientTest {
         ByteArray(AudioRules.MAX_PCM_BYTES_PER_UPLOAD + 16_000 * 2) { (it % 50).toByte() },
         saveParts = true,
     )
+
+    private fun ByteArray.indexOf(needle: ByteArray): Int {
+        for (index in 0..size - needle.size) {
+            if (needle.indices.all { this[index + it] == needle[it] }) return index
+        }
+        return -1
+    }
 
     private fun promptOf(upload: ByteArray): String? =
         Regex("name=\"prompt\"\r\n\r\n([^\r]*)\r\n")

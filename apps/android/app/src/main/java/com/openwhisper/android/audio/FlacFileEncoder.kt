@@ -4,6 +4,8 @@ import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaFormat
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 
 /**
@@ -19,8 +21,12 @@ object FlacFileEncoder {
     private const val DEADLINE_NANOS = 60_000_000_000L
     private val FLAC_MARKER = "fLaC".encodeToByteArray()
 
-    fun encodePcm16Mono(pcm: ByteArray, sampleRate: Int): ByteArray {
-        require(pcm.isNotEmpty()) { "No audio to encode" }
+    /**
+     * Encodes [length] bytes of 16-bit mono PCM from [offset] in [file]. The
+     * samples are read in blocks as the encoder takes them, never whole.
+     */
+    fun encodePcm16Mono(file: File, offset: Long, length: Int, sampleRate: Int): ByteArray {
+        require(length > 0) { "No audio to encode" }
         val format: MediaFormat =
             MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_FLAC, sampleRate, 1)
         format.setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
@@ -30,7 +36,10 @@ object FlacFileEncoder {
         try {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
-            return withStreamHeader(drain(codec, pcm, sampleRate))
+            return RandomAccessFile(file, "r").use { source ->
+                source.seek(offset)
+                withStreamHeader(drain(codec, source, length, sampleRate))
+            }
         } finally {
             runCatching { codec.stop() }
             codec.release()
@@ -39,8 +48,14 @@ object FlacFileEncoder {
 
     private class Encoded(val bytes: ByteArray, val formatHeader: ByteArray?)
 
-    private fun drain(codec: MediaCodec, pcm: ByteArray, sampleRate: Int): Encoded {
-        val output = ByteArrayOutputStream(pcm.size / 2)
+    private fun drain(
+        codec: MediaCodec,
+        source: RandomAccessFile,
+        length: Int,
+        sampleRate: Int,
+    ): Encoded {
+        val output = ByteArrayOutputStream(length / 2)
+        val block = ByteArray(INPUT_BYTES)
         val info = MediaCodec.BufferInfo()
         val deadline = System.nanoTime() + DEADLINE_NANOS
         var formatHeader: ByteArray? = null
@@ -54,12 +69,13 @@ object FlacFileEncoder {
                     val buffer = checkNotNull(codec.getInputBuffer(index))
                     buffer.clear()
                     // Whole 16-bit samples only.
-                    val count = minOf(buffer.remaining(), pcm.size - offset) and 1.inv()
-                    check(count > 0 || offset == pcm.size) { "FLAC encoder input is too small" }
-                    buffer.put(pcm, offset, count)
+                    val count = minOf(buffer.remaining(), block.size, length - offset) and 1.inv()
+                    check(count > 0 || offset == length) { "FLAC encoder input is too small" }
+                    source.readFully(block, 0, count)
+                    buffer.put(block, 0, count)
                     val presentationUs = offset / 2 * 1_000_000L / sampleRate
                     offset += count
-                    inputDone = offset >= pcm.size - 1
+                    inputDone = offset >= length - 1
                     codec.queueInputBuffer(
                         index,
                         0,

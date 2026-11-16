@@ -48,12 +48,17 @@ during dictation still cancel insertion.
 - `AndroidAudioRecorder` captures mono 16 kHz PCM and `WavEncoder` writes every
   WAV header: the saved recording's and each WAV upload's.
 - `FlacFileEncoder` turns each upload part into lossless FLAC with the phone's
-  own `MediaCodec` encoder, about half the bytes of WAV for speech. If the
+  own `MediaCodec` encoder, about half the bytes of WAV for speech, reading
+  the part from the saved file in blocks. If the
   phone cannot encode FLAC the part goes as WAV, and if the service refuses
   the FLAC (HTTP 400) the part is sent once more as WAV and later parts skip
   FLAC.
 - `OpenAiHttpTranscriptionClient` sends multipart form data directly to
-  `POST /v1/audio/transcriptions` using `gpt-transcribe`. This request
+  `POST /v1/audio/transcriptions` using `gpt-transcribe`. Each part is copied
+  from the saved file into the request in 64 KB blocks (behind a generated
+  WAV header when it goes as WAV), so a long recording is never held in
+  memory; an imported compressed file goes as it is, under its own name and
+  type. This request
   shape and model are supported by the current
   [OpenAI transcription API reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
 - `AudioRules` follows the same dictation rules as the desktop, from
