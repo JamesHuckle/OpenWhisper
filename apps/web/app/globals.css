@@ -10,7 +10,7 @@
   --color-accent: #38d996;
   --color-accent-hover: #45e6a3;
   --color-accent-glow: rgba(56, 217, 150, 0.25);
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
 html {
