@@ -480,7 +480,7 @@ function toggleMenu() {
 async function openMenu() {
   menuOpen = true;
   micMenu.classList.remove("hidden");
-  startAppPoll();
+  void refreshForegroundApp();
   void refreshRecordings();
   await applyOverlayLayout();
 }
@@ -500,7 +500,6 @@ async function collapseOverlay() {
     collapseTimeoutId = null;
   }
   setWidgetHovered(false);
-  stopAppPoll();
   micMenu.classList.add("hidden");
   // A failure panel only lingers while its widget notice is still showing.
   if (noticeWidth === 0) failurePanel.classList.add("hidden");
@@ -1833,31 +1832,22 @@ menuRefinePromptInput.addEventListener("blur", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Foreground app detection (polls while menu is open)
+// Foreground app name: read when the menu opens, then sent by Rust only when
+// the user moves to another program
 // ---------------------------------------------------------------------------
-let appPollTimer: number | null = null;
+function showForegroundApp(name: string | null) {
+  menuTargetAppName.textContent = name ?? "Unknown";
+}
 
-async function pollForegroundApp() {
+async function refreshForegroundApp() {
   try {
-    const name = await invoke<string | null>("get_foreground_app");
-    menuTargetAppName.textContent = name ?? "Unknown";
+    showForegroundApp(await invoke<string | null>("get_foreground_app"));
   } catch {
-    menuTargetAppName.textContent = "Unknown";
+    showForegroundApp(null);
   }
 }
 
-function startAppPoll() {
-  void pollForegroundApp();
-  stopAppPoll();
-  appPollTimer = window.setInterval(() => void pollForegroundApp(), 500);
-}
-
-function stopAppPoll() {
-  if (appPollTimer !== null) {
-    clearInterval(appPollTimer);
-    appPollTimer = null;
-  }
-}
+void listen<string | null>("foreground-app-changed", (event) => showForegroundApp(event.payload));
 
 // ---------------------------------------------------------------------------
 // Tray / global shortcuts: listen for recording events emitted by Rust

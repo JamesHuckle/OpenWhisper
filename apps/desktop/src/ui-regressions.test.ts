@@ -198,7 +198,7 @@ describe("desktop regression contracts", () => {
     expect(lib).not.toContain("fn replace_streamed_target(");
     // Live typing ends for the recording once the native side stops it.
     expect(main).toContain('if (write.outcome !== "typed") {');
-    // The 20 ms loop only tracks; a recording's target is locked separately.
+    // Focus changes only track; a recording's target is locked separately.
     expect(lib).toContain("text_inserter::track_foreground();");
     expect(lib).toContain("text_inserter::capture_target();");
     expect(lib).toContain("KEYEVENTF_UNICODE");
@@ -227,6 +227,25 @@ describe("desktop regression contracts", () => {
     // The worker lock is held only to find or start the worker, so Cancel
     // and settings saves do not wait for a running transcription.
     expect(lib).toContain("Mutex<Option<Arc<WorkerClient>>>");
+  });
+
+  it("waits for Windows events instead of polling shortcuts and the focused program", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const lib = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+
+    // Shortcuts and focus changes wake a dispatcher; no 20 ms loop remains.
+    expect(lib).not.toContain("Duration::from_millis(20)");
+    expect(lib).toContain("while woken.recv().is_ok()");
+    expect(lib).toContain("SetWinEventHook(");
+    expect(lib).toContain("EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS");
+    // Only the monitor check repeats, on its own thread, every 100 ms.
+    expect(lib).toContain("std::thread::sleep(MONITOR_FOLLOW_INTERVAL)");
+    expect(lib).toContain("Duration::from_millis(100)");
+    // The menu hears the program name when it changes instead of every 500 ms.
+    expect(lib).toContain('emit("foreground-app-changed", name)');
+    expect(main).toContain('listen<string | null>("foreground-app-changed"');
+    expect(main).not.toContain("pollForegroundApp");
+    expect(main).not.toMatch(/setInterval\([^)]*get_foreground_app/);
   });
 
   it("ships the worker as a folder build so it starts without unpacking", () => {
