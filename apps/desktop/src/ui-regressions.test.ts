@@ -8,7 +8,12 @@ const nativeSourceDir = resolve(desktopRoot, "src-tauri/src");
 
 // lib.rs and the files split out of it, read together, so a check still
 // holds when code moves between them.
-const nativeSourceFiles = ["lib.rs", "overlay_positioner.rs", "text_inserter.rs"];
+const nativeSourceFiles = [
+  "lib.rs",
+  "overlay_positioner.rs",
+  "recordings.rs",
+  "text_inserter.rs",
+];
 
 function readNativeSource(): string {
   return nativeSourceFiles

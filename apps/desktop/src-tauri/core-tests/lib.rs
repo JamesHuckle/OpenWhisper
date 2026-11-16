@@ -5,6 +5,8 @@
 
 #[path = "../src/api_key_store.rs"]
 mod api_key_store;
+#[path = "../src/debug_log.rs"]
+mod debug_log;
 #[path = "../src/flac_upload.rs"]
 mod flac_upload;
 #[path = "../src/foreground_app.rs"]
@@ -17,6 +19,8 @@ mod models;
 mod paste_target;
 #[path = "../src/recording_store.rs"]
 mod recording_store;
+#[path = "../src/recordings.rs"]
+mod recordings;
 #[path = "../src/settings.rs"]
 mod settings;
 #[path = "../src/worker_connection.rs"]

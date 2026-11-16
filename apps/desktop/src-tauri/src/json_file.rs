@@ -96,6 +96,20 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<JsonRead<T>> {
     }
 }
 
+/// Reads a JSON file saved with [`write_json_atomic`], falling
+/// back to its backup (and saying so in the log) when it is damaged. Returns
+/// None when the file has never been saved.
+pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
+    Ok(match read_json(path)? {
+        JsonRead::Missing => None,
+        JsonRead::Read(value) => Some(value),
+        JsonRead::Recovered { value, problem } => {
+            crate::debug_log::debug_log_line("storage", &format!("{problem}; using its backup"));
+            Some(value)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
