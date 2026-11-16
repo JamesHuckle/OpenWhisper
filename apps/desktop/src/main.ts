@@ -1177,11 +1177,12 @@ async function startRecording() {
     `startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
   );
   if (state !== "idle") return;
-  clearWidgetNotice();
   const cancelsBefore = cancelCount;
   // Show the pill before anything is awaited, so it appears as the shortcut
   // is pressed. A missing key, when already known, shows only its toast.
+  // The notice is cleared after, so a pill already showing one stays up.
   if (appSettings?.hasOpenaiApiKey !== false) setState("starting");
+  clearWidgetNotice();
 
   try {
     const settings = await currentSettings();
