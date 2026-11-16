@@ -31,7 +31,7 @@ import {
   PCM_WORKLET_NAME,
 } from "./pcm-capture";
 import pcmCaptureWorkletUrl from "./pcm-capture.worklet?worker&url";
-import { captureBeforeSession, SessionAudioQueue } from "./recording-pipeline";
+import { SessionAudioQueue, startCaptureFirst } from "./recording-pipeline";
 import { finalWriteNotice, type TargetWrite } from "./target-write";
 import "./styles.css";
 
@@ -85,6 +85,13 @@ let streamAudioToWorker = false;
 let targetWriteQueue: Promise<void> = Promise.resolve();
 let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
 let mediaRecorder: MediaRecorder | null = null;
+// The settings the menu shows. Every change passes through applySettingsUi,
+// so a recording reads them here instead of asking the app each time.
+let appSettings: AppSettings | null = null;
+// Built once at the upload rate with the worklet loaded, then suspended
+// between recordings, so the microphone opens without rebuilding it.
+let pcmContextReady: Promise<AudioContext> | null = null;
+// The context of the capture now running; null when none is.
 let pcmAudioContext: AudioContext | null = null;
 let pcmSource: MediaStreamAudioSourceNode | null = null;
 let pcmProcessor: AudioWorkletNode | null = null;
@@ -671,11 +678,12 @@ function toBase64(buf: ArrayBuffer): string {
 // ---------------------------------------------------------------------------
 // Volume monitor — show wobbly line when mic is silent during recording
 // ---------------------------------------------------------------------------
-function startVolumeMonitor(stream: MediaStream) {
-  const ctx = new AudioContext();
-  const analyser = ctx.createAnalyser();
+// Listens on the running capture's source, in the same audio context.
+function startVolumeMonitor() {
+  const source = pcmSource;
+  if (!source) return;
+  const analyser = source.context.createAnalyser();
   analyser.fftSize = 256;
-  const source = ctx.createMediaStreamSource(stream);
   source.connect(analyser);
   const data = new Uint8Array(analyser.fftSize);
 
@@ -698,9 +706,11 @@ function startVolumeMonitor(stream: MediaStream) {
       cancelAnimationFrame(volumeMonitorFrameId);
       volumeMonitorFrameId = null;
     }
-    source.disconnect();
-    analyser.disconnect();
-    ctx.close();
+    try {
+      source.disconnect(analyser);
+    } catch {
+      // Stopping the capture already disconnected the source.
+    }
     volumeMonitorDisconnect = null;
     delete widget.dataset.silent;
   };
@@ -720,7 +730,10 @@ function queueAudioChunk(buffer: ArrayBuffer) {
 }
 
 function flushAudioBatch() {
-  if (pendingAudioBytes === 0) return;
+  // Audio captured while the backup file is still opening waits here, and
+  // is saved first once it opens.
+  const recordingId = currentRecordingId;
+  if (pendingAudioBytes === 0 || !recordingId) return;
   const combined = new Uint8Array(pendingAudioBytes);
   let offset = 0;
   for (const part of pendingAudioParts) {
@@ -730,18 +743,15 @@ function flushAudioBatch() {
   pendingAudioParts = [];
   pendingAudioBytes = 0;
 
-  const recordingId = currentRecordingId;
-  if (recordingId) {
-    const chunkBase64 = toBase64(combined.buffer);
-    backupTail = backupTail
-      .then(() => invoke<void>("recording_append_chunk", {
-        recordingId,
-        chunkBase64,
-      }))
-      .catch((error) => {
-        backupError ??= error;
-      });
-  }
+  const chunkBase64 = toBase64(combined.buffer);
+  backupTail = backupTail
+    .then(() => invoke<void>("recording_append_chunk", {
+      recordingId,
+      chunkBase64,
+    }))
+    .catch((error) => {
+      backupError ??= error;
+    });
   if (streamAudioToWorker) audioQueue.append(combined.buffer);
 }
 
@@ -974,34 +984,69 @@ menuImportAudio.addEventListener("click", () => void transcribeImportedFile());
 // The context runs at the upload rate, so the browser's filtered resampler
 // converts the microphone audio. The worklet only packs it as 16-bit PCM, on
 // the audio thread, so a busy page cannot drop samples.
-async function startPcmCapture(stream: MediaStream) {
-  const context = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
-  pcmAudioContext = context;
-  if (context.sampleRate !== PCM_SAMPLE_RATE) {
-    throw new Error(`Audio capture runs at ${context.sampleRate} Hz, not ${PCM_SAMPLE_RATE} Hz`);
+function pcmCaptureContext(): Promise<AudioContext> {
+  if (!pcmContextReady) {
+    const ready = (async () => {
+      const context = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
+      try {
+        if (context.sampleRate !== PCM_SAMPLE_RATE) {
+          throw new Error(
+            `Audio capture runs at ${context.sampleRate} Hz, not ${PCM_SAMPLE_RATE} Hz`,
+          );
+        }
+        await context.audioWorklet.addModule(pcmCaptureWorkletUrl);
+        await context.suspend();
+        return context;
+      } catch (error) {
+        void context.close();
+        throw error;
+      }
+    })();
+    pcmContextReady = ready;
+    // A failed build is tried again at the next recording.
+    ready.catch(() => {
+      if (pcmContextReady === ready) pcmContextReady = null;
+    });
   }
-  await context.audioWorklet.addModule(pcmCaptureWorkletUrl);
+  return pcmContextReady;
+}
+
+async function startPcmCapture(stream: MediaStream) {
+  let context = await pcmCaptureContext();
+  if (context.state === "closed") {
+    pcmContextReady = null;
+    context = await pcmCaptureContext();
+  }
   await context.resume();
-  pcmSource = context.createMediaStreamSource(stream);
-  const processor = new AudioWorkletNode(context, PCM_WORKLET_NAME, {
-    numberOfInputs: 1,
-    numberOfOutputs: 1,
-    outputChannelCount: [1],
-    channelCount: 1,
-    channelCountMode: "explicit",
-    channelInterpretation: "speakers",
-  });
-  pcmProcessor = processor;
+  const source = context.createMediaStreamSource(stream);
+  let processor: AudioWorkletNode;
+  try {
+    processor = new AudioWorkletNode(context, PCM_WORKLET_NAME, {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      channelCount: 1,
+      channelCountMode: "explicit",
+      channelInterpretation: "speakers",
+    });
+  } catch (error) {
+    void context.suspend();
+    throw error;
+  }
   processor.port.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
     if (event.data instanceof ArrayBuffer) queueAudioChunk(event.data);
   };
   // A silent path to the speakers keeps the browser pulling audio through
   // the worklet.
-  pcmSilentGain = context.createGain();
-  pcmSilentGain.gain.value = 0;
-  pcmSource.connect(processor);
-  processor.connect(pcmSilentGain);
-  pcmSilentGain.connect(context.destination);
+  const silentGain = context.createGain();
+  silentGain.gain.value = 0;
+  source.connect(processor);
+  processor.connect(silentGain);
+  silentGain.connect(context.destination);
+  pcmAudioContext = context;
+  pcmSource = source;
+  pcmProcessor = processor;
+  pcmSilentGain = silentGain;
   recordingMimeType = PCM_MIME_TYPE;
 }
 
@@ -1039,9 +1084,11 @@ async function stopPcmCapture(keepTail = true) {
   pcmSilentGain = null;
   const context = pcmAudioContext;
   pcmAudioContext = null;
-  if (context) await context.close();
   micStream?.getTracks().forEach((track) => track.stop());
   isRecording = false;
+  // Kept for the next recording; suspended, it does no work meanwhile. One
+  // the system closed is rebuilt when the next recording starts.
+  if (context) await context.suspend().catch(() => undefined);
 }
 
 async function startRecording() {
@@ -1051,10 +1098,10 @@ async function startRecording() {
   );
   if (state !== "idle") return;
   clearWidgetNotice();
+  const cancelsBefore = cancelCount;
 
   try {
-    await invoke("capture_paste_target");
-    const settings = await invoke<AppSettings>("app_get_settings");
+    const settings = await currentSettings();
     if (!settings.hasOpenaiApiKey) {
       showToast("Set your OpenAI API key first (click arrow)");
       setState("idle");
@@ -1065,12 +1112,7 @@ async function startRecording() {
     const constraints: MediaStreamConstraints = {
       audio: selectedMicId === "default" ? true : { deviceId: { exact: selectedMicId } },
     };
-    micStream = await navigator.mediaDevices.getUserMedia(constraints);
-    const backup = await invoke<{ id: string }>("recording_begin", {
-      source: "microphone",
-      name: `Recording ${new Date().toLocaleString()}`,
-    });
-    currentRecordingId = backup.id;
+    currentRecordingId = null;
     backupTail = Promise.resolve();
     backupError = null;
     pendingAudioParts = [];
@@ -1078,13 +1120,15 @@ async function startRecording() {
     sessionFailure = "";
     shouldPasteFinalTranscript = true;
 
-    const result = await captureBeforeSession({
-      // Capture is deliberately attached before any worker or network startup.
-      // The queue retains these opening chunks until a session id is available.
+    const result = await startCaptureFirst({
+      lockPasteTarget: () => invoke("capture_paste_target"),
+      // Capture is deliberately attached before the backup file, the worker
+      // or any network startup. Its opening chunks wait until those are ready.
       startCapture: async () => {
-        await startPcmCapture(micStream!);
+        micStream = await navigator.mediaDevices.getUserMedia(constraints);
+        await startPcmCapture(micStream);
         isRecording = true;
-        return micStream!;
+        return micStream;
       },
       onCaptureStarted: async (stream) => {
         setState("recording");
@@ -1095,7 +1139,7 @@ async function startRecording() {
           slices: 20,
         });
         soundVisualizer.start();
-        startVolumeMonitor(stream);
+        startVolumeMonitor();
         logDebug(`capture ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
         // A hold shortcut may be released, or a toggle shortcut may be pressed
@@ -1107,10 +1151,34 @@ async function startRecording() {
           await stopRecording();
         }
       },
+      openBackup: () => invoke<{ id: string }>("recording_begin", {
+        source: "microphone",
+        name: `Recording ${new Date().toLocaleString()}`,
+      }),
+      onBackupOpened: async (backup) => {
+        if (cancelCount !== cancelsBefore) {
+          // Cancelled while the file was opening; the cancel already tidied
+          // up, and a new recording may have started since.
+          await invoke("recording_finish", {
+            recordingId: backup.id,
+            status: "cancelled",
+            transcript: "",
+            error: "Cancelled by user",
+          }).catch((error) => {
+            logDebug(`recording metadata update failed=${errorMessage(error)}`);
+          });
+          void refreshRecordings();
+          return false;
+        }
+        currentRecordingId = backup.id;
+        flushAudioBatch();
+        return true;
+      },
       startSession: () => invoke<{ session_id: string }>("worker_start_session", {
         profileId: "default",
       }),
     });
+    if (!result) return;
     currentSessionId = result.session_id;
     audioQueue.attachSession(currentSessionId);
     finalTranscript = "";
@@ -1213,7 +1281,7 @@ async function transcribeImportedFile() {
     return;
   }
   try {
-    const settings = await invoke<AppSettings>("app_get_settings");
+    const settings = await currentSettings();
     if (!settings.hasOpenaiApiKey) {
       throw new Error("Set your OpenAI API key before importing audio");
     }
@@ -1242,7 +1310,7 @@ async function retranscribeRecording(recording: RecordingMetadata) {
     return;
   }
   try {
-    const settings = await invoke<AppSettings>("app_get_settings");
+    const settings = await currentSettings();
     if (!settings.hasOpenaiApiKey) {
       throw new Error("Set your OpenAI API key before transcribing saved audio");
     }
@@ -1442,7 +1510,7 @@ if (import.meta.env.DEV) {
   }).__openwhisperRealtimeSmoke = async (chunks, intervalMs = 100) => {
     if (state !== "idle") throw new Error(`Cannot start smoke test while state=${state}`);
     // Only a Live session takes audio chunks; Standard reads the saved file.
-    const settings = await invoke<AppSettings>("app_get_settings");
+    const settings = await currentSettings();
     if (!isLiveTranscription(settings.transcriptionModel)) {
       throw new Error("Choose Live transcription before the realtime smoke test");
     }
@@ -1573,6 +1641,7 @@ function syncModelHint() {
 }
 
 function applySettingsUi(settings: AppSettings, configuredLabel = "Key configured") {
+  appSettings = settings;
   const bubbleWasVisible = settingsLoaded && !hasOpenaiApiKey && state === "idle";
   hasOpenaiApiKey = settings.hasOpenaiApiKey;
   settingsLoaded = true;
@@ -1648,7 +1717,13 @@ async function loadSettings() {
     applySettingsUi(settings);
   } catch {
     applySettingsUi({ hasOpenaiApiKey: false, openaiApiKeyPreview: null, transcriptionModel: DEFAULT_TRANSCRIPTION_MODEL, transcriptionPrompt: "", refineEnabled: true, refinePrompt: "", showIdlePill: true, holdToTalk: true });
+    // Those are placeholders, so a recording asks the app again.
+    appSettings = null;
   }
+}
+
+async function currentSettings(): Promise<AppSettings> {
+  return appSettings ?? invoke<AppSettings>("app_get_settings");
 }
 
 menuShowIdlePillToggle.addEventListener("change", async () => {
@@ -1917,6 +1992,10 @@ if (import.meta.env.PROD) {
 }
 void refreshMicDevices();
 void invoke("worker_ping").catch(() => {});
+// Ready before the first shortcut press; a failure is retried then.
+void pcmCaptureContext().catch((error) => {
+  logDebug(`audio capture warm-up failed=${errorMessage(error)}`);
+});
 
 if (navigator.mediaDevices?.addEventListener) {
   navigator.mediaDevices.addEventListener("devicechange", () => void refreshMicDevices());

@@ -40,6 +40,10 @@ WhisperFlow is split into three runtime layers:
 ## Data flow
 
 1. User starts dictation from UI or global hotkey.
+   The microphone opens first, in an audio context built once and kept
+   suspended between recordings. The paste target is locked and the WAV
+   file opened meanwhile; audio captured before the file opens is held,
+   then saved first. The recording file commands run off the main thread.
 2. Desktop shell opens session in worker via JSON-over-stdio protocol.
 3. The shell saves every audio chunk once, to the recording's WAV file
    (`src-tauri/src/recording_store.rs`). The file stays open while recording;

@@ -1,13 +1,31 @@
 export type AudioChunkUploader = (sessionId: string, buffer: ArrayBuffer) => Promise<unknown>;
 
-export async function captureBeforeSession<Capture, Session>(steps: {
+/**
+ * Starts a recording with the microphone first, so words said right after the
+ * shortcut are kept. The paste target is locked at once, alongside capture;
+ * the backup file opens once capture runs, and the worker session starts
+ * last, after both. The caller holds the audio captured before the backup opens.
+ * onBackupOpened returns false when the recording was cancelled meanwhile;
+ * no session is started then and the result is null.
+ */
+export async function startCaptureFirst<Capture, Backup, Session>(steps: {
+  lockPasteTarget: () => Promise<unknown>;
   startCapture: () => Promise<Capture>;
   onCaptureStarted: (capture: Capture) => void | Promise<void>;
+  openBackup: () => Promise<Backup>;
+  onBackupOpened: (backup: Backup) => boolean | Promise<boolean>;
   startSession: () => Promise<Session>;
-}): Promise<Session> {
+}): Promise<Session | null> {
+  const pasteTarget = steps.lockPasteTarget();
+  // Its failure is reported below, unless capture fails first.
+  pasteTarget.catch(() => undefined);
   const capture = await steps.startCapture();
   await steps.onCaptureStarted(capture);
-  return steps.startSession();
+  // The backup opens while the paste target is still being locked. It is
+  // handed over first, so a paste target failure still finishes it.
+  const proceed = await steps.onBackupOpened(await steps.openBackup());
+  await pasteTarget;
+  return proceed ? steps.startSession() : null;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { captureBeforeSession, SessionAudioQueue } from "./recording-pipeline";
+import { SessionAudioQueue, startCaptureFirst } from "./recording-pipeline";
 
 function chunk(value: number): ArrayBuffer {
   return Uint8Array.of(value).buffer;
@@ -9,7 +9,90 @@ function valueOf(buffer: ArrayBuffer): number {
   return new Uint8Array(buffer)[0];
 }
 
+type FakeInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+
+// Builds the startup steps the way main.ts does, over a fake Tauri invoke.
+function microphoneStartup(invoke: FakeInvoke, events: string[], cancelled = () => false) {
+  return startCaptureFirst({
+    lockPasteTarget: () => invoke("capture_paste_target"),
+    startCapture: async () => {
+      events.push("capture");
+      return "microphone";
+    },
+    onCaptureStarted: async () => {
+      events.push("indicator");
+    },
+    openBackup: () => invoke("recording_begin") as Promise<{ id: string }>,
+    onBackupOpened: (backup) => {
+      events.push(`backup ${backup.id}`);
+      return !cancelled();
+    },
+    startSession: () => invoke("worker_start_session") as Promise<string>,
+  });
+}
+
+async function settle() {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+}
+
 describe("recording startup latency contracts", () => {
+  it("starts capture before a slow recording_begin finishes and holds the session until it does", async () => {
+    const events: string[] = [];
+    const late = new Map<string, (value: unknown) => void>();
+    const invoke: FakeInvoke = (command) => {
+      events.push(`invoke ${command}`);
+      return new Promise((resolve) => late.set(command, resolve));
+    };
+
+    const started = microphoneStartup(invoke, events);
+    await settle();
+
+    // Neither the paste target nor the backup file has answered, yet the
+    // microphone is capturing and the indicator is showing.
+    expect(events).toEqual([
+      "invoke capture_paste_target",
+      "capture",
+      "indicator",
+      "invoke recording_begin",
+    ]);
+
+    late.get("recording_begin")!({ id: "rec-1" });
+    await settle();
+    expect(events.at(-1)).toBe("backup rec-1");
+    expect(events).not.toContain("invoke worker_start_session");
+
+    late.get("capture_paste_target")!(undefined);
+    await settle();
+    expect(events.at(-1)).toBe("invoke worker_start_session");
+    late.get("worker_start_session")!("session-id");
+    await expect(started).resolves.toBe("session-id");
+  });
+
+  it("starts no session for a recording cancelled while its backup opened", async () => {
+    const events: string[] = [];
+    const invoke: FakeInvoke = async (command) => {
+      events.push(`invoke ${command}`);
+      return command === "recording_begin" ? { id: "rec-2" } : undefined;
+    };
+
+    await expect(microphoneStartup(invoke, events, () => true)).resolves.toBeNull();
+    expect(events).toContain("backup rec-2");
+    expect(events).not.toContain("invoke worker_start_session");
+  });
+
+  it("hands over an opened backup before reporting a paste target failure", async () => {
+    const events: string[] = [];
+    const invoke: FakeInvoke = async (command) => {
+      events.push(`invoke ${command}`);
+      if (command === "capture_paste_target") throw new Error("no target");
+      return { id: "rec-3" };
+    };
+
+    await expect(microphoneStartup(invoke, events)).rejects.toThrow("no target");
+    expect(events).toContain("backup rec-3");
+    expect(events).not.toContain("invoke worker_start_session");
+  });
+
   it("never lets cold worker latency postpone capture or the recording indicator", async () => {
     const events: string[] = [];
     let releaseWorker!: (session: string) => void;
@@ -17,7 +100,8 @@ describe("recording startup latency contracts", () => {
       releaseWorker = resolve;
     });
 
-    const started = captureBeforeSession({
+    const started = startCaptureFirst({
+      lockPasteTarget: async () => undefined,
       startCapture: async () => {
         events.push("capture");
         return "microphone";
@@ -25,13 +109,14 @@ describe("recording startup latency contracts", () => {
       onCaptureStarted: async () => {
         events.push("indicator");
       },
+      openBackup: async () => "backup",
+      onBackupOpened: () => true,
       startSession: async () => {
         events.push("worker");
         return workerStartup;
       },
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await settle();
 
     expect(events).toEqual(["capture", "indicator", "worker"]);
     releaseWorker("session-id");

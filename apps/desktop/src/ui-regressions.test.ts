@@ -340,6 +340,34 @@ describe("desktop regression contracts", () => {
     expect(native).toContain("fs::copy(source, dir.join(&file_name))");
   });
 
+  it("opens the microphone without waiting on settings, files or a new audio context", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const lib = readFileSync(resolve(nativeSourceDir, "lib.rs"), "utf8");
+    const beginBody = lib.slice(
+      lib.indexOf("fn recording_begin("),
+      lib.indexOf("fn recording_append_chunk("),
+    );
+
+    // One capture context, reused; the volume monitor listens on it too.
+    expect(main.match(/new AudioContext\(/g)).toHaveLength(1);
+    expect(main).toContain("await context.suspend();");
+    expect(main).not.toContain("context.close();\n  micStream");
+    // Settings come from memory; the app is asked only when they are unknown.
+    expect(main.match(/invoke<AppSettings>\("app_get_settings"\)/g)).toHaveLength(2);
+    expect(main).toContain('openBackup: () => invoke<{ id: string }>("recording_begin"');
+    // File work runs off the main thread, and starting a recording prunes nothing.
+    for (const command of [
+      "recording_begin",
+      "recording_append_chunk",
+      "recording_finish",
+      "recording_list",
+    ]) {
+      expect(lib).toContain(`#[tauri::command(async)]\nfn ${command}(`);
+    }
+    expect(lib).toContain("spawn_blocking(move || import_recording(&root, &source))");
+    expect(beginBody).not.toContain("prune_recordings");
+  });
+
   it("promotes saved transcripts over redundant retranscription", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
 
