@@ -127,11 +127,13 @@ class Win32TextField:
     def text(self) -> str:
         ctypes = self._ctypes
         result = ctypes.c_size_t()
-        self._user32.SendMessageTimeoutW(
+        # A failed read must stop the run, not look like an empty field.
+        if not self._user32.SendMessageTimeoutW(
             self.control, _WM_GETTEXTLENGTH, 0, 0, _SMTO_ABORTIFHUNG, 2000, ctypes.byref(result)
-        )
+        ):
+            raise SystemExit("Could not read the target field's text length")
         buffer = ctypes.create_unicode_buffer(result.value + 1)
-        self._user32.SendMessageTimeoutW(
+        if not self._user32.SendMessageTimeoutW(
             self.control,
             _WM_GETTEXT,
             result.value + 1,
@@ -139,7 +141,8 @@ class Win32TextField:
             _SMTO_ABORTIFHUNG,
             2000,
             ctypes.byref(result),
-        )
+        ):
+            raise SystemExit("Could not read the target field's text")
         return buffer.value
 
 
