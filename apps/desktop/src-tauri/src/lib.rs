@@ -33,9 +33,8 @@ use overlay_geometry::{
 use recording_store::PcmWavWriter;
 use recordings::{
     close_active_recording, finish_recording, import_recording, list_recording_metadata,
-    lock_recordings, now_ms, prune_recordings, read_recording_metadata, recording_parts_path,
+    lock_recordings, now_ms, read_recording_metadata, recording_parts_path,
     write_recording_metadata, ActiveRecording, RecordingMetadata, RecordingStartResponse,
-    RECORDING_RETENTION_COUNT,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -269,7 +268,11 @@ fn recordings_root(app_handle: &AppHandle) -> Result<PathBuf> {
     Ok(root)
 }
 
-#[tauri::command]
+// The recording commands create, write and list files, which antivirus
+// scans can slow on Windows. `async` runs them off the main thread, so the
+// pill never freezes; the page sends a recording's chunks one at a time, so
+// they still arrive in order.
+#[tauri::command(async)]
 fn recording_begin(
     app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -306,11 +309,11 @@ fn recording_begin(
     };
     write_recording_metadata(&root, &metadata).map_err(|e| e.to_string())?;
     lock_recordings(&state.recordings)?.insert(id.clone(), ActiveRecording { writer, metadata });
-    prune_recordings(&root, RECORDING_RETENTION_COUNT).map_err(|e| e.to_string())?;
+    // Finishing or importing a recording prunes old ones, not starting it.
     Ok(RecordingStartResponse { id })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn recording_append_chunk(
     app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -360,7 +363,11 @@ async fn recording_import(app_handle: AppHandle) -> Result<Option<RecordingStart
     };
     let source = picked.into_path().map_err(|e| e.to_string())?;
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
-    import_recording(&root, &source).map(Some)
+    // A large file copies on a blocking thread, not an async worker.
+    tauri::async_runtime::spawn_blocking(move || import_recording(&root, &source))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(Some)
 }
 
 /// Transcribes a saved recording in a worker session. The worker reads the
@@ -427,7 +434,7 @@ async fn flac_upload_copy(wav_path: PathBuf) -> Option<PathBuf> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn recording_finish(
     app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
@@ -441,7 +448,7 @@ fn recording_finish(
     finish_recording(&root, &recording_id, status, transcript, error).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn recording_list(app_handle: AppHandle) -> Result<Vec<RecordingMetadata>, String> {
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
     list_recording_metadata(&root).map_err(|e| e.to_string())
