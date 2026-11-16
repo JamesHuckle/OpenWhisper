@@ -114,10 +114,13 @@ after which the worker forgets the session:
 What the code in `apps/desktop/src-tauri/src/lib.rs` (`text_inserter`) does,
 with the write rules in `paste_target.rs`:
 
-1. A 20 ms loop tracks the last focused window outside OpenWhisper, so that
-   clicking the pill still knows where the user was.
+1. Windows focus-change events (`SetWinEventHook`) track the last focused
+   window outside OpenWhisper, so that clicking the pill still knows where
+   the user was. Nothing polls: the keyboard hook wakes a dispatcher thread
+   for Ctrl+Space, the settings menu is sent the program's name only when it
+   changes, and only the pill's monitor check repeats, every 100 ms.
 2. When a recording starts, `capture_paste_target` locks that window and its
-   focused control for the whole recording. The loop never changes it.
+   focused control for the whole recording. Focus tracking never changes it.
 3. Before every write the target is checked again:
    - the locked window still exists and has focus; it gets focus back only
      when the user merely clicked OpenWhisper, never from another app;
