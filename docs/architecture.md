@@ -126,17 +126,18 @@ with the write rules in `paste_target.rs`:
    - Alt and Windows are not held.
 4. Live pieces (`type_to_target`) are typed as `SendInput` Unicode keystrokes,
    never through the clipboard. Line breaks and tabs are typed as spaces. A
-   held Ctrl is released first. Once a check fails, live typing stops for the
-   rest of the recording.
+   held Ctrl is released first. Once a check fails, or Windows refuses a key,
+   live typing stops for the rest of the recording.
 5. The final text (`insert_final_text`) replaces the live draft with Backspace
    only when every check passed and live typing never stopped. Otherwise it
    is pasted after the draft and nothing is deleted. If the window is gone,
    the user moved to another app, or the field is a password field, the
    transcript is put on the clipboard instead and the user is told why.
 6. The final paste saves the clipboard, sets the text marked to stay out of
-   clipboard history, cloud sync and clipboard monitors, presses Ctrl+V,
-   waits for the target to handle it, then restores the saved clipboard
-   unless something else changed it meanwhile. Bitmaps are restored in their
+   clipboard history, cloud sync and clipboard monitors, only then deletes
+   the draft, presses Ctrl+V, waits for the target to handle it, then
+   restores the saved clipboard unless something else changed it meanwhile.
+   If Windows refuses the keys, the transcript stays on the clipboard. Bitmaps are restored in their
    DIB form; GDI-handle and private formats are not restored.
 
 Not built yet: writing through UI Automation `ValuePattern` / `TextPattern`
