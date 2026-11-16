@@ -108,6 +108,11 @@ Saving settings in the desktop therefore never restarts the worker. An empty
 
 ## Audio Commands
 
+A Live (realtime) session takes 16-bit PCM chunks while the user speaks and
+is finalized without a file. The worker keeps no copy of the chunks; it only
+counts their bytes and loudest sample to report silence or a quick tap as no
+audio. Other sessions refuse chunks with `bad_request`.
+
 ```json
 {
   "id": "uuid",
@@ -120,13 +125,13 @@ Saving settings in the desktop therefore never restarts the worker. An empty
 {
   "id": "uuid",
   "method": "finalize_session_audio",
-  "params": { "session_id": "uuid", "mime_type": "audio/webm" }
+  "params": { "session_id": "uuid", "mime_type": "audio/pcm;rate=24000" }
 }
 ```
 
-A session can instead be finalized from a saved file on disk, with no chunks
-appended. The worker reads the file in parts and never changes or removes it.
-Live (realtime) sessions only accept appended chunks.
+A Standard session is finalized from a saved file on disk instead. The worker
+reads the file in parts and never changes or removes it. Live sessions refuse
+a saved file.
 
 ```json
 {

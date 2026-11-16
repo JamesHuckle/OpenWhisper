@@ -1366,7 +1366,6 @@ async function applyTranscriptEvent(ev: TranscriptEvent) {
   } else if (
     ev.type === "partial" &&
     ev.text !== "Refining transcript..." &&
-    !ev.text.startsWith("Captured ") &&
     !ev.text.startsWith("Transcribing part ")
   ) {
     liveTranscript += ev.text;
@@ -1443,6 +1442,11 @@ if (import.meta.env.DEV) {
     __openwhisperRealtimeSmoke?: (chunks: string[], intervalMs?: number) => Promise<void>;
   }).__openwhisperRealtimeSmoke = async (chunks, intervalMs = 100) => {
     if (state !== "idle") throw new Error(`Cannot start smoke test while state=${state}`);
+    // Only a Live session takes audio chunks; Standard reads the saved file.
+    const settings = await invoke<AppSettings>("app_get_settings");
+    if (!isLiveTranscription(settings.transcriptionModel)) {
+      throw new Error("Choose Live transcription before the realtime smoke test");
+    }
     await invoke("capture_paste_target");
     const result = await invoke<{ session_id: string }>("worker_start_session", {
       profileId: "realtime-smoke",

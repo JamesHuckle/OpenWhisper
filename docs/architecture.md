@@ -32,7 +32,10 @@ WhisperFlow is split into three runtime layers:
    (`src-tauri/src/recording_store.rs`). The file stays open while recording;
    its header and size are brought up to date about once a second.
    Live transcription also streams each chunk to the worker using
-   `append_audio_chunk`, because it transcribes while the user speaks.
+   `append_audio_chunk`, because it transcribes while the user speaks. The
+   worker keeps no copy of these chunks: it only counts their bytes and
+   loudest sample, to tell silence or a quick tap from speech at the end.
+   Only Live sessions accept chunks.
 4. Worker pushes transcript updates and final text as session events.
 5. Desktop finalizes transcription using `finalize_session_audio`. For
    standard transcription the shell closes the WAV file and passes its
@@ -71,7 +74,7 @@ Audio pipeline methods:
 ```
 
 ```json
-{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/webm" } }
+{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/pcm;rate=24000" } }
 ```
 
 ```json
