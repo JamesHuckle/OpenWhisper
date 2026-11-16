@@ -2,6 +2,7 @@ mod api_key_store;
 mod flac_upload;
 #[cfg(target_os = "windows")]
 mod foreground_app;
+mod json_file;
 // Parts of the insertion rules are used only by the Windows writer.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod paste_target;
@@ -1734,18 +1735,27 @@ fn recording_metadata_path(root: &std::path::Path, id: &str) -> PathBuf {
     root.join(id).join("metadata.json")
 }
 
+/// Reads a JSON file saved with [`json_file::write_json_atomic`], falling
+/// back to its backup (and saying so in the log) when it is damaged. Returns
+/// None when the file has never been saved.
+fn read_json_file<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<Option<T>> {
+    Ok(match json_file::read_json(path)? {
+        json_file::JsonRead::Missing => None,
+        json_file::JsonRead::Read(value) => Some(value),
+        json_file::JsonRead::Recovered { value, problem } => {
+            debug_log_line("storage", &format!("{problem}; using its backup"));
+            Some(value)
+        }
+    })
+}
+
 fn read_recording_metadata(root: &std::path::Path, id: &str) -> Result<RecordingMetadata> {
-    let raw = fs::read_to_string(recording_metadata_path(root, id))?;
-    Ok(serde_json::from_str(&raw)?)
+    let path = recording_metadata_path(root, id);
+    read_json_file(&path)?.ok_or_else(|| anyhow!("{} is missing", path.display()))
 }
 
 fn write_recording_metadata(root: &std::path::Path, metadata: &RecordingMetadata) -> Result<()> {
-    let path = recording_metadata_path(root, &metadata.id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_string_pretty(metadata)?)?;
-    Ok(())
+    json_file::write_json_atomic(&recording_metadata_path(root, &metadata.id), metadata)
 }
 
 fn list_recording_metadata(root: &std::path::Path) -> Result<Vec<RecordingMetadata>> {
@@ -2505,12 +2515,9 @@ fn settings_path(app_handle: &AppHandle) -> Result<PathBuf> {
 }
 
 fn load_settings(app_handle: &AppHandle) -> Result<AppSettings> {
-    let path = settings_path(app_handle)?;
-    if !path.exists() {
+    let Some(mut settings) = read_json_file::<AppSettings>(&settings_path(app_handle)?)? else {
         return Ok(AppSettings::default());
-    }
-    let raw = fs::read_to_string(&path)?;
-    let mut settings: AppSettings = serde_json::from_str(&raw)?;
+    };
     settings.transcription_model = migrate_transcription_model(&settings.transcription_model);
     Ok(settings)
 }
@@ -2588,12 +2595,20 @@ impl api_key_store::SecretStore for CredentialStore {
 
 fn save_settings(app_handle: &AppHandle, settings: &AppSettings) -> Result<()> {
     let path = settings_path(app_handle)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    json_file::write_json_atomic(&path, settings)?;
+    // The backup is the previous file. Once the plain-text API key has left
+    // the settings it must not stay behind in the backup either.
+    if settings.plain_openai_api_key.is_empty() && backup_holds_plain_api_key(&path) {
+        json_file::refresh_backup(&path)?;
     }
-    let payload = serde_json::to_string_pretty(settings)?;
-    fs::write(path, payload)?;
     Ok(())
+}
+
+fn backup_holds_plain_api_key(settings_path: &std::path::Path) -> bool {
+    fs::read(json_file::backup_path(settings_path))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+        .is_some_and(|backup| backup.get("openaiApiKey").is_some())
 }
 
 fn make_tray_icon() -> tauri::image::Image<'static> {
@@ -3013,6 +3028,34 @@ mod tests {
             let path = root.join(recording.id).join(recording.file_name);
             assert_eq!(&fs::read(path).unwrap()[0..4], b"RIFF");
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_recording_with_damaged_details_is_listed_from_its_backup() {
+        let root = std::env::temp_dir().join(format!("openwhisper-store-test-{}", Uuid::new_v4()));
+        let mut metadata = RecordingMetadata {
+            id: "recording".to_string(),
+            created_at_ms: 1,
+            name: "Recording".to_string(),
+            source: "microphone".to_string(),
+            mime_type: "audio/wav".to_string(),
+            file_name: "audio.wav".to_string(),
+            status: "recording".to_string(),
+            bytes: 44,
+            transcript: String::new(),
+            error: String::new(),
+        };
+        write_recording_metadata(&root, &metadata).unwrap();
+        metadata.status = "saved".to_string();
+        write_recording_metadata(&root, &metadata).unwrap();
+        // The app stopped part way through writing the details.
+        fs::write(recording_metadata_path(&root, "recording"), b"{\"id\": \"rec").unwrap();
+
+        let listed = list_recording_metadata(&root).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "recording");
+        assert_eq!(listed[0].status, "recording");
         fs::remove_dir_all(root).unwrap();
     }
 

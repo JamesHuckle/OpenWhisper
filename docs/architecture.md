@@ -19,6 +19,13 @@ WhisperFlow is split into three runtime layers:
      file. On start, a plain key left by an older version is moved into the
      credential store and removed from the file only after the move succeeds
      (`src-tauri/src/api_key_store.rs`).
+   - saved files: `settings.json` and each recording's `metadata.json` are
+     saved through `src-tauri/src/json_file.rs`. It writes a `.tmp` file,
+     flushes it to disk and renames it over the old file, keeping the old
+     one as `.bak`; a damaged file is read from that backup instead, so a
+     crash while saving never hides a recording or resets the settings. The
+     Android app saves recording details with `AtomicFile`, under one lock
+     shared by every `RecordingStore` of the same folder.
 3. Model worker (`apps/worker`, Python):
    - OpenAI model catalog and routing
    - speech session orchestration

@@ -9,6 +9,8 @@ mod api_key_store;
 mod flac_upload;
 #[path = "../src/foreground_app.rs"]
 mod foreground_app;
+#[path = "../src/json_file.rs"]
+mod json_file;
 #[path = "../src/models.rs"]
 mod models;
 #[path = "../src/paste_target.rs"]
