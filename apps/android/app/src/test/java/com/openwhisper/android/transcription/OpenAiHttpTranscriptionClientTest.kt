@@ -141,6 +141,47 @@ class OpenAiHttpTranscriptionClientTest {
     }
 
     @Test
+    fun aRetryAfterAFailedLastPartSendsOnlyThatPart() {
+        val audio = twoPartAudio()
+        val failing = FakeService("Hello from the first part.", "Server error", statuses = listOf(200, 500))
+        assertThrows(TranscriptionHttpException::class.java) { failing.client.transcribe(audio) }
+        assertEquals(2, failing.uploads.size)
+
+        val retry = FakeService("And the second.")
+        assertEquals("Hello from the first part. And the second.", retry.client.transcribe(audio))
+
+        assertEquals(1, retry.uploads.size)
+        // Its prompt is rebuilt from the saved text of the part before it.
+        assertEquals("Hello from the first part.", promptOf(retry.uploads.single()))
+    }
+
+    @Test
+    fun anEmptyPartThatFinishedIsNotSentAgain() {
+        val audio = twoPartAudio()
+        val failing = FakeService("", "Server error", statuses = listOf(200, 500))
+        assertThrows(TranscriptionHttpException::class.java) { failing.client.transcribe(audio) }
+
+        val retry = FakeService("The second part.")
+        assertEquals("The second part.", retry.client.transcribe(audio))
+
+        assertEquals(1, retry.uploads.size)
+        assertEquals(null, promptOf(retry.uploads.single()))
+    }
+
+    @Test
+    fun aChangedRecordingStartsItsPartsAfresh() {
+        val audio = twoPartAudio()
+        val failing = FakeService("One.", "Server error", statuses = listOf(200, 500))
+        assertThrows(TranscriptionHttpException::class.java) { failing.client.transcribe(audio) }
+        assertTrue(audio.file.setLastModified(audio.file.lastModified() + 10_000))
+
+        val retry = FakeService("Uno.", "Dos.")
+        assertEquals("Uno. Dos.", retry.client.transcribe(audio))
+
+        assertEquals(2, retry.uploads.size)
+    }
+
+    @Test
     fun partsAreUploadedAsLosslessFlacWhenThePhoneCanEncodeIt() {
         val encoded = mutableListOf<Int>()
         val service = FakeService("Hello.", encodeFlac = { pcm, rate ->
@@ -262,6 +303,7 @@ class OpenAiHttpTranscriptionClientTest {
 
     private fun pcmAudio(
         pcm: ByteArray = ByteArray(16_000 * 2) { (it % 50).toByte() },
+        saveParts: Boolean = false,
     ): TranscriptionAudio {
         val file = File.createTempFile("openwhisper-upload-", ".wav").apply {
             deleteOnExit()
@@ -273,6 +315,19 @@ class OpenAiHttpTranscriptionClientTest {
             pcmSampleRate = 16_000,
             pcmDataOffset = WavEncoder.HEADER_BYTES.toLong(),
             pcmDataLength = pcm.size.toLong(),
+            partsFile = if (saveParts) File("${file.path}.parts.json").apply { deleteOnExit() } else null,
         )
     }
+
+    /** Just over one upload of PCM, so the recording is sent in two parts. */
+    private fun twoPartAudio(): TranscriptionAudio = pcmAudio(
+        ByteArray(AudioRules.MAX_PCM_BYTES_PER_UPLOAD + 16_000 * 2) { (it % 50).toByte() },
+        saveParts = true,
+    )
+
+    private fun promptOf(upload: ByteArray): String? =
+        Regex("name=\"prompt\"\r\n\r\n([^\r]*)\r\n")
+            .find(upload.copyOf(2_048).decodeToString())
+            ?.groupValues
+            ?.get(1)
 }

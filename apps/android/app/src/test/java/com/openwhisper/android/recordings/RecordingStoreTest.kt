@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -65,6 +66,29 @@ class RecordingStoreTest {
             assertArrayEquals(original, store.file(stored).readBytes())
             assertEquals("complete", store.get(stored.id)?.status)
             assertEquals("Retried transcript", store.get(stored.id)?.transcript)
+        }
+    }
+
+    @Test
+    fun savedPartsAreKeptForARetryAndRemovedOnceComplete() {
+        withStore { store ->
+            val stored = store.import(
+                name = "long.wav",
+                mimeType = "audio/wav",
+                extension = "wav",
+                input = ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)),
+            )
+            val parts = store.partsFile(stored.id)
+            assertEquals(File(store.file(stored).parentFile, "parts.json"), parts)
+            parts.writeText("{\"key\":\"k\",\"parts\":[]}")
+
+            listOf("failed", "cancelled", "transcribing").forEach { status ->
+                store.finish(stored.id, status, error = "Network")
+                assertTrue("$status keeps the finished parts for a retry", parts.exists())
+            }
+            store.finish(stored.id, "complete", transcript = "Hello.")
+            assertFalse(parts.exists())
+            assertEquals("Hello.", store.get(stored.id)?.transcript)
         }
     }
 

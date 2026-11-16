@@ -54,6 +54,7 @@ class BufferedDictationBackend(
                         pcmSampleRate = recording.sampleRate,
                         pcmDataOffset = WavEncoder.HEADER_BYTES.toLong(),
                         pcmDataLength = recording.byteCount,
+                        partsFile = recordingStore?.partsFile(recording.id),
                     ),
                 )
                 recordingStore?.finish(recording.id, "complete", transcript = transcript)

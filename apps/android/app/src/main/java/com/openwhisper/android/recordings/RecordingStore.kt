@@ -35,6 +35,10 @@ data class PcmRecording(
  * service each make their own store, so every store of the same folder shares
  * one lock, and each recording's details are saved with [AtomicFile]: a crash
  * while saving leaves the previous details, never a half-written file.
+ *
+ * While a long recording is transcribed in parts, each finished part is saved
+ * in its [partsFile], so a retry sends only the parts that did not finish. The
+ * file goes when the transcription completes or the recording is pruned.
  */
 class RecordingStore private constructor(private val root: File) {
     constructor(context: Context) : this(File(context.filesDir, "recordings"))
@@ -107,6 +111,9 @@ class RecordingStore private constructor(private val root: File) {
                 error = error,
             ),
         )
+        // A completed transcription no longer needs its saved parts, so
+        // transcribing it again starts fresh.
+        if (status == "complete") AtomicFile(partsFile(id)).delete()
         prune()
     }
 
@@ -128,6 +135,9 @@ class RecordingStore private constructor(private val root: File) {
     fun get(id: String): StoredRecording? = list().firstOrNull { it.id == id }
 
     fun file(recording: StoredRecording): File = File(File(root, recording.id), recording.fileName)
+
+    /** Where the finished parts of this recording's transcription are saved. */
+    fun partsFile(id: String): File = File(File(root, id), PARTS_FILE)
 
     internal fun updateCapturedBytes(id: String, bytes: Long) {
         synchronized(lock) {
@@ -189,6 +199,7 @@ class RecordingStore private constructor(private val root: File) {
     companion object {
         const val RETAIN_COUNT = 10
         private const val METADATA_FILE = "metadata.json"
+        private const val PARTS_FILE = "parts.json"
         private val SUPPORTED_EXTENSIONS =
             setOf("wav", "mp3", "m4a", "mp4", "mpeg", "mpga", "webm", "ogg")
 

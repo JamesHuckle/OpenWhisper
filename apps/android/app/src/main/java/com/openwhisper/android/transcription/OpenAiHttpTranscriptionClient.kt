@@ -69,17 +69,37 @@ class OpenAiHttpTranscriptionClient(
             audio.pcmDataOffset,
             audio.pcmDataLength,
         )?.let { throw NoSpeechException(it) }
+        // Each finished part is saved, so a retry after a failure sends only
+        // the parts that did not finish.
+        val saved = SavedParts(
+            audio.partsFile,
+            SavedParts.key(audio.file, OpenAiRequestFactory.MODEL, prompt = ""),
+        )
         val transcripts = mutableListOf<String>()
         RandomAccessFile(audio.file, "r").use { source ->
-            source.seek(audio.pcmDataOffset)
-            for (count in pcmChunkSizes(audio.pcmDataLength, AudioRules.MAX_PCM_BYTES_PER_UPLOAD)) {
+            var start = audio.pcmDataOffset
+            val counts = pcmChunkSizes(audio.pcmDataLength, AudioRules.MAX_PCM_BYTES_PER_UPLOAD)
+            for ((index, count) in counts.withIndex()) {
+                val end = start + count
+                val done = saved.get(index, start, end)
+                if (done != null) {
+                    // Finished on an earlier try: its text is reused, and
+                    // builds the next part's prompt as before.
+                    transcripts += done.text
+                    start = end
+                    continue
+                }
                 val pcm = ByteArray(count)
+                source.seek(start)
                 source.readFully(pcm)
                 val prompt = transcripts.lastOrNull(String::isNotBlank)?.takeLast(1_200).orEmpty()
                 val text = transcribePart(key, pcm, sampleRate, prompt, started).trim()
                 // Each later part is sent with the previous part's text as its
                 // prompt; a silent part makes the model repeat it.
-                transcripts += if (AudioRules.echoesPrompt(text, prompt)) "" else text
+                val kept = if (AudioRules.echoesPrompt(text, prompt)) "" else text
+                saved.add(index, SavedPart(start, end, prompt, kept))
+                transcripts += kept
+                start = end
             }
         }
         return transcripts.filter(String::isNotBlank).joinToString(" ").trim()

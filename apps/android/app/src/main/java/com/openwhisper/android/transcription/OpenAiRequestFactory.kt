@@ -24,6 +24,11 @@ data class TranscriptionAudio(
     val pcmSampleRate: Int? = null,
     val pcmDataOffset: Long = 0,
     val pcmDataLength: Long = file.length(),
+    /**
+     * Where the finished parts of a long recording are saved, so a retry
+     * sends only the parts that did not finish. None saves nothing.
+     */
+    val partsFile: File? = null,
 )
 
 fun interface TranscriptionClient {
@@ -39,7 +44,7 @@ class OpenAiRequestFactory(
     fun create(
         apiKey: String,
         audio: ByteArray,
-        model: String = "gpt-transcribe",
+        model: String = MODEL,
         prompt: String = "",
         mimeType: String = WAV_MIME_TYPE,
     ): TranscriptionHttpRequest {
@@ -84,6 +89,7 @@ class OpenAiRequestFactory(
     }
 
     companion object {
+        const val MODEL = "gpt-transcribe"
         const val WAV_MIME_TYPE = "audio/wav"
         const val FLAC_MIME_TYPE = "audio/flac"
     }

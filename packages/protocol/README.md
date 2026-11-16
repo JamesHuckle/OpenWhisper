@@ -148,6 +148,17 @@ copy in one request. It sends the WAV instead when the copy is missing, empty
 or larger than one upload, and once more when the service refuses the copy
 (HTTP 400). The desktop removes the copy when the request finishes.
 
+A WAV too large for one request is sent in parts. The desktop names a
+`parts_path` (`parts.json` in the recording's folder) where the worker saves
+each finished part's byte range, prompt and text, written atomically. A retry
+of the same recording skips the saved parts and sends only the rest, building
+the next part's prompt from the saved text. The file carries a key made from
+the audio's size and modified time, the model, the vocabulary prompt and a
+chunking version; when any of them changes, the worker starts fresh. The tidy
+pass is not part of the key, so changing its prompt never uploads audio again.
+The desktop deletes the file when the transcription completes (so transcribing
+a finished recording again starts fresh) and when the recording is pruned.
+
 ```json
 {
   "id": "uuid",
@@ -157,7 +168,8 @@ or larger than one upload, and once more when the service refuses the copy
     "mime_type": "audio/wav",
     "audio_path": "C:\\...\\audio.wav",
     "upload_path": "C:\\...\\audio.flac",
-    "upload_mime_type": "audio/flac"
+    "upload_mime_type": "audio/flac",
+    "parts_path": "C:\\...\\parts.json"
   }
 }
 ```

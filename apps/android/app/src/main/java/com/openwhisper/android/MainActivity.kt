@@ -374,6 +374,7 @@ class MainActivity : Activity() {
                 pcmSampleRate = wav?.sampleRate,
                 pcmDataOffset = wav?.dataOffset ?: 0,
                 pcmDataLength = wav?.dataLength ?: file.length(),
+                partsFile = recordingStore.partsFile(recording.id),
             ),
         )
     }

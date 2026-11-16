@@ -58,7 +58,12 @@ WhisperFlow is split into three runtime layers:
    about half the bytes for speech) and passes it as `upload_path`; the
    worker checks the WAV for silence, uploads the FLAC in one request, and
    falls back to the WAV when the copy is too large or the service refuses
-   it. The shell deletes the copy when the request finishes. Retrying a saved
+   it. The shell deletes the copy when the request finishes. A WAV sent in
+   parts has each finished part saved in `parts.json` beside it
+   (`parts_path`), so a retry after a failure sends only the parts that did
+   not finish; the shell deletes that file once the transcription completes
+   or the recording is pruned. Android saves its parts the same way
+   (`SavedParts.kt`). Retrying a saved
    recording sends only its id
    the same way, and an imported file is copied on disk after the native
    file picker returns its path, so audio never passes through the UI.
@@ -97,7 +102,7 @@ Audio pipeline methods:
 ```
 
 ```json
-{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav", "upload_path": "C:\\...\\audio.flac", "upload_mime_type": "audio/flac" } }
+{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav", "upload_path": "C:\\...\\audio.flac", "upload_mime_type": "audio/flac", "parts_path": "C:\\...\\parts.json" } }
 ```
 
 Each response from worker:
