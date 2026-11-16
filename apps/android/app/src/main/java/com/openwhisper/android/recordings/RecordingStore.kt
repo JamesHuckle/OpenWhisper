@@ -40,7 +40,10 @@ data class PcmRecording(
  * in its [partsFile], so a retry sends only the parts that did not finish. The
  * file goes when the transcription completes or the recording is pruned.
  */
-class RecordingStore private constructor(private val root: File) {
+class RecordingStore private constructor(
+    private val root: File,
+    private val onMetadataRead: (String) -> Unit = {},
+) {
     constructor(context: Context) : this(File(context.filesDir, "recordings"))
 
     internal val lock: Any = lockFor(root)
@@ -123,16 +126,19 @@ class RecordingStore private constructor(private val root: File) {
             .orEmpty()
             .asSequence()
             .filter(File::isDirectory)
-            .mapNotNull { directory ->
-                runCatching {
-                    parseMetadata(metadataFile(directory).readFully().decodeToString())
-                }.getOrNull()
-            }
+            .mapNotNull(::readMetadata)
             .sortedByDescending(StoredRecording::createdAtMs)
             .toList()
     }
 
-    fun get(id: String): StoredRecording? = list().firstOrNull { it.id == id }
+    /**
+     * One recording's details, read from its own folder only. The audio thread
+     * calls this once a second while recording, so it never reads the others.
+     */
+    fun get(id: String): StoredRecording? = synchronized(lock) {
+        if (!isSafeId(id)) return null
+        readMetadata(File(root, id))?.takeIf { it.id == id }
+    }
 
     fun file(recording: StoredRecording): File = File(File(root, recording.id), recording.fileName)
 
@@ -147,6 +153,17 @@ class RecordingStore private constructor(private val root: File) {
     }
 
     private fun metadataFile(directory: File) = AtomicFile(File(directory, METADATA_FILE))
+
+    private fun readMetadata(directory: File): StoredRecording? {
+        onMetadataRead(directory.name)
+        return runCatching {
+            parseMetadata(metadataFile(directory).readFully().decodeToString())
+        }.getOrNull()
+    }
+
+    /** A recording id names one folder directly inside [root], nothing else. */
+    private fun isSafeId(id: String): Boolean =
+        id.isNotEmpty() && id != "." && ".." !in id && '/' !in id && '\\' !in id
 
     private fun writeMetadata(recording: StoredRecording) {
         val directory = File(root, recording.id).apply { mkdirs() }
@@ -208,7 +225,11 @@ class RecordingStore private constructor(private val root: File) {
         private fun lockFor(root: File): Any =
             folderLocks.computeIfAbsent(root.absoluteFile.normalize().path) { Any() }
 
-        internal fun forDirectory(root: File): RecordingStore = RecordingStore(root)
+        /** A store of [root]; [onMetadataRead] hears the id of every recording whose details are read. */
+        internal fun forDirectory(
+            root: File,
+            onMetadataRead: (String) -> Unit = {},
+        ): RecordingStore = RecordingStore(root, onMetadataRead)
     }
 }
 

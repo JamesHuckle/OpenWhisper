@@ -6,6 +6,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -108,6 +109,61 @@ class RecordingStoreTest {
             store.finish(stored.id, "complete", transcript = "Hello")
             assertEquals("Hello", store.get(stored.id)?.transcript)
             assertTrue(File(directory, "metadata.json").readText().contains("\"transcript\": \"Hello\""))
+        }
+    }
+
+    @Test
+    fun recordingCheckpointsReadOnlyTheActiveRecording() {
+        withRoot { root ->
+            val reads = mutableListOf<String>()
+            val store = RecordingStore.forDirectory(root) { id -> synchronized(reads) { reads += id } }
+            val longText = "words ".repeat(20_000)
+            val saved = List(5) { index ->
+                val stored = store.import(
+                    name = "clip-$index.wav",
+                    mimeType = "audio/wav",
+                    extension = "wav",
+                    input = ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)),
+                )
+                store.finish(stored.id, "complete", transcript = "$index $longText")
+                stored.id
+            }
+            val writer = store.beginPcm("Live recording", 16_000)
+            val active = store.list().first { it.status == "recording" }
+
+            reads.clear()
+            val oneSecond = ByteArray(32_000)
+            writer.write(oneSecond, oneSecond.size)
+            store.updateCapturedBytes(active.id, 64_000)
+
+            assertEquals(listOf(active.id, active.id), reads)
+            assertEquals(active.copy(bytes = 44L + 64_000), store.get(active.id))
+            saved.forEachIndexed { index, id ->
+                assertEquals("$index $longText", store.get(id)?.transcript)
+            }
+            writer.finish("saved")
+        }
+    }
+
+    @Test
+    fun anIdThatIsNotOneRecordingFolderFindsNothing() {
+        withRoot { root ->
+            val reads = mutableListOf<String>()
+            val store = RecordingStore.forDirectory(File(root, "recordings")) { id -> reads += id }
+            val stored = store.import(
+                name = "memo.wav",
+                mimeType = "audio/wav",
+                extension = "wav",
+                input = ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)),
+            )
+            File(root, "metadata.json").writeText(File(store.file(stored).parentFile, "metadata.json").readText())
+            reads.clear()
+
+            listOf("", ".", "..", "../recordings/${stored.id}", "${stored.id}/..", "a\\b").forEach { id ->
+                assertNull("\"$id\" is not a recording", store.get(id))
+            }
+            assertEquals(emptyList<String>(), reads)
+            assertEquals(stored, store.get(stored.id))
         }
     }
 
