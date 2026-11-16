@@ -4,6 +4,17 @@ import { describe, expect, it } from "vitest";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(desktopRoot, "../..");
+const nativeSourceDir = resolve(desktopRoot, "src-tauri/src");
+
+// lib.rs and the files split out of it, read together, so a check still
+// holds when code moves between them.
+const nativeSourceFiles = ["lib.rs", "overlay_positioner.rs", "text_inserter.rs"];
+
+function readNativeSource(): string {
+  return nativeSourceFiles
+    .map((name) => readFileSync(resolve(nativeSourceDir, name), "utf8"))
+    .join("\n");
+}
 
 describe("desktop regression contracts", () => {
   it("keeps custom Cargo targets out of Tauri's watched source tree", () => {
@@ -40,7 +51,7 @@ describe("desktop regression contracts", () => {
 
   it("can completely hide the idle pill and recover it from the tray", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+    const native = readNativeSource();
 
     expect(main).toContain("Show pill when idle");
     expect(main.indexOf("Show pill when idle")).toBeLessThan(main.indexOf("Microphone</div>"));
@@ -53,7 +64,7 @@ describe("desktop regression contracts", () => {
 
   it("offers hold-to-talk and press-to-toggle shortcut modes", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+    const native = readNativeSource();
 
     expect(main).toContain("Hold Ctrl+Space to talk");
     expect(main).toContain("press Ctrl+Space once to start listening and again to finish");
@@ -64,16 +75,15 @@ describe("desktop regression contracts", () => {
   });
 
   it("runs the tests of every Rust file that needs no Tauri before a release", () => {
-    const sourceDir = resolve(desktopRoot, "src-tauri/src");
     const coreTests = readFileSync(resolve(desktopRoot, "src-tauri/core-tests/lib.rs"), "utf8");
     const releaseWorkflow = readFileSync(
       resolve(repositoryRoot, ".github/workflows/release.yml"),
       "utf8",
     );
-    const tauriFreeTested = readdirSync(sourceDir)
+    const tauriFreeTested = readdirSync(nativeSourceDir)
       .filter((name) => name.endsWith(".rs"))
       .filter((name) => {
-        const source = readFileSync(resolve(sourceDir, name), "utf8");
+        const source = readFileSync(resolve(nativeSourceDir, name), "utf8");
         return (
           source.includes("#[cfg(test)]") && !/\btauri\b|crate::|\bkeyring\b/.test(source)
         );
@@ -189,7 +199,7 @@ describe("desktop regression contracts", () => {
 
   it("writes into the field locked at the start without clipboard-pasting live pieces", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const lib = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+    const lib = readNativeSource();
 
     // The clipboard is no longer used for live pieces or blind Backspaces.
     expect(main).not.toContain("paste_to_target");
@@ -213,7 +223,7 @@ describe("desktop regression contracts", () => {
       resolve(desktopRoot, "src-tauri/src/worker_client.rs"),
       "utf8",
     );
-    const lib = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+    const lib = readNativeSource();
     const rustEvent = (name: string) =>
       client.match(new RegExp(`pub const ${name}: &str = "([^"]+)";`))?.[1];
 
@@ -231,7 +241,7 @@ describe("desktop regression contracts", () => {
 
   it("waits for Windows events instead of polling shortcuts and the focused program", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const lib = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+    const lib = readNativeSource();
 
     // Shortcuts and focus changes wake a dispatcher; no 20 ms loop remains.
     expect(lib).not.toContain("Duration::from_millis(20)");
@@ -279,7 +289,7 @@ describe("desktop regression contracts", () => {
 
   it("can retranscribe saved recordings without replacing their raw audio", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+    const native = readNativeSource();
 
     expect(main).toContain('transcribeButton.textContent = "Transcribe"');
     expect(main).toContain("retranscribeRecording(recording)");
@@ -295,7 +305,7 @@ describe("desktop regression contracts", () => {
 
   it("sends each piece of normal dictation once, to the saved backup", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+    const native = readNativeSource();
 
     // Only live transcription streams audio to the worker while recording.
     expect(main).toContain("if (streamAudioToWorker) audioQueue.append(combined.buffer);");
@@ -309,7 +319,7 @@ describe("desktop regression contracts", () => {
 
   it("imports audio files by copying them on disk, not through the window", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const native = readFileSync(resolve(desktopRoot, "src-tauri/src/lib.rs"), "utf8");
+    const native = readNativeSource();
 
     expect(main).not.toContain('type="file"');
     expect(main).not.toContain(".arrayBuffer()");

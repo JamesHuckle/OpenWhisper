@@ -124,7 +124,7 @@ after which the worker forgets the session:
 
 ## Windows insertion engine
 
-What the code in `apps/desktop/src-tauri/src/lib.rs` (`text_inserter`) does,
+What the code in `apps/desktop/src-tauri/src/text_inserter.rs` does,
 with the write rules in `paste_target.rs`:
 
 1. Windows focus-change events (`SetWinEventHook`) track the last focused
