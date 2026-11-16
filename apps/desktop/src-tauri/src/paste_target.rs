@@ -37,6 +37,9 @@ pub enum Blocked {
     FieldChanged,
     CursorMoved,
     ShortcutHeld,
+    /// Windows did not accept every injected key (for example an elevated
+    /// window or a locked desktop), so what reached the field is unknown.
+    InputRefused,
 }
 
 impl Blocked {
@@ -48,6 +51,7 @@ impl Blocked {
             Blocked::FieldChanged => "field_changed",
             Blocked::CursorMoved => "cursor_moved",
             Blocked::ShortcutHeld => "shortcut_held",
+            Blocked::InputRefused => "input_refused",
         }
     }
 }

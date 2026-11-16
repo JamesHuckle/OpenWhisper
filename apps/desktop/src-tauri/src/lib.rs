@@ -511,7 +511,12 @@ mod text_inserter {
             LiveWrite::Type => {
                 let typed = paste_target::typeable_text(text);
                 release_held_ctrl();
-                type_unicode(&typed);
+                if !type_unicode(&typed) {
+                    // The draft is unknown now, so it is never deleted; the
+                    // final text is pasted after it.
+                    session.live_stopped = Some(Blocked::InputRefused);
+                    return WriteOutcome::Stopped(Blocked::InputRefused);
+                }
                 session.draft.push_str(&typed);
                 // Only input from before the check is accepted; anything
                 // pressed since then is seen at the next check.
@@ -541,15 +546,23 @@ mod text_inserter {
             FinalWrite::Replace { delete_chars } => {
                 // The draft is deleted only once the final text is ready on
                 // the clipboard, so a clipboard failure leaves it in place.
-                paste_restoring_clipboard(text, session.hwnd, || {
+                let pasted = paste_restoring_clipboard(text, session.hwnd, || {
                     release_held_ctrl();
-                    press_backspace(delete_chars);
+                    press_backspace(delete_chars)
                 })?;
-                Ok(WriteOutcome::Replaced)
+                Ok(if pasted {
+                    WriteOutcome::Replaced
+                } else {
+                    WriteOutcome::Copied(Blocked::InputRefused)
+                })
             }
             FinalWrite::Paste => {
-                paste_restoring_clipboard(text, session.hwnd, || {})?;
-                Ok(WriteOutcome::Pasted)
+                let pasted = paste_restoring_clipboard(text, session.hwnd, || true)?;
+                Ok(if pasted {
+                    WriteOutcome::Pasted
+                } else {
+                    WriteOutcome::Copied(Blocked::InputRefused)
+                })
             }
             FinalWrite::KeepDraft => Ok(WriteOutcome::Kept),
             FinalWrite::Copy(blocked) => copy_instead(text, blocked),
@@ -573,17 +586,19 @@ mod text_inserter {
 
     // ----- Keystrokes -----
 
-    fn send_inputs(inputs: &[KbdInput]) {
+    /// True when Windows accepted every key.
+    fn send_inputs(inputs: &[KbdInput]) -> bool {
         if inputs.is_empty() {
-            return;
+            return true;
         }
-        unsafe {
+        let accepted = unsafe {
             SendInput(
                 inputs.len() as u32,
                 inputs.as_ptr(),
                 std::mem::size_of::<KbdInput>() as i32,
-            );
-        }
+            )
+        };
+        accepted == inputs.len() as u32
     }
 
     /// With Ctrl+Space held for hold-to-talk, typed letters would become
@@ -598,7 +613,7 @@ mod text_inserter {
         send_inputs(&inputs);
     }
 
-    fn type_unicode(text: &str) {
+    fn type_unicode(text: &str) -> bool {
         let units: Vec<u16> = text.encode_utf16().collect();
         for chunk in units.chunks(64) {
             let mut inputs = Vec::with_capacity(chunk.len() * 2);
@@ -606,11 +621,14 @@ mod text_inserter {
                 inputs.push(unicode_key(unit, 0));
                 inputs.push(unicode_key(unit, KEYEVENTF_KEYUP));
             }
-            send_inputs(&inputs);
+            if !send_inputs(&inputs) {
+                return false;
+            }
         }
+        true
     }
 
-    fn press_backspace(count: usize) {
+    fn press_backspace(count: usize) -> bool {
         let mut remaining = count;
         while remaining > 0 {
             let chunk_size = remaining.min(128);
@@ -619,30 +637,34 @@ mod text_inserter {
                 inputs.push(kbd(VK_BACK, 0));
                 inputs.push(kbd(VK_BACK, KEYEVENTF_KEYUP));
             }
-            send_inputs(&inputs);
+            if !send_inputs(&inputs) {
+                return false;
+            }
             remaining -= chunk_size;
         }
+        true
     }
 
-    fn paste_shortcut() {
+    fn paste_shortcut() -> bool {
         send_inputs(&[
             kbd(VK_CONTROL, 0),
             kbd(VK_V, 0),
             kbd(VK_V, KEYEVENTF_KEYUP),
             kbd(VK_CONTROL, KEYEVENTF_KEYUP),
-        ]);
+        ])
     }
 
     // ----- Clipboard paste that puts the user's clipboard back -----
 
     /// Paste `text` with Ctrl+V, then restore what the user had copied,
     /// unless something else changed the clipboard in the meantime.
-    /// `before_paste` runs once `text` is on the clipboard.
+    /// `before_paste` runs once `text` is on the clipboard. Returns false,
+    /// leaving `text` on the clipboard, when Windows refused the keys.
     fn paste_restoring_clipboard(
         text: &str,
         target: isize,
-        before_paste: impl FnOnce(),
-    ) -> Result<(), String> {
+        before_paste: impl FnOnce() -> bool,
+    ) -> Result<bool, String> {
         let saved = {
             let _open = clipboard_win::Clipboard::new_attempts(CLIPBOARD_OPEN_ATTEMPTS)
                 .map_err(|e| format!("Could not open the clipboard: {e}"))?;
@@ -657,8 +679,9 @@ mod text_inserter {
             saved
         };
         let ours = clipboard_win::raw::seq_num();
-        before_paste();
-        paste_shortcut();
+        if !before_paste() || !paste_shortcut() {
+            return Ok(false);
+        }
         wait_until_pasted(target);
         if let Ok(_open) = clipboard_win::Clipboard::new_attempts(CLIPBOARD_OPEN_ATTEMPTS) {
             // Checked while the clipboard is open, so no other app can copy
@@ -667,7 +690,7 @@ mod text_inserter {
                 restore_clipboard(&saved);
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn wait_until_pasted(target: isize) {
