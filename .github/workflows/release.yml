@@ -100,7 +100,8 @@ jobs:
 
   build-windows:
     needs: [plan, test-web, test-worker, test-desktop, test-android]
-    if: needs.plan.outputs.release == 'true'
+    # A manual run on another branch only tests; releases come from main.
+    if: needs.plan.outputs.release == 'true' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -132,7 +133,8 @@ jobs:
 
   build-android:
     needs: [plan, test-web, test-worker, test-desktop, test-android]
-    if: needs.plan.outputs.release == 'true'
+    # A manual run on another branch only tests; releases come from main.
+    if: needs.plan.outputs.release == 'true' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
