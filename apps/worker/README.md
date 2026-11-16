@@ -43,6 +43,10 @@ When refinement is on, the worker tidies each transcript with `gpt-5-nano`
 (`refine_model` in `packages/protocol/models.json`; override with
 `OPENWHISPER_POLISH_MODEL`). The desktop settings text names the same model,
 read from the same file.
+It asks for `minimal` reasoning, since tidying needs no hidden thinking, which
+is billed and delays the first word (override with
+`OPENWHISPER_POLISH_REASONING`). If the model rejects that value, the worker
+asks again with `low` and keeps using `low` from then on.
 A short transcript (under 12 words, one punctuated sentence, no filler words or
 false starts) is pasted as it is, without the extra model call, unless the user
 set custom refine instructions.

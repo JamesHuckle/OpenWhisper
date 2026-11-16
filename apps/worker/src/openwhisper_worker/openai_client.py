@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from httpx import Timeout
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 from .audio_rules import MAX_UPLOAD_BYTES
 from .saved_parts import SavedPart, SavedParts, parts_key
@@ -36,6 +36,12 @@ _MAX_POLISH_CHUNK_CHARS = 12_000
 # Transcripts this short that already read cleanly are pasted without a polish call.
 _MAX_SKIP_POLISH_WORDS = 11
 _REALTIME_FINAL_TIMEOUT_SECONDS = 120.0
+# Tidying a transcript needs no hidden thinking, which is billed and delays the
+# first word. A model that rejects "minimal" is asked again with "low".
+_POLISH_REASONING_EFFORT = (
+    os.getenv("OPENWHISPER_POLISH_REASONING", "").strip() or "minimal"
+)
+_FALLBACK_POLISH_REASONING_EFFORT = "low"
 
 _STREAMING_MODELS = frozenset({
     "gpt-transcribe",
@@ -255,6 +261,7 @@ class OpenWhisperOpenAI:
         self._polish_model = (
             os.getenv("OPENWHISPER_POLISH_MODEL", "").strip() or DEFAULT_POLISH_MODEL
         )
+        self._polish_effort = _POLISH_REASONING_EFFORT
         self._api_key = api_key.strip()
         self._client: OpenAI | None = None
 
@@ -332,7 +339,7 @@ class OpenWhisperOpenAI:
         # the desktop app keeps and shows in its error messages.
         started = time.perf_counter()
         try:
-            result = self._request_polish(system, text)
+            result, effort = self._request_polish(system, text)
         except Exception as exc:
             _log(
                 f"[polish] chunk_failed chunk={chunk_index}/{total_chunks} "
@@ -343,24 +350,33 @@ class OpenWhisperOpenAI:
         _log(
             f"[polish] chunk_done chunk={chunk_index}/{total_chunks} "
             f"system_chars={len(system)} input_chars={len(text)} "
-            f"output_chars={len(result)} elapsed_ms={_elapsed_ms(started)}"
+            f"output_chars={len(result)} effort={effort} "
+            f"elapsed_ms={_elapsed_ms(started)}"
         )
         return result
 
-    def _request_polish(self, system: str, text: str) -> str:
+    def _request_polish(self, system: str, text: str) -> tuple[str, str]:
+        """Returns the tidied text and the reasoning effort used ("none" for a
+        model without reasoning)."""
         client = self._get_client()
         if self._polish_model.startswith("gpt-5"):
-            response = client.responses.create(
-                model=self._polish_model,
-                input=[
-                    {"role": "developer", "content": system},
-                    {"role": "user", "content": text},
-                ],
-                reasoning={"effort": "low"},
-                text={"verbosity": "low"},
-                timeout=_POLISH_TIMEOUT,
-            )
-            result = self._extract_responses_text(response).strip() or text
+            effort = self._polish_effort
+            try:
+                response = self._create_polish_response(client, system, text, effort)
+            except BadRequestError as exc:
+                if (
+                    getattr(exc, "param", None) != "reasoning.effort"
+                    or effort == _FALLBACK_POLISH_REASONING_EFFORT
+                ):
+                    raise
+                # Remembered, so later chunks and dictations ask with "low" at once.
+                effort = self._polish_effort = _FALLBACK_POLISH_REASONING_EFFORT
+                _log(
+                    f"[polish] effort_fallback model={self._polish_model} "
+                    f"effort={effort} error={describe_error(exc)}"
+                )
+                response = self._create_polish_response(client, system, text, effort)
+            return self._extract_responses_text(response).strip() or text, effort
         else:
             response = client.chat.completions.create(
                 model=self._polish_model,
@@ -370,8 +386,21 @@ class OpenWhisperOpenAI:
                 ],
                 timeout=_POLISH_TIMEOUT,
             )
-            result = (response.choices[0].message.content or "").strip() or text
-        return result
+            return (response.choices[0].message.content or "").strip() or text, "none"
+
+    def _create_polish_response(
+        self, client: OpenAI, system: str, text: str, effort: str
+    ) -> Any:
+        return client.responses.create(
+            model=self._polish_model,
+            input=[
+                {"role": "developer", "content": system},
+                {"role": "user", "content": text},
+            ],
+            reasoning={"effort": effort},
+            text={"verbosity": "low"},
+            timeout=_POLISH_TIMEOUT,
+        )
 
     @staticmethod
     def _extract_responses_text(response: Any) -> str:

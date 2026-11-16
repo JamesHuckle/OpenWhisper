@@ -39,6 +39,16 @@ def bad_request_quoting(text: str) -> openai.BadRequestError:
     )
 
 
+def effort_rejected() -> openai.BadRequestError:
+    response = httpx.Response(400, request=httpx.Request("POST", "https://api.openai.test/v1"))
+    message = "Unsupported value: 'minimal' is not supported with this model."
+    return openai.BadRequestError(
+        message,
+        response=response,
+        body={"message": message, "param": "reasoning.effort", "code": "unsupported_value"},
+    )
+
+
 class OpenWhisperOpenAITests(unittest.TestCase):
     def test_realtime_stream_uses_session_model_and_emits_deltas(self) -> None:
         connection = Mock()
@@ -374,6 +384,54 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         self.assertIn(f"input_chars={len(DICTATED)}", log)
         self.assertIn(f"output_chars={len(TIDIED)}", log)
         self.assertIn("elapsed_ms=", log)
+
+    def test_polish_asks_for_minimal_reasoning(self) -> None:
+        client = OpenWhisperOpenAI()
+        client._client = Mock()
+        client._client.responses.create.return_value = responses_reply(TIDIED)
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", stderr):
+            self.assertEqual(client.polish(DICTATED), TIDIED)
+
+        sent = client._client.responses.create.call_args.kwargs
+        self.assertEqual(sent["reasoning"], {"effort": "minimal"})
+        self.assertIn("effort=minimal", stderr.getvalue())
+
+    def test_rejected_minimal_reasoning_retries_once_with_low_and_remembers_it(self) -> None:
+        client = OpenWhisperOpenAI()
+        client._client = Mock()
+        client._client.responses.create.side_effect = [
+            effort_rejected(),
+            responses_reply(TIDIED),
+            responses_reply(TIDIED),
+        ]
+        stderr = io.StringIO()
+
+        with patch("sys.stderr", stderr):
+            self.assertEqual(client.polish(DICTATED), TIDIED)
+            self.assertEqual(client.polish(DICTATED), TIDIED)
+
+        efforts = [
+            call.kwargs["reasoning"]["effort"]
+            for call in client._client.responses.create.call_args_list
+        ]
+        self.assertEqual(efforts, ["minimal", "low", "low"])
+        log = stderr.getvalue()
+        self.assertEqual(log.count("effort_fallback"), 1)
+        self.assertNotIn("bank PIN", log)
+        self.assertIn("effort=low", log)
+
+    def test_rejected_low_reasoning_is_not_retried(self) -> None:
+        client = OpenWhisperOpenAI()
+        client._client = Mock()
+        client._client.responses.create.side_effect = effort_rejected()
+
+        with patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(openai.BadRequestError):
+                client.polish(DICTATED)
+
+        self.assertEqual(client._client.responses.create.call_count, 2)
 
     def test_failed_polish_logs_error_codes_but_never_the_text(self) -> None:
         client = OpenWhisperOpenAI()
