@@ -380,6 +380,10 @@ class WorkerServer:
         # The desktop removes it once this request finishes.
         upload_path = str(request.params.get("upload_path") or "")
         upload_mime_type = str(request.params.get("upload_mime_type") or "")
+        # Where the finished parts of a long recording are saved, so a retry
+        # sends only the parts that did not finish. The desktop deletes the
+        # file when the transcription completes.
+        parts_path = str(request.params.get("parts_path") or "")
         session = self._session(request)
         if session is None:
             return self._err(request.id, "bad_request", "Unknown session_id")
@@ -392,7 +396,13 @@ class WorkerServer:
 
         try:
             return self._finalize(
-                request.id, session, mime_type, audio_path, upload_path, upload_mime_type
+                request.id,
+                session,
+                mime_type,
+                audio_path,
+                upload_path,
+                upload_mime_type,
+                parts_path,
             )
         except _Cancelled:
             return self._cancelled(request.id, session)
@@ -413,6 +423,7 @@ class WorkerServer:
         audio_path: str = "",
         upload_path: str = "",
         upload_mime_type: str = "",
+        parts_path: str = "",
     ) -> WorkerResponse:
         session_id = session.session_id
         if audio_path and session.realtime_stream:
@@ -470,7 +481,13 @@ class WorkerServer:
                 ).strip()
             else:
                 text = self._transcribe_saved(
-                    session, audio_path, mime_type, upload_path, upload_mime_type, on_progress
+                    session,
+                    audio_path,
+                    mime_type,
+                    upload_path,
+                    upload_mime_type,
+                    parts_path,
+                    on_progress,
                 )
         except _Cancelled:
             raise
@@ -544,6 +561,7 @@ class WorkerServer:
         mime_type: str,
         upload_path: str,
         upload_mime_type: str,
+        parts_path: str,
         on_progress: Callable[[int, int], None],
     ) -> str:
         """Transcribes a saved recording. Its upload copy goes in one request
@@ -568,6 +586,7 @@ class WorkerServer:
             mime_type=mime_type,
             prompt=session.prompt,
             on_progress=on_progress,
+            parts_path=parts_path or None,
         )
 
     def _cancelled(self, request_id: str, session: Session) -> WorkerResponse:

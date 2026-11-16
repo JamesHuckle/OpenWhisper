@@ -17,6 +17,7 @@ from httpx import Timeout
 from openai import OpenAI
 
 from .audio_rules import MAX_UPLOAD_BYTES
+from .saved_parts import SavedPart, SavedParts, parts_key
 from .models import (
     DEFAULT_POLISH_MODEL,
     DEFAULT_TRANSCRIBE_MODEL as _DEFAULT_TRANSCRIBE_MODEL,
@@ -451,14 +452,22 @@ class OpenWhisperOpenAI:
         mime_type: str,
         prompt: str = "",
         on_progress: Callable[[int, int], None] | None = None,
+        parts_path: str | Path | None = None,
     ) -> str:
+        """Transcribes a file on disk. A WAV too large for one request goes in
+        parts; with `parts_path`, each finished part is saved there and a
+        later call with the same audio and settings sends only the rest."""
         audio_path = Path(path)
         if not audio_path.exists() or audio_path.stat().st_size == 0:
             raise RuntimeError("No audio bytes provided")
 
         size = audio_path.stat().st_size
         if mime_type in {"audio/wav", "audio/x-wav"} and size > MAX_UPLOAD_BYTES:
-            return self._transcribe_wav_file(audio_path, prompt, on_progress)
+            saved = SavedParts(
+                Path(parts_path) if parts_path else None,
+                parts_key(audio_path, self._model, prompt),
+            )
+            return self._transcribe_wav_file(audio_path, prompt, on_progress, saved)
         if size > MAX_UPLOAD_BYTES:
             raise RuntimeError(
                 f"This compressed audio file is larger than {MAX_UPLOAD_BYTES // 2**20} MB. "
@@ -471,6 +480,7 @@ class OpenWhisperOpenAI:
         path: Path,
         prompt: str,
         on_progress: Callable[[int, int], None] | None,
+        saved: SavedParts,
     ) -> str:
         with wave.open(str(path), "rb") as source:
             channels = source.getnchannels()
@@ -483,10 +493,19 @@ class OpenWhisperOpenAI:
             frames_per_chunk = max(1, (MAX_UPLOAD_BYTES - 128) // frame_bytes)
             total_chunks = max(1, (total_frames + frames_per_chunk - 1) // frames_per_chunk)
             transcripts: list[str] = []
+            start = 0
             for chunk_index in range(total_chunks):
                 frames = source.readframes(frames_per_chunk)
                 if not frames:
                     break
+                end = start + len(frames)
+                done = saved.get(chunk_index, start, end)
+                if done is not None:
+                    # Finished on an earlier try: its text is reused, and
+                    # builds the next part's prompt as before.
+                    transcripts.append(done.text)
+                    start = end
+                    continue
                 if on_progress:
                     on_progress(chunk_index + 1, total_chunks)
                 contextual_prompt = prompt
@@ -500,9 +519,10 @@ class OpenWhisperOpenAI:
                     sample_width,
                     sample_rate,
                 )
-                transcripts.append(
-                    self.transcribe_bytes(wav, "audio/wav", contextual_prompt).strip()
-                )
+                text = self.transcribe_bytes(wav, "audio/wav", contextual_prompt).strip()
+                saved.add(chunk_index, SavedPart(start, end, contextual_prompt, text))
+                transcripts.append(text)
+                start = end
         return " ".join(part for part in transcripts if part).strip()
 
     @staticmethod

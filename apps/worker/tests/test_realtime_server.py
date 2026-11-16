@@ -93,6 +93,7 @@ class FakeFileOpenAI:
         self.upload_error = upload_error
         self.transcribed = 0
         self.files: list[tuple[str, str]] = []
+        self.parts_paths: list[str | None] = []
         self.uploads: list[tuple[bytes, str]] = []
         self.polished: list[str] = []
 
@@ -103,9 +104,12 @@ class FakeFileOpenAI:
             raise self.upload_error
         return self.transcript
 
-    def transcribe_file(self, path, mime_type: str, prompt: str = "", on_progress=None) -> str:
+    def transcribe_file(
+        self, path, mime_type: str, prompt: str = "", on_progress=None, parts_path=None
+    ) -> str:
         self.transcribed += 1
         self.files.append((str(path), mime_type))
+        self.parts_paths.append(parts_path)
         if self.transcribe_error:
             raise self.transcribe_error
         return self.transcript
@@ -480,6 +484,16 @@ class SavedFileWorkerServerTests(unittest.TestCase):
         # The worker never copies or removes the desktop's saved file.
         self.assertEqual(open(path, "rb").read(), before)
         self.assertEqual(server._sessions, {})
+
+    def test_saved_recording_names_where_its_finished_parts_are_kept(self) -> None:
+        path = self.saved("audio.wav", pcm=pcm_tone(1.0))
+        parts = os.path.join(self.folder.name, "parts.json")
+        server, _ = new_server(FakeFileOpenAI("Zoon Robotics is hiring."))
+
+        self.transcribe_saved(server, path, "audio/wav", parts_path=parts)
+        self.transcribe_saved(server, path, "audio/wav")
+
+        self.assertEqual(server._openai.parts_paths, [parts, None])
 
     def test_saved_quick_tap_silence_and_empty_files_report_no_audio(self) -> None:
         cases = [

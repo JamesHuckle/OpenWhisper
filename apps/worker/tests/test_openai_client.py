@@ -12,6 +12,8 @@ from unittest.mock import Mock, patch
 import httpx
 import openai
 
+from openwhisper_worker.audio_rules import MAX_UPLOAD_BYTES
+from openwhisper_worker.saved_parts import parts_key
 from openwhisper_worker.openai_client import (
     OpenWhisperOpenAI,
     RealtimeTranscriptionStream,
@@ -237,6 +239,120 @@ class OpenWhisperOpenAITests(unittest.TestCase):
             " ".join(f"segment-{index}" for index in range(1, len(uploaded_sizes) + 1)),
         )
         self.assertEqual(progress, [(index, len(uploaded_sizes)) for index in range(1, len(uploaded_sizes) + 1)])
+
+    def long_wav(self, directory: str, parts: int = 3) -> Path:
+        """A saved desktop recording just long enough to be sent in `parts` parts."""
+        part_bytes = (MAX_UPLOAD_BYTES - 128) // 2 * 2
+        pcm_bytes = (parts - 1) * part_bytes + 24_000 * 2
+        path = Path(directory) / "audio.wav"
+        with path.open("wb") as audio:
+            audio.write(
+                b"RIFF"
+                + struct.pack("<I", 36 + pcm_bytes)
+                + b"WAVEfmt "
+                + struct.pack("<IHHIIHH", 16, 1, 1, 24_000, 24_000 * 2, 2, 16)
+                + b"data"
+                + struct.pack("<I", pcm_bytes)
+            )
+            audio.truncate(44 + pcm_bytes)
+        return path
+
+    def transcribe_long(
+        self,
+        client: OpenWhisperOpenAI,
+        path: Path,
+        replies: list[str | Exception],
+        prompt: str = "Zoon",
+    ) -> tuple[str, list[str]]:
+        """Transcribes `path` with its parts saved beside it. Returns the text
+        and the prompt each uploaded part was sent with."""
+        prompts: list[str] = []
+        pending = list(replies)
+
+        def fake_transcribe(_wav: bytes, _mime_type: str, prompt: str = "") -> str:
+            prompts.append(prompt)
+            reply = pending.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        with (
+            patch.object(client, "transcribe_bytes", side_effect=fake_transcribe),
+            patch("sys.stderr", io.StringIO()),
+        ):
+            text = client.transcribe_file(
+                path, "audio/wav", prompt=prompt, parts_path=path.with_name("parts.json")
+            )
+        return text, prompts
+
+    def test_a_retry_after_a_failed_last_part_sends_only_that_part(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory)
+            with self.assertRaises(RuntimeError):
+                self.transcribe_long(
+                    client, path, ["First part.", "Second part.", RuntimeError("network")]
+                )
+
+            text, prompts = self.transcribe_long(client, path, ["Third part."])
+
+        self.assertEqual(text, "First part. Second part. Third part.")
+        # The last part's prompt is rebuilt from the saved text of the part before it.
+        self.assertEqual(prompts, ["Zoon\nPrevious segment transcript: Second part."])
+
+    def test_a_silent_part_that_finished_is_not_sent_again(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory)
+            with self.assertRaises(RuntimeError):
+                self.transcribe_long(client, path, ["First part.", "", RuntimeError("network")])
+
+            text, prompts = self.transcribe_long(client, path, ["Third part."])
+
+        self.assertEqual(text, "First part. Third part.")
+        self.assertEqual(prompts, ["Zoon\nPrevious segment transcript:"])
+
+    def test_changed_settings_or_audio_start_the_parts_afresh(self) -> None:
+        def changed_prompt(_client: OpenWhisperOpenAI, _path: Path) -> dict:
+            return {"prompt": "Zoon Robotics"}
+
+        def changed_audio(_client: OpenWhisperOpenAI, path: Path) -> dict:
+            os.utime(path, ns=(0, path.stat().st_mtime_ns + 1_000_000_000))
+            return {}
+
+        for change in (changed_prompt, changed_audio):
+            client = OpenWhisperOpenAI()
+            with tempfile.TemporaryDirectory() as directory:
+                path = self.long_wav(directory)
+                with self.assertRaises(RuntimeError):
+                    self.transcribe_long(client, path, ["One.", "Two.", RuntimeError("network")])
+                options = change(client, path)
+
+                text, prompts = self.transcribe_long(
+                    client, path, ["Uno.", "Dos.", "Tres."], **options
+                )
+
+            self.assertEqual(text, "Uno. Dos. Tres.", change.__name__)
+            self.assertEqual(len(prompts), 3, change.__name__)
+
+        # Only one model reads saved files today; another one gets its own key.
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory, parts=1)
+            self.assertNotEqual(
+                parts_key(path, "gpt-transcribe", "Zoon"),
+                parts_key(path, "gpt-transcribe-next", "Zoon"),
+            )
+
+    def test_a_damaged_parts_file_starts_afresh(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory)
+            path.with_name("parts.json").write_text("{not json", encoding="utf-8")
+
+            text, prompts = self.transcribe_long(client, path, ["One.", "Two.", "Three."])
+
+        self.assertEqual(text, "One. Two. Three.")
+        self.assertEqual(len(prompts), 3)
 
     def test_polish_logs_counts_and_timings_but_never_the_text(self) -> None:
         client = OpenWhisperOpenAI()
