@@ -65,7 +65,7 @@ fn overlay_bottom_anchor(monitor_bottom: i32, work_bottom: i32, is_primary: bool
 #[cfg(target_os = "windows")]
 mod text_inserter {
     use crate::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
-    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -81,9 +81,10 @@ mod text_inserter {
     static PRESS_TO_TALK_STOP: AtomicBool = AtomicBool::new(false);
     static TOGGLE_RECORDING: AtomicBool = AtomicBool::new(false);
     static DEBUG_EVENT_BITS: AtomicU32 = AtomicU32::new(0);
-    /// Set by the input hooks when the user presses a key or clicks outside
-    /// OpenWhisper; cleared when a recording starts and after every write.
-    static USER_INPUT_SINCE_WRITE: AtomicBool = AtomicBool::new(false);
+    /// Counts the keys the user presses and clicks outside OpenWhisper. A
+    /// session remembers the count its last check accepted, so a key pressed
+    /// while a piece is being typed is still seen at the next check.
+    static USER_INPUT_COUNT: AtomicU64 = AtomicU64::new(0);
     static SESSION: Mutex<Option<PasteSession>> = Mutex::new(None);
 
     /// The target locked for one recording and the live draft typed into it.
@@ -92,6 +93,7 @@ mod text_inserter {
         focus_hwnd: isize,
         draft: String,
         live_stopped: Option<Blocked>,
+        input_seen: u64,
     }
 
     /// How a write ended, for the frontend.
@@ -319,9 +321,9 @@ mod text_inserter {
             focus_hwnd: TRACKED_FOCUS_HWND.load(Ordering::Relaxed),
             draft: String::new(),
             live_stopped: None,
+            input_seen: USER_INPUT_COUNT.load(Ordering::SeqCst),
         };
         *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
-        USER_INPUT_SINCE_WRITE.store(false, Ordering::SeqCst);
     }
 
     /// Returns the executable name (without `.exe`) of the tracked foreground window.
@@ -460,7 +462,9 @@ mod text_inserter {
         class == "edit" || class.starts_with("richedit")
     }
 
-    fn observe(session: &PasteSession) -> Observation {
+    /// Also returns the input count it checked against.
+    fn observe(session: &PasteSession) -> (Observation, u64) {
+        let input_count = USER_INPUT_COUNT.load(Ordering::SeqCst);
         let target_alive = session.hwnd != 0 && unsafe { IsWindow(session.hwnd) } != 0;
         let foreground_is_target = target_alive && bring_target_forward(session);
         let focus_now = if foreground_is_target {
@@ -476,16 +480,17 @@ mod text_inserter {
         let is_password = foreground_is_target
             && (uia::focused_element_is_password().unwrap_or(false)
                 || is_win32_password_edit(focus_now));
-        Observation {
+        let observation = Observation {
             target_alive,
             foreground_is_target,
             same_field,
             is_password,
-            user_input_since_write: USER_INPUT_SINCE_WRITE.load(Ordering::SeqCst),
+            user_input_since_write: input_count != session.input_seen,
             shortcut_modifier_held: [VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN]
                 .into_iter()
                 .any(key_held),
-        }
+        };
+        (observation, input_count)
     }
 
     fn lock_session() -> std::sync::MutexGuard<'static, Option<PasteSession>> {
@@ -501,14 +506,16 @@ mod text_inserter {
         if let Some(blocked) = session.live_stopped {
             return WriteOutcome::Stopped(blocked);
         }
-        let observation = observe(session);
+        let (observation, input_count) = observe(session);
         match paste_target::decide_live(&observation, !session.draft.is_empty()) {
             LiveWrite::Type => {
                 let typed = paste_target::typeable_text(text);
                 release_held_ctrl();
                 type_unicode(&typed);
                 session.draft.push_str(&typed);
-                USER_INPUT_SINCE_WRITE.store(false, Ordering::SeqCst);
+                // Only input from before the check is accepted; anything
+                // pressed since then is seen at the next check.
+                session.input_seen = input_count;
                 WriteOutcome::Typed
             }
             LiveWrite::Stop(blocked) => {
@@ -523,7 +530,7 @@ mod text_inserter {
         let Some(session) = lock_session().take() else {
             return copy_instead(text, Blocked::NoTarget);
         };
-        let observation = observe(&session);
+        let (observation, _) = observe(&session);
         let decision = paste_target::decide_final(
             &observation,
             &session.draft,
@@ -734,7 +741,7 @@ mod text_inserter {
     fn note_user_input() {
         let foreground = unsafe { GetForegroundWindow() };
         if foreground == 0 || !is_own_process(foreground) {
-            USER_INPUT_SINCE_WRITE.store(true, Ordering::SeqCst);
+            USER_INPUT_COUNT.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -838,7 +845,7 @@ mod text_inserter {
             if info.flags & LLMHF_INJECTED == 0 {
                 let clicked = WindowFromPoint(info.pt);
                 if clicked == 0 || !is_own_process(clicked) {
-                    USER_INPUT_SINCE_WRITE.store(true, Ordering::SeqCst);
+                    USER_INPUT_COUNT.fetch_add(1, Ordering::SeqCst);
                 }
             }
         }
