@@ -71,6 +71,9 @@ type RecordingMetadata = {
 // ---------------------------------------------------------------------------
 let state: WidgetState = "idle";
 let currentSessionId: string | null = null;
+// Advanced by every cancel, so a session that was still starting when the
+// user cancelled is stopped instead of transcribed.
+let cancelCount = 0;
 let sessionEventTail: Promise<void> = Promise.resolve();
 let finalTranscript = "";
 let liveTranscript = "";
@@ -1190,6 +1193,7 @@ async function finalizeRecording() {
 }
 
 async function cancelTranscription() {
+  cancelCount += 1;
   const sessionId = currentSessionId;
   if (sessionId) {
     await invoke("worker_stop_session", { sessionId }).catch((error) => {
@@ -1272,10 +1276,18 @@ async function transcribeStoredAudio(recordingId: string, profileId: string) {
   setState("transcribing");
   closeMenu();
 
+  const cancelsBefore = cancelCount;
   const session = await invoke<{ session_id: string }>("worker_start_session", {
     profileId,
   });
   const sessionId = session.session_id;
+  if (cancelCount !== cancelsBefore) {
+    // Cancelled while the session was starting; the cancel already tidied up.
+    await invoke("worker_stop_session", { sessionId }).catch((error) => {
+      logDebug(`stop session failed=${errorMessage(error)}`);
+    });
+    return;
+  }
   currentSessionId = sessionId;
   const cancelled = () => currentSessionId !== sessionId;
   try {
@@ -1333,7 +1345,7 @@ async function handleSessionEvent(message: WorkerSessionEvent) {
   if (!currentSessionId || message.session_id !== currentSessionId) return;
   try {
     await applyTranscriptEvent(message.event);
-    if (message.done) await completeSession();
+    if (message.done) await completeSession(message.session_id);
   } catch (error) {
     const text = errorMessage(error, "Could not finish the transcription");
     logDebug(`session event failed=${text}`);
@@ -1384,12 +1396,16 @@ async function applyTranscriptEvent(ev: TranscriptEvent) {
   }
 }
 
-async function completeSession() {
+async function completeSession(sessionId: string) {
+  // A cancel (or a new recording) while this waits takes the session over;
+  // then nothing more is written, recorded or cleaned up here.
+  const owned = () => currentSessionId === sessionId;
   if (finalTranscript) {
     lastTranscript = finalTranscript;
     localStorage.setItem("ow_last_transcript", lastTranscript);
     syncWidgetFrame();
     await targetWriteQueue;
+    if (!owned()) return;
     if (!shouldPasteFinalTranscript) {
       await invoke("copy_to_clipboard", { text: finalTranscript });
       showToast("Transcript copied to clipboard", 3000);
@@ -1397,10 +1413,12 @@ async function completeSession() {
       const write = await invoke<TargetWrite>("insert_final_text", { text: finalTranscript });
       showToast(finalWriteNotice(write), write.outcome === "copied" ? 5000 : 2000);
     }
+    if (!owned()) return;
     await finishCurrentRecording("complete", finalTranscript, "");
   } else if (sessionFailure) {
     await finishCurrentRecording("failed", "", sessionFailure);
   }
+  if (!owned()) return;
   cleanup();
   widget.removeAttribute("data-live-transcript");
   widget.setAttribute("aria-label", "Click to start or stop transcription");
