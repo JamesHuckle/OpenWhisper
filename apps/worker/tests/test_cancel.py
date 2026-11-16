@@ -277,5 +277,17 @@ class CancelTests(unittest.TestCase):
         self.assertTrue(all(stream.closed for stream in openai.streams))
         self.assertEqual(len(openai.streams), 1)
 
+    def test_requests_read_before_input_ends_are_all_answered(self) -> None:
+        count = 20
+        requests = io.StringIO(
+            "".join(line(f"r{n}", "list_models") for n in range(count))
+        )
+        replies = io.StringIO()
+        serve(requests, replies, max_parallel=1)
+
+        ids = sorted(json.loads(reply)["id"] for reply in replies.getvalue().splitlines())
+        self.assertEqual(ids, sorted(f"r{n}" for n in range(count)))
+
+
 if __name__ == "__main__":
     unittest.main()

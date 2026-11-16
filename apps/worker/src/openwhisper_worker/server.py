@@ -610,8 +610,10 @@ def serve(
             pool.submit(_answer, server, req, writer)
     finally:
         # The desktop has gone: stop running transcriptions at their next check.
+        # Requests already read still get their reply (a stopped session's
+        # answer is quick), so piped input is never dropped.
         server.close()
-        pool.shutdown(wait=True, cancel_futures=True)
+        pool.shutdown(wait=True)
 
 
 def run_stdio_server() -> None:
