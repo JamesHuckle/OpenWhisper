@@ -155,23 +155,20 @@ class OpenWhisperOpenAITests(unittest.TestCase):
             with patch.dict(os.environ, {"OPENWHISPER_MODEL": legacy}):
                 self.assertEqual(OpenWhisperOpenAI().model, current)
 
-    def test_live_transcribe_routes_pcm_to_realtime_api(self) -> None:
-        with patch.dict(os.environ, {"OPENWHISPER_MODEL": "gpt-live-transcribe"}):
-            client = OpenWhisperOpenAI()
-        stream = Mock()
-        stream.finalize.return_value = "hello"
-        with patch.object(client, "start_realtime_transcription", return_value=stream) as start:
-            result = client.transcribe_bytes(b"\x00\x00", "audio/pcm;rate=24000", "Glossary")
-        self.assertEqual(result, "hello")
-        start.assert_called_once()
-        stream.append.assert_called_once_with(b"\x00\x00")
-        stream.finalize.assert_called_once_with()
-
-    def test_live_transcribe_rejects_compressed_audio(self) -> None:
-        with patch.dict(os.environ, {"OPENWHISPER_MODEL": "gpt-live-transcribe"}):
-            client = OpenWhisperOpenAI()
-        with self.assertRaisesRegex(RuntimeError, "requires 24 kHz PCM"):
-            client.transcribe_bytes(b"webm", "audio/webm")
+    def test_a_recording_is_streamed_with_its_prompt(self) -> None:
+        client = OpenWhisperOpenAI(api_key="sk-test", model="gpt-transcribe")
+        api = Mock()
+        api.audio.transcriptions.create.return_value.__enter__ = Mock(
+            return_value=iter([SimpleNamespace(type="transcript.text.done", text="hello")])
+        )
+        api.audio.transcriptions.create.return_value.__exit__ = Mock(return_value=None)
+        with patch.object(client, "_get_client", return_value=api):
+            self.assertEqual(client.transcribe_bytes(b"RIFF", "audio/wav", "Glossary"), "hello")
+        sent = api.audio.transcriptions.create.call_args.kwargs
+        self.assertEqual(sent["model"], "gpt-transcribe")
+        self.assertEqual(sent["prompt"], "Glossary")
+        self.assertTrue(sent["stream"])
+        self.assertEqual(sent["file"].name, "session_audio.wav")
 
     def test_flac_upload_is_named_as_flac(self) -> None:
         client = OpenWhisperOpenAI(api_key="sk-test", model="gpt-transcribe")
@@ -421,6 +418,18 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         self.assertEqual(log.count("effort_fallback"), 1)
         self.assertNotIn("bank PIN", log)
         self.assertIn("effort=low", log)
+
+    def test_an_overridden_tidy_model_is_asked_through_the_responses_api(self) -> None:
+        with patch.dict(os.environ, {"OPENWHISPER_POLISH_MODEL": "gpt-5.4"}, clear=True):
+            client = OpenWhisperOpenAI()
+        client._client = Mock()
+        client._client.responses.create.return_value = responses_reply(TIDIED)
+
+        with patch("sys.stderr", io.StringIO()):
+            self.assertEqual(client.polish(DICTATED), TIDIED)
+
+        self.assertEqual(client._client.responses.create.call_args.kwargs["model"], "gpt-5.4")
+        client._client.chat.completions.create.assert_not_called()
 
     def test_rejected_low_reasoning_is_not_retried(self) -> None:
         client = OpenWhisperOpenAI()

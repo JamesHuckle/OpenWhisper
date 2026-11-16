@@ -28,7 +28,6 @@ from .models import (
 
 # Long recordings can legitimately take many minutes to upload and transcribe.
 _STREAM_TIMEOUT = Timeout(connect=30.0, read=1800.0, write=600.0, pool=30.0)
-_BLOCKING_TIMEOUT = Timeout(connect=30.0, read=1800.0, write=600.0, pool=30.0)
 _POLISH_TIMEOUT = Timeout(connect=30.0, read=300.0, write=120.0, pool=30.0)
 _MIN_SENTENCES_PER_POLISH_CHUNK = 4
 _MAX_PARALLEL_POLISH_CHUNKS = 5
@@ -42,22 +41,6 @@ _POLISH_REASONING_EFFORT = (
     os.getenv("OPENWHISPER_POLISH_REASONING", "").strip() or "minimal"
 )
 _FALLBACK_POLISH_REASONING_EFFORT = "low"
-
-_STREAMING_MODELS = frozenset({
-    "gpt-transcribe",
-    "gpt-4o-transcribe",
-    "gpt-4o-mini-transcribe",
-    "gpt-4o-mini-transcribe-2025-12-15",
-    "gpt-4o-transcribe-diarize",
-})
-
-_PROMPT_SUPPORTED_MODELS = frozenset({
-    "gpt-transcribe",
-    "whisper-1",
-    "gpt-4o-transcribe",
-    "gpt-4o-mini-transcribe",
-    "gpt-4o-mini-transcribe-2025-12-15",
-})
 
 
 class RealtimeTranscriptionStream:
@@ -356,37 +339,26 @@ class OpenWhisperOpenAI:
         return result
 
     def _request_polish(self, system: str, text: str) -> tuple[str, str]:
-        """Returns the tidied text and the reasoning effort used ("none" for a
-        model without reasoning)."""
+        """Returns the tidied text and the reasoning effort used. The tidy
+        model is a GPT-5 reasoning model, asked through the Responses API."""
         client = self._get_client()
-        if self._polish_model.startswith("gpt-5"):
-            effort = self._polish_effort
-            try:
-                response = self._create_polish_response(client, system, text, effort)
-            except BadRequestError as exc:
-                if (
-                    getattr(exc, "param", None) != "reasoning.effort"
-                    or effort == _FALLBACK_POLISH_REASONING_EFFORT
-                ):
-                    raise
-                # Remembered, so later chunks and dictations ask with "low" at once.
-                effort = self._polish_effort = _FALLBACK_POLISH_REASONING_EFFORT
-                _log(
-                    f"[polish] effort_fallback model={self._polish_model} "
-                    f"effort={effort} error={describe_error(exc)}"
-                )
-                response = self._create_polish_response(client, system, text, effort)
-            return self._extract_responses_text(response).strip() or text, effort
-        else:
-            response = client.chat.completions.create(
-                model=self._polish_model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": text},
-                ],
-                timeout=_POLISH_TIMEOUT,
+        effort = self._polish_effort
+        try:
+            response = self._create_polish_response(client, system, text, effort)
+        except BadRequestError as exc:
+            if (
+                getattr(exc, "param", None) != "reasoning.effort"
+                or effort == _FALLBACK_POLISH_REASONING_EFFORT
+            ):
+                raise
+            # Remembered, so later chunks and dictations ask with "low" at once.
+            effort = self._polish_effort = _FALLBACK_POLISH_REASONING_EFFORT
+            _log(
+                f"[polish] effort_fallback model={self._polish_model} "
+                f"effort={effort} error={describe_error(exc)}"
             )
-            return (response.choices[0].message.content or "").strip() or text, "none"
+            response = self._create_polish_response(client, system, text, effort)
+        return self._extract_responses_text(response).strip() or text, effort
 
     def _create_polish_response(
         self, client: OpenAI, system: str, text: str, effort: str
@@ -453,27 +425,12 @@ class OpenWhisperOpenAI:
         return separator.join(cleaned)
 
     def transcribe_bytes(self, audio_bytes: bytes, mime_type: str, prompt: str = "") -> str:
+        """Transcribes a whole recording in one request. Live sessions never
+        come here: they hear their audio through the Realtime stream."""
         if not audio_bytes:
             raise RuntimeError("No audio bytes provided")
-
-        if self.is_live:
-            if not mime_type.startswith("audio/pcm"):
-                raise RuntimeError("Live transcription requires 24 kHz PCM audio")
-            stream = self.start_realtime_transcription(lambda _delta: None)
-            try:
-                stream.append(audio_bytes)
-                return stream.finalize()
-            except Exception:
-                stream.close()
-                raise
-
-        client = self._get_client()
         audio_file = self._make_audio_file(audio_bytes, mime_type)
-        effective_prompt = prompt if prompt and self._model in _PROMPT_SUPPORTED_MODELS else ""
-
-        if self._model in _STREAMING_MODELS:
-            return self._transcribe_streaming(client, audio_file, effective_prompt)
-        return self._transcribe_blocking(client, audio_file, effective_prompt)
+        return self._transcribe_streaming(self._get_client(), audio_file, prompt)
 
     def transcribe_file(
         self,
@@ -586,19 +543,6 @@ class OpenWhisperOpenAI:
                 if event.type == "transcript.text.done":
                     return event.text
         return ""
-
-    def _transcribe_blocking(
-        self, client: OpenAI, audio_file: io.BytesIO, prompt: str
-    ) -> str:
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "file": audio_file,
-            "timeout": _BLOCKING_TIMEOUT,
-        }
-        if prompt:
-            kwargs["prompt"] = prompt
-        transcription = client.audio.transcriptions.create(**kwargs)
-        return getattr(transcription, "text", "") or ""
 
     def _make_audio_file(self, audio_bytes: bytes, mime_type: str) -> io.BytesIO:
         extension = self._extension_for_mime(mime_type)

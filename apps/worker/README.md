@@ -41,8 +41,9 @@ files themselves.
 
 When refinement is on, the worker tidies each transcript with `gpt-5-nano`
 (`refine_model` in `packages/protocol/models.json`; override with
-`OPENWHISPER_POLISH_MODEL`). The desktop settings text names the same model,
-read from the same file.
+`OPENWHISPER_POLISH_MODEL`, which must name a GPT-5 model because the worker
+asks through the Responses API with a reasoning effort). The desktop settings
+text names the same model, read from the same file.
 It asks for `minimal` reasoning, since tidying needs no hidden thinking, which
 is billed and delays the first word (override with
 `OPENWHISPER_POLISH_REASONING`). If the model rejects that value, the worker
