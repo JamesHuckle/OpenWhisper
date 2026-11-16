@@ -156,13 +156,32 @@ impl<W: AsyncWrite + Unpin + Send> WorkerConnection<W> {
             params,
         })?;
         line.push('\n');
-        {
+        // The time limit covers waiting to send as well as the reply, so a
+        // worker that stops reading its input cannot hold a request forever.
+        let deadline = tokio::time::Instant::now() + limit;
+        let sent = tokio::time::timeout_at(deadline, async {
             let mut stdin = self.stdin.lock().await;
             stdin.write_all(line.as_bytes()).await?;
-            stdin.flush().await?;
+            stdin.flush().await
+        })
+        .await;
+        match sent {
+            Ok(result) => result?,
+            Err(_) => {
+                // A line may have been cut off part way, so this link cannot
+                // carry another request; the next one starts a new worker.
+                lock(&self.shared)
+                    .exited
+                    .get_or_insert_with(|| "Worker stopped reading requests".to_string());
+                return Err(anyhow!(
+                    "Worker did not take {} within {} seconds",
+                    method,
+                    limit.as_secs()
+                ));
+            }
         }
 
-        match tokio::time::timeout(limit, rx).await {
+        match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(reply)) => reply.map_err(|message| anyhow!("{}", message)),
             Ok(Err(_)) => Err(anyhow!("Worker process exited unexpectedly")),
             Err(_) => Err(anyhow!(
@@ -350,6 +369,27 @@ mod tests {
             .send(json!({ "id": list_request["id"], "ok": true, "result": { "models": [] } }))
             .await;
         assert_eq!(list.await.unwrap().unwrap(), json!({ "models": [] }));
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_stops_reading_fails_the_request_and_is_replaced() {
+        let (connection, _worker, _events, _exit) = connect();
+        // Larger than the pipe, and the worker never reads it.
+        let chunk = "x".repeat(256 * 1024);
+        let sent = tokio::time::timeout(
+            Duration::from_secs(5),
+            connection.request_within(
+                "append_audio_chunk",
+                json!({ "chunk_base64": chunk }),
+                Duration::from_millis(50),
+            ),
+        )
+        .await
+        .expect("the time limit must cover sending");
+        assert!(sent.unwrap_err().to_string().contains("did not take append_audio_chunk"));
+        assert!(!connection.is_alive());
+        let after = connection.request("ping", json!({})).await.unwrap_err();
+        assert_eq!(after.to_string(), "Worker stopped reading requests");
     }
 
     #[tokio::test]
