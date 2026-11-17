@@ -20,7 +20,7 @@ export type AudioChunkCommand = keyof typeof AUDIO_CHUNK_ID_HEADERS;
 /**
  * Sends audio to the shell as raw bytes, with its recording or session id in
  * a header. The page never turns audio into base64 text: the shell writes the
- * bytes to the WAV file as they are, and encodes Live audio once for the worker.
+ * bytes to the WAV file as they are, and sends Live audio on to OpenAI.
  */
 export async function sendAudioChunk(
   invoke: Invoke,
@@ -45,7 +45,7 @@ export function joinAudioParts(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
 /**
  * Starts a recording with the microphone first, so words said right after the
  * shortcut are kept. The paste target is locked at once, alongside capture;
- * the backup file opens once capture runs, and the worker session starts
+ * the backup file opens once capture runs, and the transcription session starts
  * last, after both. The caller holds the audio captured before the backup opens.
  * onBackupOpened returns false when the recording was cancelled meanwhile;
  * no session is started then and the result is null.
@@ -73,7 +73,7 @@ export async function startCaptureFirst<Capture, Backup, Session>(steps: {
 }
 
 /**
- * Keeps audio captured before a worker session exists, then uploads every chunk
+ * Keeps audio captured before a session exists, then uploads every chunk
  * serially. Serial uploads make the byte order independent of IPC latency.
  */
 export class SessionAudioQueue {

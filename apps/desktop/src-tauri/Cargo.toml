@@ -16,14 +16,24 @@ arboard = "3"
 base64 = "0.22"
 # Lossless upload copy of each microphone recording (src/flac_upload.rs).
 flacenc = { version = "0.5", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+regex = "1"
+# OpenAI is called from the app (src/openai_api.rs, src/realtime.rs). TLS is
+# rustls with ring, as the updater already uses, and the system's
+# certificates.
+reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 tauri = { version = "2.0.0", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2.5.3"
 tauri-plugin-process = "2"
-tokio = { version = "1.40.0", features = ["process", "io-util", "sync", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.40.0", features = ["io-util", "sync", "rt-multi-thread", "macros", "time", "net"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-native-roots"] }
+tokio-util = "0.7"
 uuid = { version = "1.10.0", features = ["v4"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

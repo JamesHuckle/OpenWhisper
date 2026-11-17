@@ -94,12 +94,22 @@ describe("desktop regression contracts", () => {
         );
       });
 
-    expect(tauriFreeTested).toContain("worker_connection.rs");
+    expect(tauriFreeTested).toContain("wav_file.rs");
     for (const name of tauriFreeTested) {
       expect(coreTests).toContain(`#[path = "../src/${name}"]`);
     }
     // These files use other app files (crate::), so the scan above skips them.
-    for (const name of ["settings.rs", "recordings.rs", "overlay_geometry.rs"]) {
+    for (const name of [
+      "settings.rs",
+      "recordings.rs",
+      "overlay_geometry.rs",
+      "audio_rules.rs",
+      "openai_api.rs",
+      "realtime.rs",
+      "saved_parts.rs",
+      "transcriber.rs",
+      "transcription_sessions.rs",
+    ]) {
       expect(coreTests).toContain(`#[path = "../src/${name}"]`);
     }
     // core-tests cannot build lib.rs, so tests written there would never run.
@@ -231,26 +241,25 @@ describe("desktop regression contracts", () => {
     expect(lib).toContain("CurrentIsPassword()");
   });
 
-  it("receives worker progress as pushed events instead of polling behind a transcription", () => {
+  it("receives session progress as pushed events instead of polling behind a transcription", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const client = readFileSync(
-      resolve(desktopRoot, "src-tauri/src/worker_client.rs"),
+    const sessions = readFileSync(
+      resolve(nativeSourceDir, "transcription_sessions.rs"),
       "utf8",
     );
     const lib = readNativeSource();
-    const rustEvent = (name: string) =>
-      client.match(new RegExp(`pub const ${name}: &str = "([^"]+)";`))?.[1];
 
-    expect(rustEvent("SESSION_EVENT")).toBe("worker-session-event");
-    expect(rustEvent("WORKER_EXITED_EVENT")).toBe("worker-exited");
+    expect(sessions).toContain('pub const SESSION_EVENT: &str = "worker-session-event";');
     expect(main).toContain('listen<WorkerSessionEvent>("worker-session-event"');
-    expect(main).toContain('listen<string>("worker-exited"');
+    // No helper process runs beside the app, so none can stop on its own.
+    expect(main).not.toContain('"worker-exited"');
     expect(main).not.toContain("worker_poll_session_events");
     expect(main).not.toContain("setInterval(() => void pollOnce()");
     expect(lib).not.toContain("poll_session_events");
-    // The worker lock is held only to find or start the worker, so Cancel
-    // and settings saves do not wait for a running transcription.
-    expect(lib).toContain("Mutex<Option<Arc<WorkerClient>>>");
+    // Sessions are found without a lock held across a transcription, so
+    // Cancel and settings saves do not wait for a running one.
+    expect(lib).toContain("transcription: OnceLock<Sessions>");
+    expect(lib).toContain("emit_app.emit(SESSION_EVENT, event)");
   });
 
   it("waits for Windows events instead of polling shortcuts and the focused program", () => {
@@ -285,16 +294,11 @@ describe("desktop regression contracts", () => {
     const tauriConfig = JSON.parse(
       readFileSync(resolve(desktopRoot, "src-tauri/tauri.conf.json"), "utf8"),
     );
-    const client = readFileSync(
-      resolve(desktopRoot, "src-tauri/src/worker_client.rs"),
-      "utf8",
-    );
 
     expect(buildScript).toContain("--onedir");
     expect(buildScript).not.toContain("--onefile");
     // A plain "binaries/*" skips folders, which would leave out the worker.
     expect(tauriConfig.bundle.resources).toEqual(["binaries/**/*"]);
-    expect(client).toContain('"binaries/openwhisper-worker/openwhisper-worker.exe"');
   });
 
   it("asks before installing an update and reassures users that settings are kept", () => {
@@ -313,20 +317,20 @@ describe("desktop regression contracts", () => {
     expect(main).toContain('transcribeButton.textContent = "Transcribe"');
     expect(main).toContain("retranscribeRecording(recording)");
     expect(main).toContain('status: "transcribing"');
-    // Only the recording id crosses to the app; the worker reads the saved
-    // file from disk, so the audio is never loaded into the window.
+    // Only the recording id crosses to the app, which reads the saved file
+    // from disk, so the audio is never loaded into the window.
     expect(main).toContain('invoke("recording_transcribe", { recordingId, sessionId })');
     expect(main).not.toContain('"recording_read"');
     expect(native).not.toContain("fn recording_read(");
     expect(native).toContain("async fn recording_transcribe(");
-    expect(native).toContain('"audio_path": audio_path.to_string_lossy()');
+    expect(native).toContain("FinalizeAudio::Saved(audio)");
   });
 
   it("sends each piece of normal dictation once, to the saved backup", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const native = readNativeSource();
 
-    // Only live transcription streams audio to the worker while recording.
+    // Only live transcription streams audio to OpenAI while recording.
     expect(main).toContain("if (streamAudioToWorker) audioQueue.append(combined.buffer);");
     expect(main).toContain(
       "streamAudioToWorker = isLiveTranscription(settings.transcriptionModel);",
@@ -339,6 +343,7 @@ describe("desktop regression contracts", () => {
   it("sends recording audio as raw bytes and saves no details while recording", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const lib = readFileSync(resolve(nativeSourceDir, "lib.rs"), "utf8");
+    const realtime = readFileSync(resolve(nativeSourceDir, "realtime.rs"), "utf8");
     const appendBody = lib.slice(
       lib.indexOf("fn recording_append_chunk("),
       lib.indexOf("/// Lets the user choose an audio file"),
@@ -350,8 +355,9 @@ describe("desktop regression contracts", () => {
     expect(main).toContain('sendAudioChunk(invoke, "recording_append_chunk", recordingId, combined)');
     expect(main).toContain('sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer)');
     expect(lib).toContain("InvokeBody::Raw(bytes) => Cow::Borrowed(bytes.as_slice())");
-    // Live audio is encoded once, in the shell, for the worker's JSON line.
-    expect(lib.match(/STANDARD\.encode\(&chunk\)/g)).toHaveLength(1);
+    // Live audio is encoded once, for the Realtime websocket.
+    expect(lib).not.toContain("STANDARD.encode");
+    expect(realtime.match(/STANDARD\.encode\(audio\)/g)).toHaveLength(1);
     // Appending audio writes only the WAV file, not metadata.json each second.
     expect(appendBody).toContain(".append(&chunk, Instant::now())");
     expect(appendBody).not.toContain("write_recording_metadata");
@@ -447,13 +453,15 @@ describe("desktop regression contracts", () => {
     expect(finalizeBody).toContain("mimeType: PCM_MIME_TYPE,");
   });
 
-  it("starts the Python worker from one place and keeps no unused worker commands", () => {
+  it("calls OpenAI from the app itself and keeps no unused session commands", () => {
     const lib = readFileSync(resolve(nativeSourceDir, "lib.rs"), "utf8");
-    const client = readFileSync(resolve(nativeSourceDir, "worker_client.rs"), "utf8");
+    const nativeFiles = readdirSync(nativeSourceDir);
 
     expect(lib).not.toContain("worker_list_models");
-    expect(client.match(/\.arg\("openwhisper_worker"\)/g)).toHaveLength(1);
-    expect(client.match(/try_spawn_python\(&worker_src\)/g)).toHaveLength(2);
+    expect(lib).not.toContain("WorkerClient");
+    expect(nativeFiles).not.toContain("worker_client.rs");
+    expect(nativeFiles).not.toContain("worker_connection.rs");
+    expect(lib).toContain("FinalizeAudio::Live { mime_type }");
   });
 
   it("promotes saved transcripts over redundant retranscription", () => {

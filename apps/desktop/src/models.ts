@@ -1,5 +1,5 @@
 // The transcription and tidy models come from the one shared list in
-// packages/protocol/models.json, which the Rust app and the worker also read.
+// packages/protocol/models.json, which the Rust app also reads.
 import shared from "../../../packages/protocol/models.json";
 
 export type TranscriptionModel = string;
@@ -16,7 +16,7 @@ export const TRANSCRIPTION_MODELS: readonly TranscriptionModelOption[] =
   shared.transcription_models;
 export const DEFAULT_TRANSCRIPTION_MODEL: TranscriptionModel = shared.default_transcription_model;
 export const LIVE_TRANSCRIPTION_MODEL: TranscriptionModel = shared.live_transcription_model;
-/** The worker's default tidy model, named in the refine settings text. */
+/** The default tidy model, named in the refine settings text. */
 export const REFINE_MODEL: string = shared.refine_model;
 
 /** Live transcription streams audio while the user speaks and types as it goes. */

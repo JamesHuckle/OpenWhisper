@@ -43,7 +43,7 @@ import "./styles.css";
 // Types
 // ---------------------------------------------------------------------------
 type TranscriptEvent = { type: "partial" | "final" | "warning" | "error"; text: string };
-// One update the worker pushes for a session; `done` marks its last one.
+// One update the app pushes for a session; `done` marks its last one.
 type WorkerSessionEvent = { session_id: string; event: TranscriptEvent; done?: boolean };
 type AppSettings = {
   hasOpenaiApiKey: boolean;
@@ -84,9 +84,9 @@ let sessionEventTail: Promise<void> = Promise.resolve();
 let finalTranscript = "";
 let liveTranscript = "";
 let streamTextToTarget = false;
-// Live transcription hears audio while it is recorded, so the worker gets
-// every chunk. Otherwise audio goes only to the saved backup, and the worker
-// reads that file once the recording stops.
+// Live transcription hears audio while it is recorded, so its session gets
+// every chunk. Otherwise audio goes only to the saved backup, and the
+// transcriber reads that file once the recording stops.
 let streamAudioToWorker = false;
 let targetWriteQueue: Promise<void> = Promise.resolve();
 let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
@@ -1205,7 +1205,7 @@ async function startRecording() {
 
     const result = await startCaptureFirst({
       lockPasteTarget: () => invoke("capture_paste_target"),
-      // Capture is deliberately attached before the backup file, the worker
+      // Capture is deliberately attached before the backup file, the session
       // or any network startup. Its opening chunks wait until those are ready.
       startCapture: async () => {
         micStream = await openMicrophone(constraints);
@@ -1335,8 +1335,9 @@ async function finalizeRecording() {
         mimeType: PCM_MIME_TYPE,
       });
     } else {
-      // The worker reads the saved backup from disk, so the audio crosses
-      // to it once, at the end, instead of a second time while recording.
+      // The transcriber reads the saved backup from disk, so the audio
+      // crosses to it once, at the end, instead of a second time while
+      // recording.
       const recordingId = currentRecordingId;
       if (!recordingId) throw new Error("The recording was not saved");
       await invoke("recording_transcribe", { recordingId, sessionId });
@@ -1456,8 +1457,8 @@ async function transcribeStoredAudio(recordingId: string, profileId: string) {
   currentSessionId = sessionId;
   const cancelled = () => currentSessionId !== sessionId;
   try {
-    // The app finds the saved file and the worker reads it from disk, so
-    // the audio is never loaded into this window.
+    // The app finds the saved file and reads it from disk, so the audio is
+    // never loaded into this window.
     await invoke("recording_transcribe", { recordingId, sessionId });
   } catch (error) {
     // A cancel during the transcription already tidied up; its failure is expected.
@@ -1486,7 +1487,7 @@ function cleanup() {
 }
 
 // ---------------------------------------------------------------------------
-// Session events: the worker pushes progress, live text and the result as
+// Session events: the app pushes progress, live text and the result as
 // they happen. They are handled one at a time, in the order they arrive.
 // ---------------------------------------------------------------------------
 function queueSessionWork(work: () => Promise<void>) {
@@ -1497,9 +1498,6 @@ function queueSessionWork(work: () => Promise<void>) {
 
 void listen<WorkerSessionEvent>("worker-session-event", ({ payload }) => {
   queueSessionWork(() => handleSessionEvent(payload));
-});
-void listen<string>("worker-exited", ({ payload }) => {
-  queueSessionWork(() => handleWorkerExit(payload));
 });
 
 async function handleSessionEvent(message: WorkerSessionEvent) {
@@ -1585,16 +1583,6 @@ async function completeSession(sessionId: string) {
   cleanup();
   widget.removeAttribute("data-live-transcript");
   widget.setAttribute("aria-label", "Click to start or stop transcription");
-  setState("idle");
-}
-
-// A worker that stops during a transcription fails that request on its own.
-// While recording no request is waiting, so this is the only notice.
-async function handleWorkerExit(message: string) {
-  logDebug(`worker exited state=${state} session=${currentSessionId ?? "none"}`);
-  if (state !== "recording" || !currentSessionId) return;
-  await handleTranscriptionFailure(message || "The transcription worker stopped");
-  cleanup();
   setState("idle");
 }
 

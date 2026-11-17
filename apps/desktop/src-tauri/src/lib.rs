@@ -8,6 +8,7 @@ mod flac_upload;
 #[cfg(target_os = "windows")]
 mod foreground_app;
 mod json_file;
+mod openai_api;
 // Parts of the insertion rules are used only by the Windows writer.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod paste_target;
@@ -17,18 +18,20 @@ mod models;
 mod overlay_geometry;
 #[cfg(target_os = "windows")]
 mod overlay_positioner;
+mod realtime;
 mod recording_store;
 mod recordings;
+mod saved_parts;
 mod settings;
 // Writes dictated text into the field focused when recording began.
 #[cfg(target_os = "windows")]
 mod text_inserter;
+mod transcriber;
+// Dictation sessions: OpenAI is called from here, with no helper process.
+mod transcription_sessions;
 mod wav_file;
-mod worker_client;
-mod worker_connection;
 
 use anyhow::{anyhow, Result};
-use base64::Engine;
 use debug_log::debug_log_line;
 use models::{is_supported_transcription_model, migrate_transcription_model};
 use overlay_geometry::{
@@ -42,13 +45,12 @@ use recordings::{
     write_recording_metadata, ActiveRecording, RecordingMetadata, RecordingStartResponse,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use settings::{frontend_settings_from, start_session_params, AppSettings, FrontendSettings};
+use settings::{frontend_settings_from, session_settings, AppSettings, FrontendSettings};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use std::borrow::Cow;
 use tauri::{
@@ -59,9 +61,8 @@ use tauri::{
 };
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
-use tokio::sync::Mutex;
+use transcription_sessions::{FinalizeAudio, SavedAudio, Sessions, SESSION_EVENT};
 use uuid::Uuid;
-use worker_client::WorkerClient;
 
 #[cfg(target_os = "windows")]
 fn primary_overlay_anchor() -> Option<OverlayAnchor> {
@@ -99,7 +100,9 @@ const MONITOR_FOLLOW_INTERVAL: std::time::Duration = std::time::Duration::from_m
 const MONITOR_FALLBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 struct AppState {
-    worker: Mutex<Option<Arc<WorkerClient>>>,
+    // Set once the app starts. Each dictation is a session here; none waits
+    // for another, so Cancel and settings saves never queue behind one.
+    transcription: OnceLock<Sessions>,
     settings: std::sync::Mutex<AppSettings>,
     overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
     overlay_layout: std::sync::Mutex<Option<OverlayLayoutSpec>>,
@@ -400,8 +403,9 @@ async fn recording_import(app_handle: AppHandle) -> Result<Option<RecordingStart
         .map(Some)
 }
 
-/// Transcribes a saved recording in a worker session. The worker reads the
-/// file from disk, so its audio never passes through the UI.
+/// Transcribes a saved recording in a session. The transcriber reads the
+/// file from disk, so its audio never passes through the UI. The result
+/// arrives as the session's final or error event.
 #[tauri::command]
 async fn recording_transcribe(
     app_handle: AppHandle,
@@ -409,18 +413,11 @@ async fn recording_transcribe(
     recording_id: String,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
+    let sessions = transcription(&state)?;
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
     close_active_recording(&state.recordings, &root, &recording_id)?;
     let metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
     let audio_path = root.join(&recording_id).join(&metadata.file_name);
-    let mut params = json!({
-        "session_id": session_id,
-        "mime_type": metadata.mime_type,
-        "audio_path": audio_path.to_string_lossy(),
-        // A long recording's finished parts are kept here, so a retry after
-        // a failure sends only the rest. Removed once it completes.
-        "parts_path": recording_parts_path(&root, &recording_id).to_string_lossy(),
-    });
     let mut upload_parts = Vec::new();
     if metadata.source == "microphone" {
         // A recording the app did not finish (it stopped while recording)
@@ -428,30 +425,34 @@ async fn recording_transcribe(
         recording_store::repair_wav_header(&audio_path, recording_store::MICROPHONE_SAMPLE_RATE)
             .map_err(|e| format!("Could not read saved recording: {e}"))?;
         upload_parts = flac_upload_parts(audio_path.clone(), root.join(&recording_id)).await;
-        if !upload_parts.is_empty() {
-            params["upload_parts"] = json!(upload_parts
-                .iter()
-                .map(|part| json!({
-                    "path": part.path.to_string_lossy(),
-                    "start": part.pcm_start,
-                    "end": part.pcm_end,
-                }))
-                .collect::<Vec<_>>());
-            params["upload_mime_type"] = json!(flac_upload::MIME_TYPE);
-        }
     }
-    let result = with_worker_request(&app_handle, &state, "finalize_session_audio", params).await;
+    let audio = SavedAudio {
+        audio_path,
+        mime_type: metadata.mime_type,
+        upload_mime_type: if upload_parts.is_empty() {
+            String::new()
+        } else {
+            flac_upload::MIME_TYPE.to_string()
+        },
+        upload_parts: upload_parts.clone(),
+        // A long recording's finished parts are kept here, so a retry after
+        // a failure sends only the rest. Removed once it completes.
+        parts_path: Some(recording_parts_path(&root, &recording_id)),
+    };
+    let result = sessions
+        .finalize(&session_id, FinalizeAudio::Saved(audio))
+        .await;
     for part in upload_parts {
         let _ = fs::remove_file(part.path);
     }
     result
 }
 
-/// Writes the smaller, lossless FLAC parts of a microphone recording that the
-/// worker uploads in place of its WAV, one request each. Empty when there are
-/// no parts: the worker then sends the WAV, as it does for the rest of a
-/// recording once the service refuses a part. They are written in `dir`, the
-/// recording's folder.
+/// Writes the smaller, lossless FLAC parts of a microphone recording that are
+/// uploaded in place of its WAV, one request each. Empty when there are no
+/// parts: the WAV is then sent, as it is for the rest of a recording once
+/// the service refuses a part. They are written in `dir`, the recording's
+/// folder.
 async fn flac_upload_parts(wav_path: PathBuf, dir: PathBuf) -> Vec<flac_upload::UploadPart> {
     let written = tauri::async_runtime::spawn_blocking(move || {
         flac_upload::write_upload_parts(&wav_path, &dir, audio_rules::max_upload_bytes())
@@ -511,36 +512,11 @@ fn recordings_open_folder(app_handle: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-async fn with_worker_request(
-    app_handle: &AppHandle,
-    state: &State<'_, Arc<AppState>>,
-    method: &str,
-    params: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    // Hold the lock only to find or start the worker, never while a request
-    // runs, so a cancel is not stuck behind a transcription. The worker is
-    // started again only after it stops; settings changes travel with each
-    // dictation instead.
-    let worker = {
-        let mut guard = state.worker.lock().await;
-        match guard.as_ref() {
-            Some(worker) if worker.is_alive() => worker.clone(),
-            _ => {
-                let worker = Arc::new(
-                    WorkerClient::spawn(app_handle)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                );
-                *guard = Some(worker.clone());
-                worker
-            }
-        }
-    };
-
-    worker
-        .request(method, params)
-        .await
-        .map_err(|e| e.to_string())
+fn transcription(state: &AppState) -> Result<&Sessions, String> {
+    state
+        .transcription
+        .get()
+        .ok_or_else(|| "The transcriber did not start".to_string())
 }
 
 #[tauri::command]
@@ -640,94 +616,66 @@ async fn app_save_settings(
     #[cfg(target_os = "windows")]
     text_inserter::set_hold_to_talk_enabled(updated.hold_to_talk);
 
-    // The worker keeps running: the next dictation sends the new settings
-    // with its start_session request, so it does not wait for a cold start.
+    // The next dictation reads the new settings when it starts.
     Ok(frontend_settings_from(&updated))
 }
 
+// The session commands keep their worker_ names so the window's calls stay
+// the same; the work is done here, in the app.
+
+/// What a dictation would use if it named nothing; a cheap check at startup.
 #[tauri::command]
-async fn worker_ping(
-    app_handle: AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<serde_json::Value, String> {
-    with_worker_request(&app_handle, &state, "ping", json!({})).await
+async fn worker_ping(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    Ok(transcription(&state)?.health())
 }
 
 #[tauri::command]
 async fn worker_start_session(
-    app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
     profile_id: String,
 ) -> Result<SessionStartResponse, String> {
-    // Every setting the worker uses travels with the session, so a saved
-    // change applies to the next dictation without restarting the worker.
-    let params = {
+    // The session keeps the settings saved at this moment, so a saved change
+    // applies to the next dictation.
+    let settings = {
         let s = state
             .settings
             .lock()
             .map_err(|_| "Failed to lock settings".to_string())?;
-        start_session_params(&s, &profile_id)
+        session_settings(&s, &profile_id)
     };
-
-    let response = with_worker_request(&app_handle, &state, "start_session", params).await?;
-
-    let session_id = response
-        .get("session_id")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| "Missing session_id from worker".to_string())?
-        .to_string();
-
+    let session_id = transcription(&state)?.start(settings).await?;
     Ok(SessionStartResponse { session_id })
 }
 
+/// Stops a session at once, even while it is being transcribed.
 #[tauri::command]
 async fn worker_stop_session(
-    app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
-    with_worker_request(
-        &app_handle,
-        &state,
-        "stop_session",
-        json!({ "session_id": session_id }),
-    )
-    .await
+    transcription(&state)?.stop(&session_id)
 }
 
 /// Streams a Live recording's audio chunk, sent by the page as raw bytes, to
-/// the worker. It is encoded once here, for the worker's JSON line.
+/// the session's Realtime connection.
 #[tauri::command]
 async fn worker_append_audio_chunk(
-    app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
     request: Request<'_>,
 ) -> Result<serde_json::Value, String> {
     let (session_id, chunk) = audio_chunk_request(&request, "session-id")?;
-    let params = json!({
-        "session_id": session_id,
-        "chunk_base64": base64::engine::general_purpose::STANDARD.encode(&chunk),
-    });
-    with_worker_request(&app_handle, &state, "append_audio_chunk", params).await
+    transcription(&state)?.append(&session_id, &chunk).await
 }
 
 #[tauri::command]
 async fn worker_finalize_session_audio(
-    app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
     session_id: String,
     mime_type: String,
 ) -> Result<serde_json::Value, String> {
-    with_worker_request(
-        &app_handle,
-        &state,
-        "finalize_session_audio",
-        json!({
-            "session_id": session_id,
-            "mime_type": mime_type
-        }),
-    )
-    .await
+    transcription(&state)?
+        .finalize(&session_id, FinalizeAudio::Live { mime_type })
+        .await
 }
 
 #[tauri::command]
@@ -1152,7 +1100,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
 
 pub fn run() {
     let app_state = Arc::new(AppState {
-        worker: Mutex::new(None),
+        transcription: OnceLock::new(),
         settings: std::sync::Mutex::new(AppSettings::default()),
         overlay_anchor: std::sync::Mutex::new(None),
         overlay_layout: std::sync::Mutex::new(None),
@@ -1190,6 +1138,15 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            let emit_app = app.handle().clone();
+            match Sessions::new(Arc::new(move |event| {
+                let _ = emit_app.emit(SESSION_EVENT, event);
+            })) {
+                Ok(sessions) => {
+                    let _ = app.state::<Arc<AppState>>().transcription.set(sessions);
+                }
+                Err(error) => debug_log_line("transcriber", &error),
+            }
             let loaded = load_settings_and_api_key(app.handle());
             #[cfg(target_os = "windows")]
             text_inserter::set_hold_to_talk_enabled(loaded.hold_to_talk);

@@ -1,12 +1,12 @@
 //! The app's saved settings and what is sent from them: the settings file
 //! (which never holds the API key), the copy the settings menu sees, and the
-//! worker's `start_session` request.
+//! settings each dictation starts with.
 //!
 //! This file needs no Tauri, so its tests also run in `core-tests`.
 
 use crate::models::default_transcription_model;
+use crate::transcription_sessions::SessionSettings;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 fn default_transcription_prompt() -> String {
     "I was editing @README.md and checking @package.json in my IDE. Let me also look at @tsconfig.json and the @src directory.".to_string()
@@ -96,18 +96,18 @@ pub fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
     }
 }
 
-/// The worker's `start_session` request. It names the key and model as well
-/// as the prompts, so the running worker uses the settings saved at that
-/// moment. An empty key lets the worker fall back to its `OPENAI_API_KEY`.
-pub fn start_session_params(settings: &AppSettings, profile_id: &str) -> serde_json::Value {
-    json!({
-        "profile_id": profile_id,
-        "openai_api_key": settings.openai_api_key.trim(),
-        "transcription_model": settings.transcription_model,
-        "prompt": settings.transcription_prompt,
-        "refine_enabled": settings.refine_enabled,
-        "refine_prompt": settings.refine_prompt,
-    })
+/// The settings one dictation uses: the key and model as well as the
+/// prompts, read when it starts, so a later save applies to the next one.
+/// An empty key falls back to the `OPENAI_API_KEY` environment variable.
+pub fn session_settings(settings: &AppSettings, profile_id: &str) -> SessionSettings {
+    SessionSettings {
+        profile_id: profile_id.to_string(),
+        openai_api_key: settings.openai_api_key.trim().to_string(),
+        transcription_model: settings.transcription_model.clone(),
+        prompt: settings.transcription_prompt.clone(),
+        refine_enabled: settings.refine_enabled,
+        refine_prompt: settings.refine_prompt.clone(),
+    }
 }
 
 pub fn masked_api_key_preview(api_key: &str) -> Option<String> {
@@ -128,6 +128,7 @@ pub fn masked_api_key_preview(api_key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn settings_file_never_contains_the_api_key() {
@@ -151,40 +152,18 @@ mod tests {
             ..AppSettings::default()
         };
         assert_eq!(
-            start_session_params(&settings, "default"),
-            json!({
-                "profile_id": "default",
-                "openai_api_key": "sk-saved",
-                "transcription_model": "gpt-live-transcribe",
-                "prompt": "Glossary: Zoon",
-                "refine_enabled": false,
-                "refine_prompt": "Use British spelling.",
-            })
+            session_settings(&settings, "default"),
+            SessionSettings {
+                profile_id: "default".into(),
+                openai_api_key: "sk-saved".into(),
+                transcription_model: "gpt-live-transcribe".into(),
+                prompt: "Glossary: Zoon".into(),
+                refine_enabled: false,
+                refine_prompt: "Use British spelling.".into(),
+            }
         );
-        let without_key = start_session_params(&AppSettings::default(), "default");
-        assert_eq!(without_key["openai_api_key"], "");
-    }
-
-    #[test]
-    fn start_session_params_match_the_shared_protocol_example() {
-        let exchange: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../packages/protocol/examples/start_session.json"
-        ))
-        .unwrap();
-        let params = &exchange["request"]["params"];
-        let settings = AppSettings {
-            openai_api_key: params["openai_api_key"].as_str().unwrap().into(),
-            transcription_model: params["transcription_model"].as_str().unwrap().into(),
-            transcription_prompt: params["prompt"].as_str().unwrap().into(),
-            refine_enabled: params["refine_enabled"].as_bool().unwrap(),
-            refine_prompt: params["refine_prompt"].as_str().unwrap().into(),
-            ..AppSettings::default()
-        };
-
-        assert_eq!(
-            start_session_params(&settings, params["profile_id"].as_str().unwrap()),
-            *params
-        );
+        let without_key = session_settings(&AppSettings::default(), "default");
+        assert_eq!(without_key.openai_api_key, "");
     }
 
     #[test]

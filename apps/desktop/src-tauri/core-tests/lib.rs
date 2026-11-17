@@ -41,5 +41,3 @@ mod transcriber;
 mod transcription_sessions;
 #[path = "../src/wav_file.rs"]
 mod wav_file;
-#[path = "../src/worker_connection.rs"]
-mod worker_connection;

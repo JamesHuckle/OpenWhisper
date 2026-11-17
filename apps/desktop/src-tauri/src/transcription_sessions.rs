@@ -329,14 +329,6 @@ impl Sessions {
         }
     }
 
-    /// Stops every open session; the app is closing.
-    pub fn close(&self) {
-        let sessions: Vec<_> = lock(&self.sessions).drain().map(|(_, session)| session).collect();
-        for session in sessions {
-            Self::cancel(&session);
-        }
-    }
-
     /// Sends a Live session's next chunk of 16-bit PCM.
     pub async fn append(&self, session_id: &str, chunk: &[u8]) -> Result<Value, String> {
         let session = self.session(session_id)?;

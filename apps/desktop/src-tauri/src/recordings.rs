@@ -2,7 +2,7 @@
 //! `metadata.json` with its details. Only the newest
 //! [`RECORDING_RETENTION_COUNT`] are kept.
 //!
-//! While a long recording is transcribed in parts, the worker saves each
+//! While a long recording is transcribed in parts, the transcriber saves each
 //! finished part in the folder's [`PARTS_FILE_NAME`], so a retry sends only
 //! the parts that did not finish. The file goes when the transcription
 //! completes or the recording is pruned.
@@ -52,7 +52,7 @@ pub fn recording_metadata_path(root: &std::path::Path, id: &str) -> PathBuf {
     root.join(id).join("metadata.json")
 }
 
-/// Where the worker saves the finished parts of this recording's transcription.
+/// Where the transcriber saves the finished parts of this recording's transcription.
 pub fn recording_parts_path(root: &std::path::Path, id: &str) -> PathBuf {
     root.join(id).join(PARTS_FILE_NAME)
 }
