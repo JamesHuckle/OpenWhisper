@@ -10,7 +10,6 @@ from openwhisper_worker.server import (
     _echoes_prompt,
     _no_speech_reason,
     _no_speech_reason_from_counters,
-    _pcm_peak,
 )
 
 PROTOCOL_DIR = Path(__file__).resolve().parents[3] / "packages" / "protocol"
@@ -56,7 +55,7 @@ class SharedAudioRulesTests(unittest.TestCase):
                     pcm = source.readframes(source.getnframes())
                 chunk_bytes = rate // 10 * 2
                 peak = max(
-                    (_pcm_peak(pcm[i : i + chunk_bytes]) for i in range(0, len(pcm), chunk_bytes)),
+                    (audio_rules.pcm_peak(pcm[i : i + chunk_bytes]) for i in range(0, len(pcm), chunk_bytes)),
                     default=0,
                 )
                 reason = _no_speech_reason_from_counters(len(pcm), peak, rate)

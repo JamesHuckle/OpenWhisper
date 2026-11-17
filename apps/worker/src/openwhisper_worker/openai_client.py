@@ -16,7 +16,7 @@ from typing import Any
 from httpx import Timeout
 from openai import BadRequestError, OpenAI
 
-from .audio_rules import MAX_UPLOAD_BYTES
+from .audio_rules import MAX_UPLOAD_BYTES, pcm_is_silent
 from .saved_parts import SavedPart, SavedParts, parts_key
 from .models import (
     DEFAULT_POLISH_MODEL,
@@ -492,12 +492,21 @@ class OpenWhisperOpenAI:
                     transcripts.append(done.text)
                     start = end
                     continue
+                if sample_width == 2 and pcm_is_silent(io.BytesIO(frames).read):
+                    # A silent part is never uploaded: it costs a request and
+                    # the model answers it by repeating its prompt. It is
+                    # saved as finished and empty, so a retry skips it too.
+                    saved.add(chunk_index, SavedPart(start, end, "", ""))
+                    transcripts.append("")
+                    start = end
+                    continue
                 if on_progress:
                     on_progress(chunk_index + 1, total_chunks)
                 contextual_prompt = prompt
-                if transcripts:
+                previous = next((text for text in reversed(transcripts) if text), "")
+                if previous:
                     contextual_prompt = (
-                        f"{prompt}\nPrevious segment transcript: {transcripts[-1][-1200:]}"
+                        f"{prompt}\nPrevious segment transcript: {previous[-1200:]}"
                     ).strip()
                 wav = self._audio_frames_to_wav(
                     frames,

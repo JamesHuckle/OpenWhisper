@@ -7,7 +7,6 @@ import sys
 import threading
 import uuid
 import wave
-from array import array
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import IO, Any, Callable
@@ -20,6 +19,8 @@ from openwhisper_worker.audio_rules import (
     NO_AUDIO_MESSAGE,
     PROMPT_ECHO_MIN_SHARE,
     SILENT_PCM_PEAK,
+    pcm_is_silent,
+    pcm_peak,
 )
 from openwhisper_worker.openai_client import (
     OpenWhisperOpenAI,
@@ -69,7 +70,6 @@ _REALTIME_ROTATE_BYTES = 24_000 * 2 * 25 * 60
 # Requests run side by side so a long transcription never holds up a cancel,
 # a ping or the next session. One session's requests still arrive one by one.
 _MAX_PARALLEL_REQUESTS = 4
-_PCM_SCAN_BYTES = 1024 * 1024
 # Shorter prompt fragments are too common to remove from an error message
 # without mangling it.
 _MIN_REDACT_CHARS = 4
@@ -99,28 +99,6 @@ def _echoes_prompt(text: str, prompt: str) -> bool:
     if not spoken or not hints:
         return False
     return spoken in hints and len(spoken) >= len(hints) * PROMPT_ECHO_MIN_SHARE
-
-
-def _pcm_peak(block: bytes) -> int:
-    """The loudest 16-bit little-endian sample in `block` (0 when it has none)."""
-    usable = len(block) - (len(block) % 2)
-    if not usable:
-        return 0
-    samples = array("h")
-    samples.frombytes(block[:usable])
-    if sys.byteorder == "big":
-        samples.byteswap()
-    return max(max(samples), -min(samples))
-
-
-def _pcm_is_silent(read: Callable[[int], bytes]) -> bool:
-    """True when 16-bit samples from `read` never rise above near-silence."""
-    while True:
-        block = read(_PCM_SCAN_BYTES)
-        if not block:
-            return True
-        if _pcm_peak(block) >= SILENT_PCM_PEAK:
-            return False
 
 
 def _pcm_rate(mime_type: str) -> int | None:
@@ -156,7 +134,7 @@ def _no_speech_reason(path: str, mime_type: str, size: int) -> str | None:
             seconds = source.getnframes() / source.getframerate()
             if seconds < MIN_SPEECH_SECONDS:
                 return f"too_short={seconds:.2f}s"
-            silent = _pcm_is_silent(lambda n: source.readframes(max(1, n // frame_bytes)))
+            silent = pcm_is_silent(lambda n: source.readframes(max(1, n // frame_bytes)))
             return "silent" if silent else None
     except (wave.Error, EOFError, OSError):
         # Not a plain PCM WAV; the model decides what it holds.
@@ -346,7 +324,7 @@ class WorkerServer:
             if session.finalizing:
                 return self._err(request.id, "bad_request", "Session is already finalizing")
             session.audio_bytes += len(chunk)
-            session.pcm_peak = max(session.pcm_peak, _pcm_peak(chunk))
+            session.pcm_peak = max(session.pcm_peak, pcm_peak(chunk))
         if session.realtime_stream:
             if session.realtime_bytes and (
                 session.realtime_bytes + len(chunk) > _REALTIME_ROTATE_BYTES

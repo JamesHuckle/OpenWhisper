@@ -21,7 +21,9 @@ from pathlib import Path
 
 # Raise this when the way a recording is split into parts, or the prompt each
 # part is sent with, changes: older saved parts then no longer match.
-CHUNKING_VERSION = 1
+# 2: silent parts are skipped, and a part's prompt quotes the last part that
+# had text.
+CHUNKING_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -29,9 +31,11 @@ class SavedPart:
     # The part's byte range in the recording's audio data.
     start: int
     end: int
-    # The prompt the part was sent with.
+    # The prompt the part was sent with; empty for a silent part, which is
+    # never sent.
     prompt: str
-    # The text the service returned, which may be empty for a silent part.
+    # The text the service returned, which may be empty; always empty for a
+    # silent part.
     text: str
 
 

@@ -6,6 +6,9 @@ sending, the silence level, the prompt-echo check and the largest upload.
 
 from __future__ import annotations
 
+import sys
+from array import array
+from collections.abc import Callable
 from pathlib import Path
 
 from openwhisper_worker.shared_files import load_shared_json, shared_file_path
@@ -32,3 +35,32 @@ PROMPT_ECHO_MIN_SHARE: float = float(_SHARED["prompt_echo_min_share"])
 # The largest file sent in one transcription request.
 MAX_UPLOAD_BYTES: int = int(_SHARED["max_upload_bytes"])
 NO_AUDIO_MESSAGE: str = _SHARED["no_audio_message"]
+
+# How much PCM the silence check reads at a time.
+_PCM_SCAN_BYTES = 1024 * 1024
+
+
+def pcm_peak(block: bytes) -> int:
+    """The loudest 16-bit little-endian sample in `block` (0 when it has none)."""
+    usable = len(block) - (len(block) % 2)
+    if not usable:
+        return 0
+    samples = array("h")
+    samples.frombytes(block[:usable])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    return max(max(samples), -min(samples))
+
+
+def pcm_is_silent(read: Callable[[int], bytes]) -> bool:
+    """True when 16-bit samples from `read` never reach SILENT_PCM_PEAK.
+
+    The same check decides whether a whole recording is a muted microphone
+    and whether one part of a long recording is worth uploading.
+    """
+    while True:
+        block = read(_PCM_SCAN_BYTES)
+        if not block:
+            return True
+        if pcm_peak(block) >= SILENT_PCM_PEAK:
+            return False

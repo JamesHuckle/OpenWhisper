@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import struct
 import tempfile
@@ -12,7 +13,7 @@ from unittest.mock import Mock, patch
 import httpx
 import openai
 
-from openwhisper_worker.audio_rules import MAX_UPLOAD_BYTES
+from openwhisper_worker.audio_rules import MAX_UPLOAD_BYTES, SILENT_PCM_PEAK
 from openwhisper_worker.saved_parts import parts_key
 from openwhisper_worker.openai_client import (
     OpenWhisperOpenAI,
@@ -24,6 +25,9 @@ from openwhisper_worker.openai_client import (
 DICTATED = "My bank PIN is four four seven one, please remind me at noon."
 CUSTOM_PROMPT = "Write my mother's maiden name, Gwendolyn, in capitals."
 TIDIED = "My bank PIN is 4471. Please remind me at noon."
+# The bytes of one long-recording part: one upload less room for the WAV header.
+PART_BYTES = (MAX_UPLOAD_BYTES - 128) // 2 * 2
+SPEECH = 8_000
 
 
 def responses_reply(text: str) -> SimpleNamespace:
@@ -212,7 +216,7 @@ class OpenWhisperOpenAITests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             # A saved desktop recording: a 44-byte mono 16-bit 24 kHz WAV header
-            # and an hour of (sparse, silent) samples.
+            # and an hour of sparse samples, with a loud one every megabyte.
             path = Path(directory) / "sixty-minutes.wav"
             with path.open("wb") as audio:
                 audio.write(
@@ -224,6 +228,9 @@ class OpenWhisperOpenAITests(unittest.TestCase):
                     + struct.pack("<I", pcm_bytes)
                 )
                 audio.truncate(44 + pcm_bytes)
+                for offset in range(0, pcm_bytes, 2**20):
+                    audio.seek(44 + offset)
+                    audio.write(struct.pack("<h", SPEECH))
 
             def fake_transcribe(wav: bytes, mime_type: str, prompt: str = "") -> str:
                 self.assertEqual(mime_type, "audio/wav")
@@ -247,10 +254,19 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         )
         self.assertEqual(progress, [(index, len(uploaded_sizes)) for index in range(1, len(uploaded_sizes) + 1)])
 
-    def long_wav(self, directory: str, parts: int = 3) -> Path:
-        """A saved desktop recording just long enough to be sent in `parts` parts."""
-        part_bytes = (MAX_UPLOAD_BYTES - 128) // 2 * 2
-        pcm_bytes = (parts - 1) * part_bytes + 24_000 * 2
+    def long_wav(
+        self,
+        directory: str,
+        parts: int = 3,
+        peaks: list[int] | None = None,
+        last_part_bytes: int = 24_000 * 2,
+    ) -> Path:
+        """A saved desktop recording just long enough to be sent in `parts`
+        parts. Each part is silence with one sample at its level in `peaks`
+        (0 leaves it silent); by default every part holds speech."""
+        peaks = peaks if peaks is not None else [SPEECH] * parts
+        parts = len(peaks)
+        pcm_bytes = (parts - 1) * PART_BYTES + last_part_bytes
         path = Path(directory) / "audio.wav"
         with path.open("wb") as audio:
             audio.write(
@@ -262,6 +278,10 @@ class OpenWhisperOpenAITests(unittest.TestCase):
                 + struct.pack("<I", pcm_bytes)
             )
             audio.truncate(44 + pcm_bytes)
+            for index, peak in enumerate(peaks):
+                if peak:
+                    audio.seek(44 + index * PART_BYTES + 1_000)
+                    audio.write(struct.pack("<h", -peak))
         return path
 
     def transcribe_long(
@@ -307,7 +327,7 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         # The last part's prompt is rebuilt from the saved text of the part before it.
         self.assertEqual(prompts, ["Zoon\nPrevious segment transcript: Second part."])
 
-    def test_a_silent_part_that_finished_is_not_sent_again(self) -> None:
+    def test_an_empty_part_that_finished_is_not_sent_again(self) -> None:
         client = OpenWhisperOpenAI()
         with tempfile.TemporaryDirectory() as directory:
             path = self.long_wav(directory)
@@ -317,7 +337,77 @@ class OpenWhisperOpenAITests(unittest.TestCase):
             text, prompts = self.transcribe_long(client, path, ["Third part."])
 
         self.assertEqual(text, "First part. Third part.")
-        self.assertEqual(prompts, ["Zoon\nPrevious segment transcript:"])
+        # The prompt quotes the last part that had text.
+        self.assertEqual(prompts, ["Zoon\nPrevious segment transcript: First part."])
+
+    def test_silent_parts_after_speech_are_never_uploaded(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory, peaks=[SPEECH, 0, 0])
+
+            text, prompts = self.transcribe_long(client, path, ["Only part."])
+            saved = json.loads(path.with_name("parts.json").read_text(encoding="utf-8"))
+            # Saved as finished, so a retry uploads nothing either.
+            retry_text, retry_prompts = self.transcribe_long(client, path, [])
+
+        self.assertEqual(text, "Only part.")
+        self.assertEqual(prompts, ["Zoon"])
+        self.assertEqual(
+            [(part["prompt"], part["text"]) for part in saved["parts"]],
+            [("Zoon", "Only part."), ("", ""), ("", "")],
+        )
+        self.assertEqual((retry_text, retry_prompts), ("Only part.", []))
+
+    def test_a_silent_part_between_speech_is_skipped_and_retries_skip_it(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory, peaks=[SPEECH, 0, SPEECH])
+            with self.assertRaises(RuntimeError):
+                self.transcribe_long(client, path, ["First part.", RuntimeError("network")])
+
+            text, prompts = self.transcribe_long(client, path, ["Third part."])
+
+        self.assertEqual(text, "First part. Third part.")
+        # Only the failed part is sent again, prompted with the last text.
+        self.assertEqual(prompts, ["Zoon\nPrevious segment transcript: First part."])
+
+    def test_quiet_speech_and_a_short_last_part_are_still_uploaded(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            # Part two never reaches the silence level; part one just does.
+            # The last part is far shorter than a whole recording must be.
+            path = self.long_wav(
+                directory,
+                peaks=[SILENT_PCM_PEAK, SILENT_PCM_PEAK - 1, SPEECH],
+                last_part_bytes=24_000 * 2 // 10,
+            )
+
+            text, prompts = self.transcribe_long(client, path, ["Quiet.", "End."])
+
+        self.assertEqual(text, "Quiet. End.")
+        self.assertEqual(prompts, ["Zoon", "Zoon\nPrevious segment transcript: Quiet."])
+
+    def test_parts_of_other_sample_formats_are_always_uploaded(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            # 8-bit audio is not checked for silence: every part goes.
+            pcm_bytes = PART_BYTES + 8_000
+            path = Path(directory) / "audio.wav"
+            with path.open("wb") as audio:
+                audio.write(
+                    b"RIFF"
+                    + struct.pack("<I", 36 + pcm_bytes)
+                    + b"WAVEfmt "
+                    + struct.pack("<IHHIIHH", 16, 1, 1, 8_000, 8_000, 1, 8)
+                    + b"data"
+                    + struct.pack("<I", pcm_bytes)
+                )
+                audio.truncate(44 + pcm_bytes)
+
+            text, prompts = self.transcribe_long(client, path, ["One.", "Two."])
+
+        self.assertEqual(text, "One. Two.")
+        self.assertEqual(len(prompts), 2)
 
     def test_changed_settings_or_audio_start_the_parts_afresh(self) -> None:
         def changed_prompt(_client: OpenWhisperOpenAI, _path: Path) -> dict:
