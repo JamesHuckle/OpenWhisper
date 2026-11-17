@@ -63,15 +63,19 @@ WhisperFlow is split into three runtime layers:
    standard transcription the shell closes the WAV file and passes its
    `audio_path`, and the worker reads it from disk in parts
    (`recording_transcribe`). For a microphone recording the shell first
-   writes a lossless FLAC copy beside the WAV (`src-tauri/src/flac_upload.rs`,
-   about half the bytes for speech) and passes it as `upload_path`; the
-   worker checks the WAV for silence, uploads the FLAC in one request, and
-   falls back to the WAV when the copy is too large or the service refuses
-   it. The shell deletes the copy when the request finishes. A WAV sent in
-   parts has each finished part saved in `parts.json` beside it
-   (`parts_path`), so a retry after a failure sends only the parts that did
-   not finish. A silent part (the same silence level as the whole-recording
-   check) is never uploaded and is saved as finished and empty. The shell deletes that file once the transcription completes
+   encodes the WAV once as lossless FLAC (`src-tauri/src/flac_upload.rs`,
+   about half the bytes for speech), split into parts that each fit one
+   upload, and passes them as `upload_parts` with the byte range of the WAV
+   each holds. The worker checks the WAV for silence and uploads the parts,
+   one request each; a long recording's later parts are prompted with the
+   text before them. When the service refuses a FLAC part the rest of the
+   recording goes as WAV parts. The shell deletes the FLAC parts when the
+   request finishes. A recording sent in parts has each finished part saved
+   in `parts.json` beside it (`parts_path`), so a retry after a failure sends
+   only the parts that did not finish. A silent part (the same silence level
+   as the whole-recording check) is never uploaded and is saved as finished
+   and empty, and a part whose text only repeats its prompt is kept with no
+   text, as on Android. The shell deletes that file once the transcription completes
    or the recording is pruned. Android saves its parts the same way
    (`SavedParts.kt`). Retrying a saved
    recording sends only its id
@@ -112,7 +116,7 @@ Audio pipeline methods:
 ```
 
 ```json
-{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav", "upload_path": "C:\\...\\audio.flac", "upload_mime_type": "audio/flac", "parts_path": "C:\\...\\parts.json" } }
+{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav", "upload_parts": [{ "path": "C:\\...\\audio.part-1.flac", "start": 0, "end": 50331648 }, { "path": "C:\\...\\audio.part-2.flac", "start": 50331648, "end": 86400000 }], "upload_mime_type": "audio/flac", "parts_path": "C:\\...\\parts.json" } }
 ```
 
 Each response from worker:

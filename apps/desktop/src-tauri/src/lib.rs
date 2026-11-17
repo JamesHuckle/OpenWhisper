@@ -419,45 +419,51 @@ async fn recording_transcribe(
         // a failure sends only the rest. Removed once it completes.
         "parts_path": recording_parts_path(&root, &recording_id).to_string_lossy(),
     });
-    let mut upload_path = None;
+    let mut upload_parts = Vec::new();
     if metadata.source == "microphone" {
         // A recording the app did not finish (it stopped while recording)
         // has a header up to a second behind its audio.
         recording_store::repair_wav_header(&audio_path, recording_store::MICROPHONE_SAMPLE_RATE)
             .map_err(|e| format!("Could not read saved recording: {e}"))?;
-        upload_path = flac_upload_copy(audio_path.clone()).await;
-        if let Some(path) = &upload_path {
-            params["upload_path"] = json!(path.to_string_lossy());
+        upload_parts = flac_upload_parts(audio_path.clone(), root.join(&recording_id)).await;
+        if !upload_parts.is_empty() {
+            params["upload_parts"] = json!(upload_parts
+                .iter()
+                .map(|part| json!({
+                    "path": part.path.to_string_lossy(),
+                    "start": part.pcm_start,
+                    "end": part.pcm_end,
+                }))
+                .collect::<Vec<_>>());
             params["upload_mime_type"] = json!(flac_upload::MIME_TYPE);
         }
     }
     let result = with_worker_request(&app_handle, &state, "finalize_session_audio", params).await;
-    if let Some(path) = upload_path {
-        let _ = fs::remove_file(path);
+    for part in upload_parts {
+        let _ = fs::remove_file(part.path);
     }
     result
 }
 
-/// Writes the smaller, lossless FLAC copy of a microphone recording that the
-/// worker uploads in place of its WAV. None when there is no copy: the worker
-/// then sends the WAV, as it does for a copy the service refuses.
-async fn flac_upload_copy(wav_path: PathBuf) -> Option<PathBuf> {
-    let flac_path = wav_path.with_file_name(flac_upload::FILE_NAME);
-    let target = flac_path.clone();
+/// Writes the smaller, lossless FLAC parts of a microphone recording that the
+/// worker uploads in place of its WAV, one request each. Empty when there are
+/// no parts: the worker then sends the WAV, as it does for the rest of a
+/// recording once the service refuses a part. They are written in `dir`, the
+/// recording's folder.
+async fn flac_upload_parts(wav_path: PathBuf, dir: PathBuf) -> Vec<flac_upload::UploadPart> {
     let written = tauri::async_runtime::spawn_blocking(move || {
-        flac_upload::write_upload_copy(&wav_path, &target, flac_upload::max_upload_bytes())
+        flac_upload::write_upload_parts(&wav_path, &dir, flac_upload::max_upload_bytes())
     })
     .await;
     match written {
-        Ok(Ok(true)) => Some(flac_path),
-        Ok(Ok(false)) => None,
+        Ok(Ok(parts)) => parts,
         Ok(Err(error)) => {
-            debug_log_line("recording", &format!("FLAC upload copy failed: {error}"));
-            None
+            debug_log_line("recording", &format!("FLAC upload parts failed: {error}"));
+            Vec::new()
         }
         Err(error) => {
-            debug_log_line("recording", &format!("FLAC upload copy stopped: {error}"));
-            None
+            debug_log_line("recording", &format!("FLAC upload parts stopped: {error}"));
+            Vec::new()
         }
     }
 }
