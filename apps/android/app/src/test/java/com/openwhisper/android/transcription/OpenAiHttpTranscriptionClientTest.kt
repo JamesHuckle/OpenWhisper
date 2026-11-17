@@ -19,6 +19,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpenAiHttpTranscriptionClientTest {
+    private companion object {
+        /** The PCM in one upload: a long recording's part. */
+        val PART = AudioRules.MAX_PCM_BYTES_PER_UPLOAD
+    }
+
     @Test
     fun cancelClosesAnUploadThatIsStillWaitingForTheService() {
         // A local service that takes the upload and never answers.
@@ -166,6 +171,60 @@ class OpenAiHttpTranscriptionClientTest {
 
         assertEquals(1, retry.uploads.size)
         assertEquals(null, promptOf(retry.uploads.single()))
+    }
+
+    @Test
+    fun silentPartsAfterSpeechAreNeverUploaded() {
+        val audio = pcmAudio(speech(PART) + ByteArray(PART) + ByteArray(16_000 * 2), saveParts = true)
+        val service = FakeService("Only part.")
+
+        assertEquals("Only part.", service.client.transcribe(audio))
+        assertEquals(1, service.uploads.size)
+
+        // Saved as finished, so a retry uploads nothing either.
+        val retry = FakeService()
+        assertEquals("Only part.", retry.client.transcribe(audio))
+        assertEquals(0, retry.uploads.size)
+    }
+
+    @Test
+    fun aSilentPartBetweenSpeechIsSkippedAndRetriesSkipIt() {
+        val audio = pcmAudio(speech(PART) + ByteArray(PART) + speech(16_000 * 2), saveParts = true)
+        val failing = FakeService("First part.", "Server error", statuses = listOf(200, 500))
+        assertThrows(TranscriptionHttpException::class.java) { failing.client.transcribe(audio) }
+        assertEquals(2, failing.uploads.size)
+
+        val retry = FakeService("Third part.")
+        assertEquals("First part. Third part.", retry.client.transcribe(audio))
+
+        // Only the failed part goes again, prompted with the last text.
+        assertEquals(1, retry.uploads.size)
+        assertEquals("First part.", promptOf(retry.uploads.single()))
+    }
+
+    @Test
+    fun quietSpeechAndAShortLastPartAreStillUploaded() {
+        // The first part only just reaches the silence level, and the last is
+        // far shorter than a whole recording must be.
+        val quiet = ByteArray(PART).also { setSample(it, 1_000, -AudioRules.SILENT_PCM_PEAK) }
+        val audio = pcmAudio(quiet + speech(16_000 * 2 / 10))
+        val service = FakeService("Quiet.", "End.")
+
+        assertEquals("Quiet. End.", service.client.transcribe(audio))
+
+        assertEquals(2, service.uploads.size)
+        assertEquals("Quiet.", promptOf(service.uploads.last()))
+    }
+
+    @Test
+    fun aPartJustBelowTheSilenceLevelIsNotUploaded() {
+        val muted = ByteArray(PART).also { setSample(it, 1_000, -(AudioRules.SILENT_PCM_PEAK - 1)) }
+        val audio = pcmAudio(speech(PART) + muted)
+        val service = FakeService("Speech.")
+
+        assertEquals("Speech.", service.client.transcribe(audio))
+
+        assertEquals(1, service.uploads.size)
     }
 
     @Test
@@ -418,6 +477,14 @@ class OpenAiHttpTranscriptionClientTest {
             pcmDataLength = pcm.size.toLong(),
             partsFile = if (saveParts) File("${file.path}.parts.json").apply { deleteOnExit() } else null,
         )
+    }
+
+    /** Loud 16-bit samples, well above the silence level. */
+    private fun speech(bytes: Int) = ByteArray(bytes) { (it % 50).toByte() }
+
+    private fun setSample(pcm: ByteArray, byteIndex: Int, value: Int) {
+        pcm[byteIndex] = value.toByte()
+        pcm[byteIndex + 1] = (value shr 8).toByte()
     }
 
     /** Just over one upload of PCM, so the recording is sent in two parts. */

@@ -11,8 +11,9 @@ import org.json.JSONObject
 internal data class SavedPart(
     val start: Long,
     val end: Long,
+    /** Empty for a silent part, which is never sent. */
     val prompt: String,
-    /** May be empty, for a silent part. */
+    /** May be empty; always empty for a silent part. */
     val text: String,
 )
 

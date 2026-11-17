@@ -58,7 +58,8 @@ during dictation still cancel insertion.
   from the saved file into the request in 64 KB blocks (behind a generated
   WAV header when it goes as WAV), so a long recording is never held in
   memory; an imported compressed file goes as it is, under its own name and
-  type. This request
+  type. A part that never reaches the silence level is not uploaded; it is
+  saved as finished and empty, so a retry skips it too. This request
   shape and model are supported by the current
   [OpenAI transcription API reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
 - `AudioRules` follows the same dictation rules as the desktop, from

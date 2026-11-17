@@ -24,7 +24,9 @@ turns it into `BuildConfig` values for `AudioRules`.
 - `min_speech_seconds`: a recording shorter than this is an accidental tap.
   It is not sent, and the user sees `no_audio_message`.
 - `silent_pcm_peak`: 16-bit audio whose loudest sample stays below this is a
-  muted microphone. It is not sent either.
+  muted microphone. It is not sent either. Each part of a long recording is
+  checked the same way (but never for `min_speech_seconds`), and a silent
+  part is not sent.
 - `prompt_echo_min_share`: the models answer near-silent audio by repeating
   the prompt they were given. A transcript whose words (lower case, letters
   and digits only) appear in that order inside the prompt's words, and that
@@ -152,7 +154,10 @@ A WAV too large for one request is sent in parts. The desktop names a
 `parts_path` (`parts.json` in the recording's folder) where the worker saves
 each finished part's byte range, prompt and text, written atomically. A retry
 of the same recording skips the saved parts and sends only the rest, building
-the next part's prompt from the saved text. The file carries a key made from
+the next part's prompt from the saved text. A part that never reaches
+`silent_pcm_peak` is not uploaded: it is saved as finished with no text, so a
+retry skips it too, and the next part's prompt quotes the last part that had
+text. The file carries a key made from
 the audio's size and modified time, the model, the vocabulary prompt and a
 chunking version; when any of them changes, the worker starts fresh. The tidy
 pass is not part of the key, so changing its prompt never uploads audio again.

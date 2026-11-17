@@ -70,7 +70,8 @@ WhisperFlow is split into three runtime layers:
    it. The shell deletes the copy when the request finishes. A WAV sent in
    parts has each finished part saved in `parts.json` beside it
    (`parts_path`), so a retry after a failure sends only the parts that did
-   not finish; the shell deletes that file once the transcription completes
+   not finish. A silent part (the same silence level as the whole-recording
+   check) is never uploaded and is saved as finished and empty. The shell deletes that file once the transcription completes
    or the recording is pruned. Android saves its parts the same way
    (`SavedParts.kt`). Retrying a saved
    recording sends only its id

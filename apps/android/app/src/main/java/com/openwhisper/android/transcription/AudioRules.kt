@@ -59,7 +59,13 @@ object AudioRules {
     private fun normalizeWords(text: String): String =
         WORD.findAll(text.lowercase()).joinToString(" ") { it.value }
 
-    private fun isSilent(file: File, dataOffset: Long, dataLength: Long): Boolean {
+    /**
+     * True when the 16-bit PCM at [dataOffset] and [dataLength] in [file]
+     * never reaches [SILENT_PCM_PEAK]. The same check decides whether a whole
+     * recording is a muted microphone and whether one part of a long
+     * recording is worth uploading.
+     */
+    fun isSilent(file: File, dataOffset: Long, dataLength: Long): Boolean {
         RandomAccessFile(file, "r").use { source ->
             source.seek(dataOffset)
             val block = ByteArray(SCAN_BYTES)
