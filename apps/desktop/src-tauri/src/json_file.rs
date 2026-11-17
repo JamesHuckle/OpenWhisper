@@ -15,6 +15,10 @@ use serde::Serialize;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// Every save of a file uses the same `.tmp` path, so saves run one at a time.
+static SAVING: Mutex<()> = Mutex::new(());
 
 /// What a read found.
 #[derive(Debug)]
@@ -45,6 +49,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 /// backup. A previous file that does not read back as `T` never replaces a
 /// good backup.
 pub fn write_json_atomic<T: Serialize + DeserializeOwned>(path: &Path, value: &T) -> Result<()> {
+    let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -67,6 +72,7 @@ pub fn write_json_atomic<T: Serialize + DeserializeOwned>(path: &Path, value: &T
 /// Makes the backup a copy of the file as it is now, for when the previous
 /// version holds something that must not stay on disk.
 pub fn refresh_backup(path: &Path) -> Result<()> {
+    let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
     fs::copy(path, backup_path(path))?;
     Ok(())
 }
@@ -231,6 +237,23 @@ mod tests {
 
         let backup: Details = serde_json::from_slice(&fs::read(backup_path(&path)).unwrap()).unwrap();
         assert_eq!(backup, details("old", 1));
+    }
+
+    #[test]
+    fn saves_of_one_file_at_the_same_time_all_succeed() {
+        let dir = TempDir::new();
+        let path = dir.0.join("settings.json");
+        std::thread::scope(|scope| {
+            for thread in 0..8 {
+                let path = &path;
+                scope.spawn(move || {
+                    for round in 0..50 {
+                        write_json_atomic(path, &details(&"x".repeat(round * 100), thread)).unwrap();
+                    }
+                });
+            }
+        });
+        assert!(matches!(read(&path), JsonRead::Read(d) if d.name.len() == 4900));
     }
 
     #[test]

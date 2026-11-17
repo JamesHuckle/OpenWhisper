@@ -539,6 +539,10 @@ async fn app_save_settings(
     show_idle_pill: Option<bool>,
     hold_to_talk: Option<bool>,
 ) -> Result<FrontendSettings, String> {
+    // One save at a time, from reading the settings to storing them, so two
+    // saves never undo each other's change or API key.
+    static SAVING_SETTINGS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _saving = SAVING_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
     let mut previous_key = None;
     let updated = {
         let mut current = state
