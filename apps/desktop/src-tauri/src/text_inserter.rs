@@ -535,6 +535,18 @@ pub fn insert_final(text: &str) -> Result<WriteOutcome, String> {
             // The draft is deleted only once the final text is ready on
             // the clipboard, so a clipboard failure leaves it in place.
             let pasted = paste_restoring_clipboard(text, session.hwnd, || {
+                // The user may have moved on while the clipboard was being
+                // prepared; then nothing is deleted and the text stays copied.
+                let (now, _) = observe(&session);
+                let still = paste_target::decide_final(
+                    &now,
+                    &session.draft,
+                    session.live_stopped.is_none(),
+                    text,
+                );
+                if still != decision {
+                    return false;
+                }
                 release_held_ctrl();
                 press_backspace(delete_chars)
             })?;
