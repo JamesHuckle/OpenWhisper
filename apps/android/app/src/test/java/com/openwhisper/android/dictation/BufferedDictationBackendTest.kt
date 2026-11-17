@@ -3,10 +3,12 @@ package com.openwhisper.android.dictation
 import com.openwhisper.android.audio.PcmRecording
 import com.openwhisper.android.audio.PcmRecorder
 import com.openwhisper.android.audio.WavEncoder
+import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.transcription.AudioRules
 import com.openwhisper.android.transcription.NoSpeechException
 import com.openwhisper.android.transcription.TranscriptionAudio
 import com.openwhisper.android.transcription.TranscriptionClient
+import com.openwhisper.android.transcription.TranscriptionManager
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -19,13 +21,13 @@ class BufferedDictationBackendTest {
         val client = FakeTranscriptionClient("Hello")
         val runner = QueuedRunner()
         val listener = CapturingListener()
-        val backend = BufferedDictationBackend(recorder, client, runner, DirectDispatcher)
+        val backend = BufferedDictationBackend(recorder, manager(client, runner), runner, DirectDispatcher)
 
         backend.start(listener)
         backend.finish()
         assertNull(listener.final)
 
-        runner.runNext()
+        runner.runAll()
 
         assertEquals(1, recorder.startCount)
         assertEquals(1, recorder.stopCount)
@@ -39,12 +41,12 @@ class BufferedDictationBackendTest {
         val client = FakeTranscriptionClient("late")
         val runner = QueuedRunner()
         val listener = CapturingListener()
-        val backend = BufferedDictationBackend(recorder, client, runner, DirectDispatcher)
+        val backend = BufferedDictationBackend(recorder, manager(client, runner), runner, DirectDispatcher)
 
         backend.start(listener)
         backend.finish()
         backend.cancel()
-        runner.runNext()
+        runner.runAll()
 
         assertEquals(1, recorder.cancelCount)
         assertNull(listener.final)
@@ -55,15 +57,45 @@ class BufferedDictationBackendTest {
     fun cancelStopsTheUploadInProgress() {
         val recorder = FakePcmRecorder(pcmRecording(byteArrayOf(1, 2)))
         val client = FakeTranscriptionClient("late")
-        val runner = QueuedRunner()
+        val dictation = QueuedRunner()
+        val uploads = QueuedRunner()
         val listener = CapturingListener()
-        val backend = BufferedDictationBackend(recorder, client, runner, DirectDispatcher)
+        val backend =
+            BufferedDictationBackend(recorder, manager(client, uploads), dictation, DirectDispatcher)
 
         backend.start(listener)
         backend.finish()
+        // The recording has been handed to the transcription manager.
+        dictation.runAll()
         backend.cancel()
+        uploads.runAll()
 
         assertEquals(1, client.cancelCount)
+        assertNull(client.lastWav)
+        assertNull(listener.final)
+        assertNull(listener.error)
+    }
+
+    @Test
+    fun aCancelWhileTheRecordingIsHandedOverStopsItsUpload() {
+        val recorder = FakePcmRecorder(pcmRecording(byteArrayOf(1, 2)))
+        val client = FakeTranscriptionClient("late")
+        val runner = QueuedRunner()
+        val listener = CapturingListener()
+        lateinit var backend: BufferedDictationBackend
+        // The microphone stops cleanly, then the user cancels before the job
+        // is registered with the backend.
+        recorder.onStop = { backend.cancel() }
+        backend = BufferedDictationBackend(recorder, manager(client, runner), runner, DirectDispatcher)
+
+        backend.start(listener)
+        backend.finish()
+        runner.runAll()
+
+        assertEquals(1, client.cancelCount)
+        assertNull(client.lastWav)
+        assertNull(listener.final)
+        assertNull(listener.error)
     }
 
     @Test
@@ -73,14 +105,14 @@ class BufferedDictationBackendTest {
         val listener = CapturingListener()
         val backend = BufferedDictationBackend(
             recorder,
-            FakeTranscriptionClient("unused"),
+            manager(FakeTranscriptionClient("unused"), runner),
             runner,
             DirectDispatcher,
         )
 
         backend.start(listener)
         backend.finish()
-        runner.runNext()
+        runner.runAll()
 
         assertEquals("No audio. Raw audio is available in OpenWhisper.", listener.error)
     }
@@ -91,11 +123,11 @@ class BufferedDictationBackendTest {
         val client = FakeTranscriptionClient("unused", error = NoSpeechException("too_short"))
         val runner = QueuedRunner()
         val listener = CapturingListener()
-        val backend = BufferedDictationBackend(recorder, client, runner, DirectDispatcher)
+        val backend = BufferedDictationBackend(recorder, manager(client, runner), runner, DirectDispatcher)
 
         backend.start(listener)
         backend.finish()
-        runner.runNext()
+        runner.runAll()
 
         assertEquals("No audio found", listener.error)
         assertEquals(AudioRules.NO_AUDIO_MESSAGE, listener.error)
@@ -108,11 +140,11 @@ class BufferedDictationBackendTest {
         val client = FakeTranscriptionClient("unused")
         val runner = QueuedRunner()
         val listener = CapturingListener()
-        val backend = BufferedDictationBackend(recorder, client, runner, DirectDispatcher)
+        val backend = BufferedDictationBackend(recorder, manager(client, runner), runner, DirectDispatcher)
 
         backend.start(listener)
         backend.finish()
-        runner.runNext()
+        runner.runAll()
 
         assertNull(client.lastWav)
         assertEquals(AudioRules.NO_AUDIO_MESSAGE, listener.error)
@@ -126,6 +158,7 @@ private class FakePcmRecorder(
     var startCount = 0
     var stopCount = 0
     var cancelCount = 0
+    var onStop: () -> Unit = {}
 
     override fun start() {
         startCount += 1
@@ -134,6 +167,7 @@ private class FakePcmRecorder(
     override fun stop(): PcmRecording {
         stopCount += 1
         stopError?.let { throw IllegalStateException(it) }
+        onStop()
         return recording
     }
 
@@ -174,8 +208,24 @@ private class QueuedRunner : BackgroundRunner {
         tasks.add(task)
     }
 
-    fun runNext() = tasks.removeFirst().invoke()
+    /** Runs every task, including tasks the running ones queue. */
+    fun runAll() {
+        while (tasks.isNotEmpty()) tasks.removeFirst().invoke()
+    }
 }
+
+private fun manager(client: TranscriptionClient, runner: BackgroundRunner) = TranscriptionManager(
+    store = RecordingStore.forDirectory(
+        File.createTempFile("openwhisper-store-", "").apply {
+            delete()
+            mkdirs()
+            deleteOnExit()
+        },
+    ),
+    newClient = { client },
+    background = runner,
+    callbacks = DirectDispatcher,
+)
 
 private data object DirectDispatcher : CallbackDispatcher {
     override fun dispatch(task: () -> Unit) = task()

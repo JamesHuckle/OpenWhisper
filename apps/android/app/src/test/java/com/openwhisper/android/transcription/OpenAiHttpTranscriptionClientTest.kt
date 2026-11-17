@@ -383,6 +383,33 @@ class OpenAiHttpTranscriptionClientTest {
         assertTrue(service.uploads.isEmpty())
     }
 
+    @Test
+    fun aJobCancelledBeforeItsClientStartsSendsNothing() {
+        var encoded = 0
+        var opened = 0
+        val client = OpenAiHttpTranscriptionClient(
+            apiKey = { "sk-test" },
+            openConnection = {
+                opened += 1
+                error("Nothing may be uploaded")
+            },
+            encodeFlac = { _, _, _, _, cancelled ->
+                encoded += 1
+                check(!cancelled()) { "FLAC encoding cancelled" }
+                ByteArray(8)
+            },
+            isCancelled = { true },
+        )
+
+        val error = assertThrows(TranscriptionException::class.java) {
+            client.transcribe(pcmAudio())
+        }
+
+        assertEquals(OpenAiHttpTranscriptionClient.CANCELLED_MESSAGE, error.message)
+        assertEquals(0, opened)
+        assertTrue(encoded <= 1)
+    }
+
     private class FakeService(
         vararg responses: String,
         statuses: List<Int> = emptyList(),

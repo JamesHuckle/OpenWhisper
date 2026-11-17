@@ -62,6 +62,16 @@ during dictation still cancel insertion.
   saved as finished and empty, so a retry skips it too. This request
   shape and model are supported by the current
   [OpenAI transcription API reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
+- `TranscriptionManager`, held by `OpenWhisperApplication`, runs every
+  upload, for the app screen and the dictation overlay alike, on a small pool
+  of two threads. Jobs are keyed by recording: asking for a recording that is
+  already being transcribed returns its job, so it is never uploaded (and paid
+  for) twice. Each job has its own HTTP client, so cancelling one stops only
+  its upload, even before it starts. The manager saves each recording's
+  status. When Android recreates the app screen the upload carries on and the
+  new screen shows the result. Nothing resumes by itself: a job lost with the
+  app's process is marked failed when the app next starts, its finished parts
+  kept, and the user taps Transcribe to send only the rest.
 - `AudioRules` follows the same dictation rules as the desktop, from
   `packages/protocol/audio-rules.json` (see `packages/protocol/README.md`). An
   accidental tap or a muted microphone is never uploaded, and the user sees
@@ -101,8 +111,8 @@ The test command performs a clean build and runs:
 
 - JVM tests for cursor/selection preservation, password/sensitive rejection,
   stale focus/content rejection, overlay placement, state transitions,
-  cancellation, error recovery, WAV encoding, FLAC upload with WAV fallback,
-  multipart requests, response parsing, and microphone shutdown races;
+  cancellation, one upload per recording, error recovery, WAV encoding, FLAC
+  upload with WAV fallback, multipart requests, response parsing, and microphone shutdown races;
 - Android Keystore instrumentation tests proving encrypted round-trip, clear,
   and absence of plaintext in preferences;
 - an offline end-to-end device test that enables the accessibility service,

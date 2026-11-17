@@ -22,7 +22,7 @@
     <string name="open_raw_recording">Open raw recording: %1$s</string>
     <string name="quick_transcribe">Transcribe</string>
     <string name="retranscribe_recording">Transcribe %1$s again</string>
-    <string name="retranscribing_recording">Transcribing %1$s again...</string>
+    <string name="transcribing_recording">Transcribing %1$s…</string>
     <string name="transcription_complete">Transcription complete</string>
     <string name="copy_transcript">Copy transcript</string>
     <string name="view_raw_audio">View raw audio</string>

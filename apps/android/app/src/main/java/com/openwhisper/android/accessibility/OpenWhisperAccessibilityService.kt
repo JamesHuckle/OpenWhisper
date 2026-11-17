@@ -22,6 +22,7 @@ import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 import androidx.annotation.RequiresApi
 import com.openwhisper.android.MainActivity
+import com.openwhisper.android.OpenWhisperApplication
 import com.openwhisper.android.audio.AndroidAudioRecorder
 import com.openwhisper.android.dictation.BufferedDictationBackend
 import com.openwhisper.android.dictation.DeterministicDemoBackend
@@ -40,16 +41,14 @@ import com.openwhisper.android.overlay.OverlayKeyGeometry
 import com.openwhisper.android.overlay.OverlayPolicy
 import com.openwhisper.android.overlay.ScreenRect
 import com.openwhisper.android.recordings.RecordingStore
-import com.openwhisper.android.settings.SecureApiKeyStore
 import com.openwhisper.android.settings.SettingsRepository
-import com.openwhisper.android.transcription.OpenAiHttpTranscriptionClient
 import com.openwhisper.android.update.UpdateNotifier
 import java.util.concurrent.Executors
 
 class OpenWhisperAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val backgroundExecutor = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "openwhisper-transcription")
+        Thread(task, "openwhisper-dictation")
     }
     private lateinit var settings: SettingsRepository
     private lateinit var editorProvider: AccessibilityEditorProvider
@@ -92,15 +91,13 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
         } else {
             accessibilityEditor
         }
-        val secrets = SecureApiKeyStore(this)
         val recordingStore = RecordingStore(this)
         val liveBackend = BufferedDictationBackend(
             recorder = AndroidAudioRecorder(this, recordingStore) { level ->
                 // Deliver live mic levels to the overlay's equalizer on the UI thread.
                 handler.post { if (::overlay.isInitialized) overlay.onAmplitude(level) }
             },
-            client = OpenAiHttpTranscriptionClient(secrets::load),
-            recordingStore = recordingStore,
+            transcriptions = OpenWhisperApplication.transcriptions(this),
             background = ExecutorBackgroundRunner(backgroundExecutor),
             callbacks = MainThreadCallbackDispatcher(handler),
         )

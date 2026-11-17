@@ -2,11 +2,12 @@ package com.openwhisper.android.dictation
 
 import com.openwhisper.android.audio.PcmRecorder
 import com.openwhisper.android.audio.WavEncoder
-import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.transcription.NoSpeechException
 import com.openwhisper.android.transcription.TranscriptionAudio
-import com.openwhisper.android.transcription.TranscriptionClient
+import com.openwhisper.android.transcription.TranscriptionJob
+import com.openwhisper.android.transcription.TranscriptionManager
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 fun interface BackgroundRunner {
     fun run(task: () -> Unit)
@@ -16,14 +17,18 @@ fun interface CallbackDispatcher {
     fun dispatch(task: () -> Unit)
 }
 
+/**
+ * Records on the microphone, then hands the recording to the app's
+ * [TranscriptionManager], which uploads it and saves its status.
+ */
 class BufferedDictationBackend(
     private val recorder: PcmRecorder,
-    private val client: TranscriptionClient,
+    private val transcriptions: TranscriptionManager,
     private val background: BackgroundRunner,
     private val callbacks: CallbackDispatcher,
-    private val recordingStore: RecordingStore? = null,
 ) : DictationBackend {
     private val generation = AtomicLong(0)
+    private val activeJob = AtomicReference<TranscriptionJob?>(null)
     @Volatile
     private var listener: DictationBackend.Listener? = null
 
@@ -42,51 +47,31 @@ class BufferedDictationBackend(
         val expectedGeneration = generation.get()
         val expectedListener = listener ?: return
         background.run {
-            var recordingId: String? = null
             try {
                 val recording = recorder.stop()
-                recordingId = recording.id
-                if (recording.byteCount == 0L) throw NoSpeechException("no_bytes")
-                val transcript = client.transcribe(
+                val job = transcriptions.submit(recording.id) {
                     TranscriptionAudio(
                         file = recording.file,
                         mimeType = "audio/wav",
                         pcmSampleRate = recording.sampleRate,
                         pcmDataOffset = WavEncoder.HEADER_BYTES.toLong(),
                         pcmDataLength = recording.byteCount,
-                        partsFile = recordingStore?.partsFile(recording.id),
-                    ),
-                )
-                recordingStore?.finish(recording.id, "complete", transcript = transcript)
-                callbacks.dispatch {
-                    if (generation.get() == expectedGeneration && listener === expectedListener) {
-                        expectedListener.onFinal(transcript)
-                    }
+                    )
+                }
+                activeJob.set(job)
+                // A cancel that came while the job was being handed over.
+                if (generation.get() != expectedGeneration) job.cancel()
+                job.onFinished { result ->
+                    activeJob.compareAndSet(job, null)
+                    result.fold(
+                        onSuccess = { transcript ->
+                            deliver(expectedGeneration, expectedListener) { it.onFinal(transcript) }
+                        },
+                        onFailure = { error -> fail(expectedGeneration, expectedListener, error) },
+                    )
                 }
             } catch (error: Exception) {
-                val cancelled = generation.get() != expectedGeneration
-                recordingId?.let { id ->
-                    if (cancelled) {
-                        recordingStore?.finish(id, "cancelled")
-                    } else {
-                        recordingStore?.finish(
-                            id,
-                            "failed",
-                            error = error.safeMessage("Dictation failed"),
-                        )
-                    }
-                }
-                callbacks.dispatch {
-                    if (generation.get() == expectedGeneration && listener === expectedListener) {
-                        val message = error.safeMessage("Dictation failed")
-                        expectedListener.onError(
-                            // "No audio found" is all there is to say about a tap.
-                            if (error is NoSpeechException) message
-                            else if (message.contains("raw audio", ignoreCase = true)) message
-                            else "$message. Raw audio is available in OpenWhisper.",
-                        )
-                    }
-                }
+                callbacks.dispatch { fail(expectedGeneration, expectedListener, error) }
             }
         }
     }
@@ -95,9 +80,32 @@ class BufferedDictationBackend(
         generation.incrementAndGet()
         listener = null
         recorder.cancel()
-        // Stop the upload too, so the single background thread is free for
-        // the next dictation.
-        client.cancel()
+        // Stop this dictation's upload too; other transcriptions carry on.
+        activeJob.getAndSet(null)?.cancel()
+    }
+
+    private fun deliver(
+        expectedGeneration: Long,
+        expectedListener: DictationBackend.Listener,
+        event: (DictationBackend.Listener) -> Unit,
+    ) {
+        if (generation.get() == expectedGeneration && listener === expectedListener) {
+            event(expectedListener)
+        }
+    }
+
+    private fun fail(
+        expectedGeneration: Long,
+        expectedListener: DictationBackend.Listener,
+        error: Throwable,
+    ) = deliver(expectedGeneration, expectedListener) {
+        val message = error.safeMessage("Dictation failed")
+        it.onError(
+            // "No audio found" is all there is to say about a tap.
+            if (error is NoSpeechException) message
+            else if (message.contains("raw audio", ignoreCase = true)) message
+            else "$message. Raw audio is available in OpenWhisper.",
+        )
     }
 
     private fun Throwable.safeMessage(fallback: String): String =

@@ -21,12 +21,19 @@ class OpenAiHttpTranscriptionClient(
      */
     private val encodeFlac: (File, Long, Int, Int, () -> Boolean) -> ByteArray =
         FlacFileEncoder::encodePcm16Mono,
+    /**
+     * Set when the service refused this phone's FLAC but took the same audio
+     * as WAV, so later parts and dictations skip the refused upload. The
+     * transcription manager gives every job's client the same one.
+     */
+    private val flacRefused: AtomicBoolean = AtomicBoolean(false),
+    /**
+     * True once the job this client belongs to is cancelled, even before
+     * [transcribe] starts: then nothing is encoded or uploaded.
+     */
+    private val isCancelled: () -> Boolean = { false },
 ) : TranscriptionClient {
     private val generation = AtomicLong(0)
-
-    // Set when the service refused this phone's FLAC but took the same audio
-    // as WAV, so later parts and dictations skip the refused upload.
-    private val flacRefused = AtomicBoolean(false)
     private val activeConnection = AtomicReference<HttpURLConnection?>(null)
 
     // Makes cancelling and registering a connection one step each, so a
@@ -134,7 +141,7 @@ class OpenAiHttpTranscriptionClient(
             null
         } else {
             try {
-                encodeFlac(file, offset, length, sampleRate) { generation.get() != started }
+                encodeFlac(file, offset, length, sampleRate) { cancelledSince(started) }
                     .takeIf(ByteArray::isNotEmpty)
             } catch (_: Exception) {
                 // A cancel is reported as one, never answered with the WAV.
@@ -166,7 +173,7 @@ class OpenAiHttpTranscriptionClient(
         val connection = openConnection(request.url)
         val registered = synchronized(connectionLock) {
             // A cancel that came just before the connection was registered.
-            (generation.get() == started).also { if (it) activeConnection.set(connection) }
+            (!cancelledSince(started)).also { if (it) activeConnection.set(connection) }
         }
         if (!registered) {
             connection.disconnect()
@@ -203,8 +210,11 @@ class OpenAiHttpTranscriptionClient(
         }
     }
 
+    private fun cancelledSince(started: Long): Boolean =
+        generation.get() != started || isCancelled()
+
     private fun throwIfCancelled(started: Long) {
-        if (generation.get() != started) throw TranscriptionException(CANCELLED_MESSAGE)
+        if (cancelledSince(started)) throw TranscriptionException(CANCELLED_MESSAGE)
     }
 
     companion object {
