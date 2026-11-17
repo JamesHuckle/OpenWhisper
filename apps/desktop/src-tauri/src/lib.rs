@@ -85,9 +85,16 @@ fn cursor_overlay_anchor() -> Option<OverlayAnchor> {
     })
 }
 
-/// How often the pill checks which monitor the cursor is on.
+/// How often the pill checks which monitor the cursor is on while it is
+/// moving to another one.
 #[cfg(target_os = "windows")]
 const MONITOR_FOLLOW_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The longest the pill waits between checks when the mouse hook reports no
+/// monitor change: it catches display changes the hook cannot see (a new
+/// resolution or scaling, a monitor plugged in or removed).
+#[cfg(target_os = "windows")]
+const MONITOR_FALLBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 struct AppState {
     worker: Mutex<Option<Arc<WorkerClient>>>,
@@ -1196,7 +1203,10 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             {
                 let (wake, woken) = std::sync::mpsc::channel();
-                std::thread::spawn(move || text_inserter::install_input_hooks(wake));
+                let (monitor_wake, monitor_woken) = std::sync::mpsc::channel::<()>();
+                std::thread::spawn(move || {
+                    text_inserter::install_input_hooks(wake, monitor_wake)
+                });
 
                 // Sleeps until the hook thread reports a shortcut or a focus
                 // change, so an idle app does no work here.
@@ -1253,17 +1263,36 @@ pub fn run() {
 
                 // Moves the pill to the monitor the cursor is on. It runs on
                 // its own thread so a monitor move never delays a shortcut.
+                // It sleeps until the mouse hook sees the cursor enter another
+                // monitor, or for at most MONITOR_FALLBACK_INTERVAL, so an
+                // idle app does almost no work here.
                 let monitor_handle = app.handle().clone();
                 std::thread::spawn(move || {
+                    use std::sync::mpsc::RecvTimeoutError;
                     let mut monitor_transition = MonitorTransitionDebouncer::default();
                     loop {
-                        if let Some(cursor_anchor) = cursor_overlay_anchor() {
+                        if let Err(RecvTimeoutError::Disconnected) =
+                            monitor_woken.recv_timeout(MONITOR_FALLBACK_INTERVAL)
+                        {
+                            // The hook thread has gone: check on a timer instead.
+                            std::thread::sleep(MONITOR_FOLLOW_INTERVAL);
+                        }
+                        // Crossing several monitors sends several wake-ups;
+                        // one check below covers them all.
+                        while monitor_woken.try_recv().is_ok() {}
+
+                        monitor_transition.reset();
+                        // Follow the cursor until the pill is on its monitor.
+                        while let Some(cursor_anchor) = cursor_overlay_anchor() {
                             let current_anchor = monitor_handle
                                 .state::<Arc<AppState>>()
                                 .overlay_anchor
                                 .lock()
                                 .ok()
                                 .and_then(|guard| *guard);
+                            if current_anchor == Some(cursor_anchor) {
+                                break;
+                            }
 
                             // Require two consecutive 100 ms observations before
                             // gathering and committing the destination geometry.
@@ -1271,7 +1300,7 @@ pub fn run() {
                                 monitor_transition.observe(current_anchor, cursor_anchor)
                             {
                                 match sync_overlay_window_to_anchor(&monitor_handle, target) {
-                                    Ok(true) => monitor_transition.reset(),
+                                    Ok(true) => break,
                                     Ok(false) => {}
                                     Err(err) => debug_log_line(
                                         "window",
@@ -1279,8 +1308,8 @@ pub fn run() {
                                     ),
                                 }
                             }
+                            std::thread::sleep(MONITOR_FOLLOW_INTERVAL);
                         }
-                        std::thread::sleep(MONITOR_FOLLOW_INTERVAL);
                     }
                 });
             }

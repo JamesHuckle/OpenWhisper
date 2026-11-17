@@ -12,6 +12,8 @@
 //! text is kept out of clipboard history and cloud sync.
 
 use crate::foreground_app::ForegroundApp;
+use crate::overlay_geometry::cursor_entered_new_monitor;
+use crate::overlay_positioner;
 use crate::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
@@ -39,6 +41,11 @@ static FOREGROUND_APP: Mutex<ForegroundApp> = Mutex::new(ForegroundApp::new());
 /// Wakes the dispatcher thread in `run()` when a shortcut flag is set or
 /// the followed window changes. Nothing polls the flags.
 static DISPATCHER_WAKE: OnceLock<Sender<()>> = OnceLock::new();
+/// The monitor the cursor was last seen on (0 between displays).
+static LAST_CURSOR_MONITOR: AtomicIsize = AtomicIsize::new(0);
+/// Wakes the thread in `run()` that moves the pill when the cursor enters
+/// another monitor, so it does not have to keep checking.
+static MONITOR_WAKE: OnceLock<Sender<()>> = OnceLock::new();
 
 /// The target locked for one recording and the live draft typed into it.
 struct PasteSession {
@@ -83,6 +90,7 @@ const WM_KEYDOWN: u32 = 0x0100;
 const WM_KEYUP: u32 = 0x0101;
 const WM_SYSKEYDOWN: u32 = 0x0104;
 const WM_SYSKEYUP: u32 = 0x0105;
+const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_RBUTTONDOWN: u32 = 0x0204;
 const WM_MBUTTONDOWN: u32 = 0x0207;
@@ -881,6 +889,17 @@ unsafe extern "system" fn ll_keyboard_proc(
 }
 
 unsafe extern "system" fn ll_mouse_proc(n_code: i32, w_param: usize, l_param: isize) -> isize {
+    // Every cursor move passes through here: only find its monitor and wake
+    // the pill's follower when that changes, so the hook stays fast.
+    if n_code >= 0 && w_param as u32 == WM_MOUSEMOVE {
+        let info = &*(l_param as *const MsLlHookStruct);
+        let monitor = overlay_positioner::monitor_at(info.pt.x, info.pt.y);
+        if cursor_entered_new_monitor(&LAST_CURSOR_MONITOR, monitor) {
+            if let Some(wake) = MONITOR_WAKE.get() {
+                let _ = wake.send(());
+            }
+        }
+    }
     if n_code >= 0
         && matches!(
             w_param as u32,
@@ -920,10 +939,12 @@ unsafe extern "system" fn focus_event_proc(
 
 /// Installs the low-level keyboard and mouse hooks and the focus-change
 /// hooks, then runs a blocking message pump. `wake` is signalled whenever
-/// a shortcut flag is set or the followed window changes. Blocks forever —
-/// must be called from a dedicated thread.
-pub fn install_input_hooks(wake: Sender<()>) {
+/// a shortcut flag is set or the followed window changes, and
+/// `monitor_wake` whenever the cursor enters another monitor. Blocks
+/// forever — must be called from a dedicated thread.
+pub fn install_input_hooks(wake: Sender<()>, monitor_wake: Sender<()>) {
     let _ = DISPATCHER_WAKE.set(wake);
+    let _ = MONITOR_WAKE.set(monitor_wake);
     let h_mod = unsafe { GetModuleHandleW(std::ptr::null()) };
     let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, h_mod, 0) };
     HOOK_HANDLE.store(hook, Ordering::Relaxed);

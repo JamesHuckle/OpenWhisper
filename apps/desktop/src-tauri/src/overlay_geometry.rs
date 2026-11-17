@@ -1,9 +1,12 @@
 //! Where the pill window goes: its anchor at the bottom centre of a monitor,
 //! its size and position in physical pixels at that monitor's DPI, when a
-//! move to another monitor is committed, and whether showing it takes focus.
+//! move to another monitor is committed, when a cursor move should wake the
+//! thread that follows the cursor, and whether showing it takes focus.
 //! The Win32 calls that apply a placement are in `overlay_positioner.rs`.
 //!
 //! This file needs no Tauri, so its tests also run in `core-tests`.
+
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 /// A window position in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +110,15 @@ impl MonitorTransitionDebouncer {
         self.candidate = None;
         self.samples = 0;
     }
+}
+
+/// Called by the mouse hook on every cursor move with the monitor under the
+/// cursor (0 when it is between displays). Remembers it in `last` and says
+/// whether the cursor has just entered a monitor other than the one it was
+/// last on, which is the only time the pill may need to move. Moves on the
+/// same monitor, the large majority, must not wake anything.
+pub fn cursor_entered_new_monitor(last: &AtomicIsize, monitor: isize) -> bool {
+    last.swap(monitor, Ordering::Relaxed) != monitor && monitor != 0
 }
 
 fn overlay_window_position_for_anchor(
@@ -240,6 +252,29 @@ mod tests {
     fn passive_overlay_reveals_never_take_keyboard_focus() {
         assert!(!OverlayRevealIntent::Passive.should_focus());
         assert!(OverlayRevealIntent::Interactive.should_focus());
+    }
+
+    #[test]
+    fn cursor_moves_wake_the_follower_only_when_entering_another_monitor() {
+        let last = AtomicIsize::new(0);
+        let wakes = |moves: &[isize]| {
+            moves
+                .iter()
+                .filter(|&&monitor| cursor_entered_new_monitor(&last, monitor))
+                .count()
+        };
+
+        // The first move tells the follower where the cursor is.
+        assert_eq!(wakes(&[1]), 1);
+        // Moving about on the same monitor never wakes it.
+        assert_eq!(wakes(&[1; 1000]), 0);
+        // Entering another monitor wakes it once, however long it stays.
+        assert_eq!(wakes(&[2; 1000]), 1);
+        // Crossing a gap between displays wakes it only on arrival.
+        assert_eq!(wakes(&[0, 0, 3, 3]), 1);
+        // A gap, then the same monitor again, wakes it once more, so a
+        // follower that stopped while the cursor was in the gap catches up.
+        assert_eq!(wakes(&[0, 3]), 1);
     }
 
     #[test]

@@ -260,7 +260,12 @@ describe("desktop regression contracts", () => {
     expect(lib).toContain("while woken.recv().is_ok()");
     expect(lib).toContain("SetWinEventHook(");
     expect(lib).toContain("EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS");
-    // Only the monitor check repeats, on its own thread, every 100 ms.
+    // The pill's monitor check sleeps until the mouse hook sees the cursor
+    // enter another monitor (or 5 s pass), then checks every 100 ms only
+    // until the pill has moved.
+    expect(lib).toContain("cursor_entered_new_monitor(&LAST_CURSOR_MONITOR, monitor)");
+    expect(lib).toContain("monitor_woken.recv_timeout(MONITOR_FALLBACK_INTERVAL)");
+    expect(lib).toContain("Duration::from_secs(5)");
     expect(lib).toContain("std::thread::sleep(MONITOR_FOLLOW_INTERVAL)");
     expect(lib).toContain("Duration::from_millis(100)");
     // The menu hears the program name when it changes instead of every 500 ms.

@@ -151,7 +151,9 @@ with the write rules in `paste_target.rs`:
    window outside OpenWhisper, so that clicking the pill still knows where
    the user was. Nothing polls: the keyboard hook wakes a dispatcher thread
    for Ctrl+Space, the settings menu is sent the program's name only when it
-   changes, and only the pill's monitor check repeats, every 100 ms.
+   changes, and the mouse hook wakes the pill's monitor check only when the
+   cursor enters another monitor. That check then runs every 100 ms until
+   the pill has moved, and otherwise once every 5 s for display changes.
 2. When a recording starts, `capture_paste_target` locks that window and its
    focused control for the whole recording. Focus tracking never changes it.
 3. Before every write the target is checked again:

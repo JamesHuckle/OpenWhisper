@@ -129,6 +129,12 @@ pub fn cursor_monitor_anchor() -> Option<(isize, i32, i32, u32)> {
     monitor_anchor_at(cursor, MONITOR_DEFAULTTONULL)
 }
 
+/// The monitor under a screen point, or 0 between displays. One cheap call,
+/// so the mouse hook can make it on every cursor move.
+pub fn monitor_at(x: i32, y: i32) -> isize {
+    unsafe { MonitorFromPoint(Point { x, y }, MONITOR_DEFAULTTONULL) }
+}
+
 pub fn set_window_placement(
     hwnd: isize,
     position: Position,
