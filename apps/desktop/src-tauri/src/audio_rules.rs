@@ -256,7 +256,12 @@ mod tests {
                 peak,
                 pcm_rate(&format!("audio/pcm;rate={}", format.sample_rate)).unwrap(),
             );
-            assert_eq!(expected_answer(reason), case["expected"], "{}", case["about"]);
+            assert_eq!(
+                expected_answer(reason),
+                case["expected"],
+                "{}",
+                case["about"]
+            );
         }
     }
 
@@ -265,7 +270,10 @@ mod tests {
         let cases = shared_cases();
         for case in cases["prompt_echo"].as_array().unwrap() {
             assert_eq!(
-                echoes_prompt(case["text"].as_str().unwrap(), case["prompt"].as_str().unwrap()),
+                echoes_prompt(
+                    case["text"].as_str().unwrap(),
+                    case["prompt"].as_str().unwrap()
+                ),
                 case["expected"].as_bool().unwrap(),
                 "{}",
                 case["about"]
@@ -277,7 +285,10 @@ mod tests {
     fn other_audio_is_left_to_the_model() {
         let path = examples_dir().join("muted.wav");
         assert_eq!(no_speech_reason(&path, "audio/mpeg"), None);
-        assert_eq!(no_speech_reason(Path::new("missing.wav"), "audio/wav"), None);
+        assert_eq!(
+            no_speech_reason(Path::new("missing.wav"), "audio/wav"),
+            None
+        );
     }
 
     #[test]

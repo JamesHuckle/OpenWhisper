@@ -134,7 +134,8 @@ mod tests {
     use std::io::Write;
 
     fn temp_wav(bytes: &[u8]) -> (std::path::PathBuf, File) {
-        let path = std::env::temp_dir().join(format!("openwhisper-wav-{}.wav", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("openwhisper-wav-{}.wav", uuid::Uuid::new_v4()));
         File::create(&path).unwrap().write_all(bytes).unwrap();
         let file = File::open(&path).unwrap();
         (path, file)

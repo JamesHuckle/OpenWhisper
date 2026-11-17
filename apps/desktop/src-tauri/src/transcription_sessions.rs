@@ -68,7 +68,9 @@ pub struct SavedAudio {
 
 pub enum FinalizeAudio {
     /// The chunks a Live session was sent, in this raw PCM type.
-    Live { mime_type: String },
+    Live {
+        mime_type: String,
+    },
     Saved(SavedAudio),
 }
 
@@ -120,7 +122,9 @@ pub struct Sessions {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn env_or(name: &str, fallback: &str) -> String {
@@ -255,7 +259,10 @@ impl Sessions {
     /// connects at once, so the first words are heard.
     pub async fn start(&self, settings: SessionSettings) -> Result<String, String> {
         let requested = if settings.transcription_model.trim().is_empty() {
-            env_or("OPENWHISPER_MODEL", &crate::models::default_transcription_model())
+            env_or(
+                "OPENWHISPER_MODEL",
+                &crate::models::default_transcription_model(),
+            )
         } else {
             settings.transcription_model.clone()
         };
@@ -357,7 +364,10 @@ impl Sessions {
         {
             self.rotate(&session, &mut progress).await?;
         }
-        let stream = lock(&session.state).stream.clone().ok_or_else(unknown_session)?;
+        let stream = lock(&session.state)
+            .stream
+            .clone()
+            .ok_or_else(unknown_session)?;
         stream
             .append(chunk)
             .await
@@ -368,7 +378,10 @@ impl Sessions {
 
     /// Finishes the current Live connection's text and opens the next one.
     async fn rotate(&self, session: &Session, progress: &mut LiveProgress) -> Result<(), String> {
-        let current = lock(&session.state).stream.clone().ok_or_else(unknown_session)?;
+        let current = lock(&session.state)
+            .stream
+            .clone()
+            .ok_or_else(unknown_session)?;
         let segment = until_cancelled(&session.cancel, current.finalize(FINAL_TIMEOUT))
             .await
             .ok_or_else(unknown_session)?
@@ -457,7 +470,9 @@ impl Sessions {
             }
         };
         if let Some(saved) = &saved {
-            let size = std::fs::metadata(&saved.audio_path).map(|m| m.len()).unwrap_or(0);
+            let size = std::fs::metadata(&saved.audio_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
             if size == 0 {
                 return self.finish_without_audio(session, "no_bytes");
             }
@@ -540,7 +555,10 @@ impl Sessions {
                     session.refine_prompt.chars().count()
                 ),
             );
-            self.emit(session, json!({ "type": "partial", "text": "Refining transcript..." }));
+            self.emit(
+                session,
+                json!({ "type": "partial", "text": "Refining transcript..." }),
+            );
             match transcriber.polish(&text, &session.refine_prompt).await {
                 Ok(tidied) => {
                     text = tidied;
@@ -577,7 +595,11 @@ impl Sessions {
                 &format!(
                     "refine skipped session_id={:?} reason={}",
                     session.id,
-                    if skip_short_clean { "short_clean" } else { "disabled" }
+                    if skip_short_clean {
+                        "short_clean"
+                    } else {
+                        "disabled"
+                    }
                 ),
             );
         }
@@ -608,7 +630,10 @@ impl Sessions {
 }
 
 /// Runs `work` until it finishes (Some) or the session stops (None).
-async fn until_cancelled<T>(cancel: &CancellationToken, work: impl Future<Output = T>) -> Option<T> {
+async fn until_cancelled<T>(
+    cancel: &CancellationToken,
+    work: impl Future<Output = T>,
+) -> Option<T> {
     tokio::select! {
         biased;
         _ = cancel.cancelled() => None,
@@ -717,7 +742,9 @@ mod tests {
 
         /// A whole Standard dictation of one second of speech.
         async fn dictate(&self, refine_enabled: bool, refine_prompt: &str) -> Value {
-            let id = self.start("gpt-transcribe", refine_enabled, refine_prompt).await;
+            let id = self
+                .start("gpt-transcribe", refine_enabled, refine_prompt)
+                .await;
             let path = self.wav(1.0, 6_000);
             self.finalize_saved(&id, path).await
         }
@@ -744,29 +771,46 @@ mod tests {
 
         let reply = h.dictate(true, "").await;
 
-        assert_eq!(reply["final_text"], "My bank PIN is 4471. Please remind me at noon.");
+        assert_eq!(
+            reply["final_text"],
+            "My bank PIN is 4471. Please remind me at noon."
+        );
         assert_eq!(
             h.events(),
             [
                 ("partial".into(), "Refining transcript...".into(), false),
-                ("final".into(), "My bank PIN is 4471. Please remind me at noon.".into(), true),
+                (
+                    "final".into(),
+                    "My bank PIN is 4471. Please remind me at noon.".into(),
+                    true
+                ),
             ]
         );
         let received = server.received();
         assert_eq!(received[0].field("prompt").as_deref(), Some(PROMPT));
         assert_eq!(received[0].authorization, "Bearer sk-test");
-        let id = h.events.lock().unwrap()[0]["session_id"].as_str().unwrap().to_string();
-        assert!(h.sessions.stop(&id).is_err(), "a finished session is forgotten");
+        let id = h.events.lock().unwrap()[0]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            h.sessions.stop(&id).is_err(),
+            "a finished session is forgotten"
+        );
     }
 
     #[tokio::test]
     async fn short_clean_transcripts_are_pasted_without_a_tidy_call() {
-        let server = TestServer::start(vec![Reply::transcript("Send me the report by Friday.")]).await;
+        let server =
+            TestServer::start(vec![Reply::transcript("Send me the report by Friday.")]).await;
         let h = harness(&server.base_url);
 
         h.dictate(true, "").await;
 
-        assert_eq!(h.last(), ("final".into(), "Send me the report by Friday.".into(), true));
+        assert_eq!(
+            h.last(),
+            ("final".into(), "Send me the report by Friday.".into(), true)
+        );
         assert_eq!(server.received().len(), 1);
     }
 
@@ -783,7 +827,10 @@ mod tests {
 
         assert_eq!(h.last().1, "SEND ME THE REPORT BY FRIDAY.");
         let tidy = server.received()[1].json();
-        assert!(tidy["input"][0]["content"].as_str().unwrap().ends_with("Use capitals."));
+        assert!(tidy["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .ends_with("Use capitals."));
     }
 
     #[tokio::test]
@@ -800,7 +847,12 @@ mod tests {
     async fn failed_refinement_keeps_the_transcript_out_of_the_notice() {
         let server = TestServer::start(vec![
             Reply::transcript(DICTATED),
-            Reply::error(400, &format!("Could not process input: {DICTATED}"), "invalid_input", None),
+            Reply::error(
+                400,
+                &format!("Could not process input: {DICTATED}"),
+                "invalid_input",
+                None,
+            ),
         ])
         .await;
         let h = harness(&server.base_url);
@@ -862,7 +914,10 @@ mod tests {
         let h = harness(&server.base_url);
 
         h.dictate(true, "").await;
-        assert_eq!(h.last(), ("error".into(), rules().no_audio_message.clone(), true));
+        assert_eq!(
+            h.last(),
+            ("error".into(), rules().no_audio_message.clone(), true)
+        );
         h.dictate(true, "").await;
         assert_eq!(h.last(), ("final".into(), "Kotlin.".into(), true));
     }
@@ -871,14 +926,19 @@ mod tests {
     async fn long_recordings_report_their_progress() {
         // Every part of a long recording is checked by src/transcriber.rs;
         // here its progress reaches the window.
-        let server = TestServer::start(vec![Reply::transcript("One."), Reply::transcript("Two.")]).await;
+        let server =
+            TestServer::start(vec![Reply::transcript("One."), Reply::transcript("Two.")]).await;
         let h = harness(&server.base_url);
         let id = h.start("gpt-transcribe", false, "").await;
         let path = h.wav(1.0, 6_000);
         let flac = |n: u64, start: u64, end: u64| {
             let part = h.dir.join(format!("audio.part-{n}.flac"));
             std::fs::write(&part, b"fLaC").unwrap();
-            UploadPart { path: part, pcm_start: start, pcm_end: end }
+            UploadPart {
+                path: part,
+                pcm_start: start,
+                pcm_end: end,
+            }
         };
 
         h.sessions
@@ -898,8 +958,16 @@ mod tests {
         assert_eq!(
             h.events(),
             [
-                ("partial".into(), "Transcribing part 1 of 2...".into(), false),
-                ("partial".into(), "Transcribing part 2 of 2...".into(), false),
+                (
+                    "partial".into(),
+                    "Transcribing part 1 of 2...".into(),
+                    false
+                ),
+                (
+                    "partial".into(),
+                    "Transcribing part 2 of 2...".into(),
+                    false
+                ),
                 ("final".into(), "One. Two.".into(), true),
             ]
         );
@@ -908,8 +976,10 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_answers_while_a_long_transcription_is_still_running() {
-        let server =
-            TestServer::start(vec![Reply::transcript("Too late.").after(Duration::from_secs(20))]).await;
+        let server = TestServer::start(vec![
+            Reply::transcript("Too late.").after(Duration::from_secs(20))
+        ])
+        .await;
         let h = harness(&server.base_url);
         let id = h.start("gpt-transcribe", true, "").await;
         let path = h.wav(1.0, 6_000);
@@ -941,7 +1011,10 @@ mod tests {
         assert_eq!(finished, json!({ "final_text": "", "cancelled": true }));
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(h.events().is_empty());
-        assert_eq!(h.sessions.stop(&id).unwrap_err(), "bad_request: Unknown session_id");
+        assert_eq!(
+            h.sessions.stop(&id).unwrap_err(),
+            "bad_request: Unknown session_id"
+        );
     }
 
     #[tokio::test]
@@ -977,7 +1050,10 @@ mod tests {
         h.sessions.stop(&id).unwrap();
 
         assert_eq!(running.await.unwrap().unwrap()["cancelled"], true);
-        assert_eq!(h.events(), [("partial".into(), "Refining transcript...".into(), false)]);
+        assert_eq!(
+            h.events(),
+            [("partial".into(), "Refining transcript...".into(), false)]
+        );
     }
 
     #[tokio::test]
@@ -989,11 +1065,22 @@ mod tests {
 
         h.finalize_saved(&id, path).await;
 
-        assert_eq!(h.last(), ("error".into(), "Error code: 500 - boom".into(), true));
-        assert_eq!(h.sessions.stop(&id).unwrap_err(), "bad_request: Unknown session_id");
+        assert_eq!(
+            h.last(),
+            ("error".into(), "Error code: 500 - boom".into(), true)
+        );
+        assert_eq!(
+            h.sessions.stop(&id).unwrap_err(),
+            "bad_request: Unknown session_id"
+        );
         assert_eq!(
             h.sessions
-                .finalize(&id, FinalizeAudio::Live { mime_type: "audio/pcm;rate=24000".into() })
+                .finalize(
+                    &id,
+                    FinalizeAudio::Live {
+                        mime_type: "audio/pcm;rate=24000".into()
+                    }
+                )
                 .await
                 .unwrap_err(),
             "bad_request: Unknown session_id"
@@ -1002,7 +1089,8 @@ mod tests {
 
     #[tokio::test]
     async fn new_settings_apply_to_the_next_dictation_only() {
-        let server = TestServer::start(vec![Reply::transcript("One."), Reply::transcript("Two.")]).await;
+        let server =
+            TestServer::start(vec![Reply::transcript("One."), Reply::transcript("Two.")]).await;
         let h = harness(&server.base_url);
         let first = h.start("gpt-transcribe", false, "").await;
         let second = h
@@ -1022,7 +1110,10 @@ mod tests {
         assert_eq!(received[0].authorization, "Bearer sk-test");
         assert_eq!(received[1].authorization, "Bearer sk-new");
         // A model saved before gpt-transcribe moves to its replacement.
-        assert_eq!(received[1].field("model").as_deref(), Some("gpt-transcribe"));
+        assert_eq!(
+            received[1].field("model").as_deref(),
+            Some("gpt-transcribe")
+        );
     }
 
     #[tokio::test]
@@ -1038,7 +1129,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(error, "bad_request: Unsupported transcription model: whisper-1");
+        assert_eq!(
+            error,
+            "bad_request: Unsupported transcription model: whisper-1"
+        );
     }
 
     #[tokio::test]
@@ -1066,7 +1160,12 @@ mod tests {
         h.sessions.append(&id, &tone(0.5, 6_000)).await.unwrap();
         let reply = h
             .sessions
-            .finalize(&id, FinalizeAudio::Live { mime_type: "audio/pcm;rate=24000".into() })
+            .finalize(
+                &id,
+                FinalizeAudio::Live {
+                    mime_type: "audio/pcm;rate=24000".into(),
+                },
+            )
             .await
             .unwrap();
 
@@ -1080,15 +1179,25 @@ mod tests {
         );
         assert_eq!(
             server.event_types(),
-            [["session.update", "input_audio_buffer.append", "input_audio_buffer.commit"]]
+            [[
+                "session.update",
+                "input_audio_buffer.append",
+                "input_audio_buffer.commit"
+            ]]
         );
     }
 
     #[tokio::test]
     async fn long_live_audio_moves_to_a_new_connection_and_joins_the_text() {
         let server = RealtimeServer::start(vec![
-            Script { on_commit: vec![completed("First stretch.")], ..Script::default() },
-            Script { on_commit: vec![completed("Second stretch.")], ..Script::default() },
+            Script {
+                on_commit: vec![completed("First stretch.")],
+                ..Script::default()
+            },
+            Script {
+                on_commit: vec![completed("Second stretch.")],
+                ..Script::default()
+            },
         ])
         .await;
         let mut h = harness(&server.base_url);
@@ -1099,7 +1208,12 @@ mod tests {
         h.sessions.append(&id, &tone(0.5, 6_000)).await.unwrap();
         let reply = h
             .sessions
-            .finalize(&id, FinalizeAudio::Live { mime_type: "audio/pcm;rate=24000".into() })
+            .finalize(
+                &id,
+                FinalizeAudio::Live {
+                    mime_type: "audio/pcm;rate=24000".into(),
+                },
+            )
             .await
             .unwrap();
 
@@ -1110,19 +1224,24 @@ mod tests {
     #[tokio::test]
     async fn stop_during_a_live_rotation_opens_no_new_connection() {
         // The first connection never answers its commit.
-        let server = RealtimeServer::start(vec![Script { hang_on_commit: true, ..Script::default() }]).await;
+        let server = RealtimeServer::start(vec![Script {
+            hang_on_commit: true,
+            ..Script::default()
+        }])
+        .await;
         let mut h = harness(&server.base_url);
         Arc::get_mut(&mut h.sessions).unwrap().live_rotate_bytes = 30_000;
         let id = h.start("gpt-live-transcribe", false, "").await;
         h.sessions.append(&id, &tone(0.5, 6_000)).await.unwrap();
         let sessions = h.sessions.clone();
         let append_id = id.clone();
-        let rotating = tokio::spawn(async move { sessions.append(&append_id, &tone(0.5, 6_000)).await });
-        while !server
-            .event_types()
-            .first()
-            .is_some_and(|events| events.iter().any(|kind| kind == "input_audio_buffer.commit"))
-        {
+        let rotating =
+            tokio::spawn(async move { sessions.append(&append_id, &tone(0.5, 6_000)).await });
+        while !server.event_types().first().is_some_and(|events| {
+            events
+                .iter()
+                .any(|kind| kind == "input_audio_buffer.commit")
+        }) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
@@ -1143,10 +1262,18 @@ mod tests {
             let id = h.start("gpt-live-transcribe", false, "").await;
             h.sessions.append(&id, &audio).await.unwrap();
             h.sessions
-                .finalize(&id, FinalizeAudio::Live { mime_type: "audio/pcm;rate=24000".into() })
+                .finalize(
+                    &id,
+                    FinalizeAudio::Live {
+                        mime_type: "audio/pcm;rate=24000".into(),
+                    },
+                )
                 .await
                 .unwrap();
-            assert_eq!(h.last(), ("error".into(), rules().no_audio_message.clone(), true));
+            assert_eq!(
+                h.last(),
+                ("error".into(), rules().no_audio_message.clone(), true)
+            );
         }
     }
 
@@ -1175,14 +1302,21 @@ mod tests {
 
         assert_eq!(
             h.last(),
-            ("error".into(), "Choose Standard transcription for saved audio files".into(), true)
+            (
+                "error".into(),
+                "Choose Standard transcription for saved audio files".into(),
+                true
+            )
         );
     }
 
     #[test]
     fn private_text_is_removed_from_errors() {
         assert_eq!(
-            without_private_text("bad prompt: Glossary: Zoon and Zoon", &["  Glossary: Zoon ", "Zoon"]),
+            without_private_text(
+                "bad prompt: Glossary: Zoon and Zoon",
+                &["  Glossary: Zoon ", "Zoon"]
+            ),
             "bad prompt: [redacted] and [redacted]"
         );
         assert_eq!(without_private_text("an error", &["an"]), "an error");

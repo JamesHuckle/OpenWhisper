@@ -80,10 +80,11 @@ impl RealtimeStream {
             HeaderValue::from_str(&format!("Bearer {api_key}"))
                 .map_err(|_| "The API key holds characters a header cannot carry".to_string())?,
         );
-        let (socket, _) = tokio::time::timeout(OPEN_TIMEOUT, tokio_tungstenite::connect_async(request))
-            .await
-            .map_err(|_| "Realtime connection timed out".to_string())?
-            .map_err(|error| format!("Realtime connection failed: {error}"))?;
+        let (socket, _) =
+            tokio::time::timeout(OPEN_TIMEOUT, tokio_tungstenite::connect_async(request))
+                .await
+                .map_err(|_| "Realtime connection timed out".to_string())?
+                .map_err(|error| format!("Realtime connection failed: {error}"))?;
         let (mut sink, events) = socket.split();
         let update = json!({
             "type": "session.update",
@@ -143,14 +144,20 @@ impl RealtimeStream {
         if self.closed.load(Ordering::SeqCst) {
             return Err("Realtime transcription session is closed".into());
         }
-        let result = match self.send(json!({ "type": "input_audio_buffer.commit" })).await {
+        let result = match self
+            .send(json!({ "type": "input_audio_buffer.commit" }))
+            .await
+        {
             Ok(()) => {
                 let mut outcome = self.outcome.clone();
-                let waited = match tokio::time::timeout(timeout, outcome.wait_for(Option::is_some)).await {
-                    Ok(Ok(done)) => done.clone().unwrap_or_else(|| Err("Realtime transcription failed".into())),
-                    Ok(Err(_)) => Err("Realtime transcription failed".into()),
-                    Err(_) => Err("Realtime transcription timed out".into()),
-                };
+                let waited =
+                    match tokio::time::timeout(timeout, outcome.wait_for(Option::is_some)).await {
+                        Ok(Ok(done)) => done
+                            .clone()
+                            .unwrap_or_else(|| Err("Realtime transcription failed".into())),
+                        Ok(Err(_)) => Err("Realtime transcription failed".into()),
+                        Err(_) => Err("Realtime transcription timed out".into()),
+                    };
                 waited
             }
             Err(error) => Err(error),
@@ -233,7 +240,11 @@ async fn read_events(
             }
             "conversation.item.input_audio_transcription.completed" => {
                 let transcript = event["transcript"].as_str().unwrap_or("");
-                return Ok(if transcript.is_empty() { deltas } else { transcript.to_string() });
+                return Ok(if transcript.is_empty() {
+                    deltas
+                } else {
+                    transcript.to_string()
+                });
             }
             "conversation.item.input_audio_transcription.failed" => {
                 return Err(message("Realtime transcription failed"));
@@ -318,7 +329,9 @@ pub mod test_server {
                         };
                         let (mut sink, mut stream) = socket.split();
                         while let Some(Ok(message)) = stream.next().await {
-                            let Message::Text(text) = message else { continue };
+                            let Message::Text(text) = message else {
+                                continue;
+                            };
                             let event: Value = serde_json::from_str(text.as_str()).unwrap();
                             let kind = event["type"].as_str().unwrap_or("").to_string();
                             connections.lock().unwrap()[index].events.push(event);
@@ -341,7 +354,10 @@ pub mod test_server {
                     });
                 }
             });
-            Self { base_url, connections }
+            Self {
+                base_url,
+                connections,
+            }
         }
 
         /// The kinds of event each connection was sent.
@@ -407,9 +423,10 @@ mod tests {
         .await;
         let (on_delta, deltas) = collecting();
 
-        let stream = RealtimeStream::connect(&server.base_url, "sk-test", "gpt-live-transcribe", on_delta)
-            .await
-            .unwrap();
+        let stream =
+            RealtimeStream::connect(&server.base_url, "sk-test", "gpt-live-transcribe", on_delta)
+                .await
+                .unwrap();
         stream.append(&[1, 2]).await.unwrap();
         let text = stream.finalize(FINAL_TIMEOUT).await.unwrap();
 
@@ -423,7 +440,10 @@ mod tests {
         assert_eq!(connection.events[0]["type"], "session.update");
         assert_eq!(session["type"], "transcription");
         assert!(session.get("output_modalities").is_none());
-        assert_eq!(session["audio"]["input"]["transcription"]["model"], "gpt-live-transcribe");
+        assert_eq!(
+            session["audio"]["input"]["transcription"]["model"],
+            "gpt-live-transcribe"
+        );
         assert_eq!(session["audio"]["input"]["format"]["rate"], 24_000);
         assert!(session["audio"]["input"]["turn_detection"].is_null());
         assert_eq!(connection.events[1]["type"], "input_audio_buffer.append");
@@ -477,7 +497,10 @@ mod tests {
         let started = std::time::Instant::now();
         let error = stream.finalize(FINAL_TIMEOUT).await.unwrap_err();
 
-        assert!(error.contains("closed before the transcript arrived"), "{error}");
+        assert!(
+            error.contains("closed before the transcript arrived"),
+            "{error}"
+        );
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 

@@ -110,7 +110,10 @@ pub struct SavedParts {
 
 impl SavedParts {
     pub fn new(path: Option<PathBuf>, key: String) -> Self {
-        let parts = path.as_deref().map(|path| load(path, &key)).unwrap_or_default();
+        let parts = path
+            .as_deref()
+            .map(|path| load(path, &key))
+            .unwrap_or_default();
         Self { path, key, parts }
     }
 
@@ -153,7 +156,10 @@ fn load(path: &Path, key: &str) -> Vec<SavedPart> {
     match serde_json::from_str::<PartsFile>(&text) {
         Ok(saved) if saved.key == key => {
             if !saved.parts.is_empty() {
-                debug_log_line("parts", &format!("resuming saved_parts={}", saved.parts.len()));
+                debug_log_line(
+                    "parts",
+                    &format!("resuming saved_parts={}", saved.parts.len()),
+                );
             }
             saved.parts
         }
@@ -203,13 +209,17 @@ mod tests {
     fn another_model_or_prompt_gets_its_own_key() {
         let key = parts_key_for(10, 20, "gpt-transcribe", "Zoon");
         assert_ne!(key, parts_key_for(10, 20, "gpt-transcribe-next", "Zoon"));
-        assert_ne!(key, parts_key_for(10, 20, "gpt-transcribe", "Zoon Robotics"));
+        assert_ne!(
+            key,
+            parts_key_for(10, 20, "gpt-transcribe", "Zoon Robotics")
+        );
         assert_ne!(key, parts_key_for(10, 21, "gpt-transcribe", "Zoon"));
     }
 
     #[test]
     fn parts_saved_for_one_key_are_read_back_only_with_that_key() {
-        let path = std::env::temp_dir().join(format!("openwhisper-parts-{}.json", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("openwhisper-parts-{}.json", uuid::Uuid::new_v4()));
         let part = SavedPart {
             start: 0,
             end: 10,
@@ -233,7 +243,8 @@ mod tests {
 
     #[test]
     fn a_file_the_python_worker_wrote_is_read() {
-        let path = std::env::temp_dir().join(format!("openwhisper-parts-{}.json", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("openwhisper-parts-{}.json", uuid::Uuid::new_v4()));
         fs::write(
             &path,
             r#"{"key": "k", "parts": [{"start": 0, "end": 4, "prompt": "", "text": ""}]}"#,

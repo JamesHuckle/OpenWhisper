@@ -10,9 +10,7 @@
 //! (packages/protocol/audio-examples/cases.json). This file needs no Tauri,
 //! so its tests run in `core-tests`.
 
-use crate::audio_rules::{
-    kept_part_text, max_upload_bytes, pcm_is_silent, previous_part_text,
-};
+use crate::audio_rules::{kept_part_text, max_upload_bytes, pcm_is_silent, previous_part_text};
 use crate::debug_log::debug_log_line;
 use crate::flac_upload::UploadPart;
 use crate::openai_api::{ApiError, OpenAiApi};
@@ -152,7 +150,10 @@ impl<A: OpenAiApi> Transcriber<A> {
         if audio.is_empty() {
             return Err(TranscribeError::Message("No audio bytes provided".into()));
         }
-        Ok(self.api.transcribe(audio, mime_type, &self.model, prompt).await?)
+        Ok(self
+            .api
+            .transcribe(audio, mime_type, &self.model, prompt)
+            .await?)
     }
 
     /// Transcribes a saved recording. Its upload parts go in place of the
@@ -218,7 +219,9 @@ impl<A: OpenAiApi> Transcriber<A> {
         upload_parts: &[UploadPart],
         upload_mime_type: &str,
     ) -> Result<String, TranscribeError> {
-        let size = fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0);
+        let size = fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
         if size == 0 {
             return Err(TranscribeError::Message("No audio bytes provided".into()));
         }
@@ -295,7 +298,11 @@ impl<A: OpenAiApi> Transcriber<A> {
         let mut transcripts: Vec<String> = Vec::new();
         let mut index = 0;
         while index < parts.len() {
-            let Part { start, mut end, upload } = parts[index].clone();
+            let Part {
+                start,
+                mut end,
+                upload,
+            } = parts[index].clone();
             let mut frames = Vec::new();
             if upload.is_none() {
                 frames = read_audio(path.to_path_buf(), format, start, end).await?;
@@ -321,12 +328,15 @@ impl<A: OpenAiApi> Transcriber<A> {
                 // A silent part is never uploaded: it costs a request and the
                 // model answers it by repeating its prompt. It is saved as
                 // finished and empty, so a retry skips it too.
-                saved.add(index, SavedPart {
-                    start,
-                    end,
-                    prompt: String::new(),
-                    text: String::new(),
-                });
+                saved.add(
+                    index,
+                    SavedPart {
+                        start,
+                        end,
+                        prompt: String::new(),
+                        text: String::new(),
+                    },
+                );
                 transcripts.push(String::new());
                 index += 1;
                 continue;
@@ -379,12 +389,15 @@ impl<A: OpenAiApi> Transcriber<A> {
                 }
             };
             let text = kept_part_text(text.trim(), &contextual_prompt, &previous);
-            saved.add(index, SavedPart {
-                start,
-                end,
-                prompt: contextual_prompt,
-                text: text.clone(),
-            });
+            saved.add(
+                index,
+                SavedPart {
+                    start,
+                    end,
+                    prompt: contextual_prompt,
+                    text: text.clone(),
+                },
+            );
             transcripts.push(text);
             index += 1;
         }
@@ -524,7 +537,9 @@ pub struct Recording {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn is_wav(mime_type: &str) -> bool {
@@ -537,7 +552,9 @@ fn is_wav(mime_type: &str) -> bool {
 fn usable_upload_parts(parts: &[UploadPart]) -> Vec<UploadPart> {
     let mut usable: Vec<UploadPart> = Vec::new();
     for part in parts {
-        let size = fs::metadata(&part.path).map(|metadata| metadata.len()).unwrap_or(0);
+        let size = fs::metadata(&part.path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
         let expected_start = usable.last().map_or(0, |last| last.pcm_end);
         if part.pcm_start != expected_start
             || part.pcm_end <= part.pcm_start
@@ -590,7 +607,12 @@ async fn read_audio(path: PathBuf, format: WavFormat, start: u64, end: u64) -> i
 
 /// Whether the WAV's audio from byte `start` to `end` is silent, read a
 /// block at a time so a long part is never held in memory whole.
-async fn audio_is_silent(path: PathBuf, format: WavFormat, start: u64, end: u64) -> io::Result<bool> {
+async fn audio_is_silent(
+    path: PathBuf,
+    format: WavFormat,
+    start: u64,
+    end: u64,
+) -> io::Result<bool> {
     blocking(move || {
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(format.data_offset + start))?;
@@ -753,7 +775,9 @@ pub fn is_short_clean_transcript(text: &str) -> bool {
     let mut body_chars = body.chars().peekable();
     let mut inner_sentence_end = false;
     while let Some(c) = body_chars.next() {
-        if matches!(c, '.' | '?' | '!') && body_chars.peek().is_some_and(|next| next.is_whitespace()) {
+        if matches!(c, '.' | '?' | '!')
+            && body_chars.peek().is_some_and(|next| next.is_whitespace())
+        {
             inner_sentence_end = true;
         }
     }
@@ -812,7 +836,9 @@ mod tests {
             }
             let flac = (mime_type == "audio/flac").then_some(audio);
             lock(&self.sent).push((mime_type.into(), prompt.into(), flac));
-            lock(&self.transcripts).pop_front().expect("a queued transcript")
+            lock(&self.transcripts)
+                .pop_front()
+                .expect("a queued transcript")
         }
 
         async fn respond(
@@ -823,7 +849,9 @@ mod tests {
             effort: &str,
         ) -> Result<String, ApiError> {
             lock(&self.tidied).push((text.into(), effort.into()));
-            lock(&self.responses).pop_front().expect("a queued response")
+            lock(&self.responses)
+                .pop_front()
+                .expect("a queued response")
         }
     }
 
@@ -851,7 +879,8 @@ mod tests {
 
     impl TempDir {
         fn new() -> Self {
-            let dir = std::env::temp_dir().join(format!("openwhisper-transcriber-{}", uuid::Uuid::new_v4()));
+            let dir = std::env::temp_dir()
+                .join(format!("openwhisper-transcriber-{}", uuid::Uuid::new_v4()));
             fs::create_dir_all(&dir).unwrap();
             Self(dir)
         }
@@ -871,8 +900,11 @@ mod tests {
         let pcm_bytes = (parts - 1) * part_bytes() + 24_000 * 2;
         let path = dir.join("audio.wav");
         let mut file = File::create(&path).unwrap();
-        file.write_all(&crate::recording_store::wav_header(pcm_bytes as u32, 24_000))
-            .unwrap();
+        file.write_all(&crate::recording_store::wav_header(
+            pcm_bytes as u32,
+            24_000,
+        ))
+        .unwrap();
         file.set_len(44 + pcm_bytes).unwrap();
         for (index, &peak) in peaks.iter().enumerate() {
             if peak != 0 {
@@ -950,7 +982,11 @@ mod tests {
                 &|current, total| lock(&progress).push((current, total)),
                 Some(path.with_file_name("parts.json")),
                 upload_parts,
-                if upload_parts.is_empty() { "" } else { "audio/flac" },
+                if upload_parts.is_empty() {
+                    ""
+                } else {
+                    "audio/flac"
+                },
             )
             .await;
         assert!(
@@ -962,7 +998,10 @@ mod tests {
         LongRun {
             result,
             prompts: sent.iter().map(|(_, prompt, _)| prompt.clone()).collect(),
-            sent: sent.into_iter().map(|(mime, _, flac)| (mime, flac)).collect(),
+            sent: sent
+                .into_iter()
+                .map(|(mime, _, flac)| (mime, flac))
+                .collect(),
             progress,
         }
     }
@@ -977,8 +1016,11 @@ mod tests {
         let pcm_bytes: u64 = 60 * 60 * 24_000 * 2;
         let path = dir.0.join("sixty-minutes.wav");
         let mut file = File::create(&path).unwrap();
-        file.write_all(&crate::recording_store::wav_header(pcm_bytes as u32, 24_000))
-            .unwrap();
+        file.write_all(&crate::recording_store::wav_header(
+            pcm_bytes as u32,
+            24_000,
+        ))
+        .unwrap();
         file.set_len(44 + pcm_bytes).unwrap();
         // A loud sample every megabyte, so no part is silent.
         for offset in (0..pcm_bytes).step_by(1 << 20) {
@@ -1007,7 +1049,10 @@ mod tests {
         assert_eq!(lock(&transcriber.api.sent).len(), parts);
         assert_eq!(
             text,
-            (1..=parts).map(|n| format!("segment-{n}")).collect::<Vec<_>>().join(" ")
+            (1..=parts)
+                .map(|n| format!("segment-{n}"))
+                .collect::<Vec<_>>()
+                .join(" ")
         );
         assert_eq!(
             *lock(&progress),
@@ -1035,7 +1080,10 @@ mod tests {
                 ("audio/flac".to_string(), Some(b"fLaC part 2".to_vec())),
             ]
         );
-        assert_eq!(run.prompts, ["Zoon", "Zoon\nPrevious segment transcript: First."]);
+        assert_eq!(
+            run.prompts,
+            ["Zoon", "Zoon\nPrevious segment transcript: First."]
+        );
         assert_eq!(run.progress, [(1, 2), (2, 2)]);
         assert_eq!(
             saved,
@@ -1072,7 +1120,10 @@ mod tests {
 
         assert_eq!(run.result.unwrap(), "One. Two. Three.");
         assert_eq!(
-            run.sent.iter().map(|(mime, _)| mime.as_str()).collect::<Vec<_>>(),
+            run.sent
+                .iter()
+                .map(|(mime, _)| mime.as_str())
+                .collect::<Vec<_>>(),
             ["audio/flac", "audio/flac", "audio/wav", "audio/wav"]
         );
         assert_eq!(
@@ -1111,7 +1162,10 @@ mod tests {
         let run = transcribe_long(&path, ok(&["Only part."]), "Zoon", &parts).await;
 
         assert_eq!(run.result.unwrap(), "Only part.");
-        assert_eq!(run.sent, [("audio/flac".to_string(), Some(b"fLaC part 1".to_vec()))]);
+        assert_eq!(
+            run.sent,
+            [("audio/flac".to_string(), Some(b"fLaC part 1".to_vec()))]
+        );
         assert_eq!(
             saved_texts(&path),
             [
@@ -1145,12 +1199,22 @@ mod tests {
                     .map(|reply| if reply.is_some() { SPEECH } else { 0 })
                     .collect();
                 let path = long_wav(&dir.0, &peaks);
-                let bounds: Vec<u64> = (1..replies.len() as u64).map(|n| n * part_bytes()).collect();
-                let parts = if as_flac { flac_parts(&path, &bounds) } else { Vec::new() };
+                let bounds: Vec<u64> = (1..replies.len() as u64)
+                    .map(|n| n * part_bytes())
+                    .collect();
+                let parts = if as_flac {
+                    flac_parts(&path, &bounds)
+                } else {
+                    Vec::new()
+                };
 
                 let run = transcribe_long(
                     &path,
-                    replies.iter().flatten().map(|text| Ok(text.to_string())).collect(),
+                    replies
+                        .iter()
+                        .flatten()
+                        .map(|text| Ok(text.to_string()))
+                        .collect(),
                     "Zoon",
                     &parts,
                 )
@@ -1185,7 +1249,10 @@ mod tests {
                         _ => String::new(),
                     })
                     .collect();
-                let saved: Vec<String> = saved_texts(&path).into_iter().map(|(_, _, text)| text).collect();
+                let saved: Vec<String> = saved_texts(&path)
+                    .into_iter()
+                    .map(|(_, _, text)| text)
+                    .collect();
                 assert_eq!(saved, expected_saved, "{about}");
             }
         }
@@ -1199,7 +1266,11 @@ mod tests {
 
         let failed = transcribe_long(
             &path,
-            vec![Ok("First part.".into()), Ok("Second part.".into()), Err(network)],
+            vec![
+                Ok("First part.".into()),
+                Ok("Second part.".into()),
+                Err(network),
+            ],
             "Zoon",
             &[],
         )
@@ -1207,9 +1278,15 @@ mod tests {
         let retry = transcribe_long(&path, ok(&["Third part."]), "Zoon", &[]).await;
 
         assert!(failed.result.is_err());
-        assert_eq!(retry.result.unwrap(), "First part. Second part. Third part.");
+        assert_eq!(
+            retry.result.unwrap(),
+            "First part. Second part. Third part."
+        );
         // The last part's prompt is rebuilt from the saved text before it.
-        assert_eq!(retry.prompts, ["Zoon\nPrevious segment transcript: Second part."]);
+        assert_eq!(
+            retry.prompts,
+            ["Zoon\nPrevious segment transcript: Second part."]
+        );
     }
 
     #[tokio::test]
@@ -1233,7 +1310,10 @@ mod tests {
         assert!(failed.result.is_err());
         assert_eq!(retry.result.unwrap(), "First part. Third part.");
         // The prompt quotes the last part that had text.
-        assert_eq!(retry.prompts, ["Zoon\nPrevious segment transcript: First part."]);
+        assert_eq!(
+            retry.prompts,
+            ["Zoon\nPrevious segment transcript: First part."]
+        );
     }
 
     #[tokio::test]
@@ -1300,7 +1380,12 @@ mod tests {
             audio_path,
             mime_type: "audio/wav".into(),
             prompt: "Zoon".into(),
-            upload_mime_type: if upload_parts.is_empty() { "" } else { "audio/flac" }.into(),
+            upload_mime_type: if upload_parts.is_empty() {
+                ""
+            } else {
+                "audio/flac"
+            }
+            .into(),
             upload_parts,
             parts_path: Some(dir.join("parts.json")),
         }
@@ -1322,12 +1407,18 @@ mod tests {
         let recording = recording(&dir.0, single_flac(&dir.0, b"fLaC", 48_000));
         let transcriber = transcriber(FakeApi::transcribing(ok(&["Hello."])));
 
-        let text = transcriber.transcribe_recording(&recording, &|_, _| {}).await;
+        let text = transcriber
+            .transcribe_recording(&recording, &|_, _| {})
+            .await;
 
         assert_eq!(text.unwrap(), "Hello.");
         assert_eq!(
             *lock(&transcriber.api.sent),
-            [("audio/flac".to_string(), "Zoon".to_string(), Some(b"fLaC".to_vec()))]
+            [(
+                "audio/flac".to_string(),
+                "Zoon".to_string(),
+                Some(b"fLaC".to_vec())
+            )]
         );
     }
 
@@ -1340,11 +1431,18 @@ mod tests {
             Ok("From WAV.".into()),
         ]));
 
-        let text = transcriber.transcribe_recording(&recording, &|_, _| {}).await;
+        let text = transcriber
+            .transcribe_recording(&recording, &|_, _| {})
+            .await;
 
         assert_eq!(text.unwrap(), "From WAV.");
         let sent = lock(&transcriber.api.sent);
-        assert_eq!(sent.iter().map(|(mime, _, _)| mime.as_str()).collect::<Vec<_>>(), ["audio/flac", "audio/wav"]);
+        assert_eq!(
+            sent.iter()
+                .map(|(mime, _, _)| mime.as_str())
+                .collect::<Vec<_>>(),
+            ["audio/flac", "audio/wav"]
+        );
     }
 
     #[tokio::test]
@@ -1363,7 +1461,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(error.to_string(), "Error code: 401 - Incorrect API key provided");
+        assert_eq!(
+            error.to_string(),
+            "Error code: 401 - Incorrect API key provided"
+        );
         assert_eq!(lock(&transcriber.api.sent).len(), 1);
     }
 
@@ -1400,7 +1501,9 @@ mod tests {
             let recording = recording(&dir.0, parts);
             let transcriber = transcriber(FakeApi::transcribing(ok(&["From WAV."])));
 
-            let text = transcriber.transcribe_recording(&recording, &|_, _| {}).await;
+            let text = transcriber
+                .transcribe_recording(&recording, &|_, _| {})
+                .await;
 
             assert_eq!(text.unwrap(), "From WAV.");
             assert_eq!(lock(&transcriber.api.sent)[0].0, "audio/wav");
@@ -1422,7 +1525,9 @@ mod tests {
             parts_path: None,
         };
 
-        let text = transcriber.transcribe_recording(&recording, &|_, _| {}).await;
+        let text = transcriber
+            .transcribe_recording(&recording, &|_, _| {})
+            .await;
 
         assert_eq!(text.unwrap(), "Imported.");
         assert_eq!(lock(&transcriber.api.sent)[0].0, "audio/mpeg");
@@ -1437,7 +1542,10 @@ mod tests {
         let text = transcriber.polish("um tidied", "").await.unwrap();
 
         assert_eq!(text, "Tidied.");
-        assert_eq!(*lock(&transcriber.api.tidied), [("um tidied".to_string(), "minimal".to_string())]);
+        assert_eq!(
+            *lock(&transcriber.api.tidied),
+            [("um tidied".to_string(), "minimal".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -1453,7 +1561,10 @@ mod tests {
         assert_eq!(transcriber.polish("first", "").await.unwrap(), "First.");
         assert_eq!(transcriber.polish("second", "").await.unwrap(), "Second.");
 
-        let efforts: Vec<String> = lock(&transcriber.api.tidied).iter().map(|(_, e)| e.clone()).collect();
+        let efforts: Vec<String> = lock(&transcriber.api.tidied)
+            .iter()
+            .map(|(_, e)| e.clone())
+            .collect();
         assert_eq!(efforts, ["minimal", "low", "low"]);
         assert_eq!(*lock(&transcriber.polish.effort), "low");
     }
@@ -1487,11 +1598,16 @@ mod tests {
         let tidied = transcriber.polish(&text, "").await.unwrap();
 
         assert!(chunks.len() > 1);
-        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= MAX_POLISH_CHUNK_CHARS));
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.chars().count() <= MAX_POLISH_CHUNK_CHARS));
         assert_eq!(chunks.join(" "), text);
         assert_eq!(
             tidied,
-            (1..=chunks.len()).map(|n| format!("Chunk {n}.")).collect::<Vec<_>>().join(" ")
+            (1..=chunks.len())
+                .map(|n| format!("Chunk {n}."))
+                .collect::<Vec<_>>()
+                .join(" ")
         );
     }
 

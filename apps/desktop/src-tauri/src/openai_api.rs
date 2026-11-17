@@ -273,7 +273,10 @@ async fn checked(response: Response) -> Result<Response, ApiError> {
     let message = text("message").unwrap_or_else(|| {
         let body = body.trim();
         if body.is_empty() {
-            status.canonical_reason().unwrap_or("Request failed").to_string()
+            status
+                .canonical_reason()
+                .unwrap_or("Request failed")
+                .to_string()
         } else {
             body.chars().take(300).collect()
         }
@@ -420,7 +423,9 @@ pub mod test_server {
     }
 
     fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-        haystack.windows(needle.len()).position(|window| window == needle)
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
     }
 
     fn split<'a>(haystack: &'a [u8], delimiter: &[u8]) -> Vec<&'a [u8]> {
@@ -552,7 +557,8 @@ pub mod test_server {
                 head.lines()
                     .find_map(|line| {
                         let (key, value) = line.split_once(':')?;
-                        key.eq_ignore_ascii_case(name).then(|| value.trim().to_string())
+                        key.eq_ignore_ascii_case(name)
+                            .then(|| value.trim().to_string())
                     })
                     .unwrap_or_default()
             };
@@ -607,7 +613,12 @@ mod tests {
         let server = TestServer::start(vec![Reply::transcript("Hello there.")]).await;
 
         let text = api(&server, "sk-test")
-            .transcribe(b"RIFFaudio".to_vec(), "audio/wav", "gpt-transcribe", "Glossary: Zoon")
+            .transcribe(
+                b"RIFFaudio".to_vec(),
+                "audio/wav",
+                "gpt-transcribe",
+                "Glossary: Zoon",
+            )
             .await
             .unwrap();
 
@@ -619,7 +630,11 @@ mod tests {
         assert_eq!(sent.field("prompt").as_deref(), Some("Glossary: Zoon"));
         assert_eq!(sent.field("stream").as_deref(), Some("true"));
         assert_eq!(sent.field("response_format").as_deref(), Some("json"));
-        let file = sent.fields().into_iter().find(|(name, _, _)| name == "file").unwrap();
+        let file = sent
+            .fields()
+            .into_iter()
+            .find(|(name, _, _)| name == "file")
+            .unwrap();
         assert_eq!(file.1.as_deref(), Some("session_audio.wav"));
         assert_eq!(file.2, b"RIFFaudio");
     }
@@ -636,7 +651,11 @@ mod tests {
         let sent = &server.received()[0];
         assert_eq!(text, "Plain.");
         assert_eq!(sent.field("prompt"), None);
-        let file = sent.fields().into_iter().find(|(name, _, _)| name == "file").unwrap();
+        let file = sent
+            .fields()
+            .into_iter()
+            .find(|(name, _, _)| name == "file")
+            .unwrap();
         assert_eq!(file.1.as_deref(), Some("session_audio.flac"));
     }
 
@@ -683,7 +702,10 @@ mod tests {
 
         assert!(error.is_bad_request());
         assert_eq!(error.param(), Some("reasoning.effort"));
-        assert_eq!(error.to_string(), "Error code: 400 - Unsupported value: 'minimal'");
+        assert_eq!(
+            error.to_string(),
+            "Error code: 400 - Unsupported value: 'minimal'"
+        );
     }
 
     #[tokio::test]
@@ -707,7 +729,10 @@ mod tests {
             param: None,
             message: "Could not process input: My bank PIN is 4471".into(),
         };
-        assert_eq!(error.describe(), "BadRequestError status=400 code=invalid_input");
+        assert_eq!(
+            error.describe(),
+            "BadRequestError status=400 code=invalid_input"
+        );
         let odd_code = ApiError::Status {
             status: 429,
             code: Some("quota exceeded for My bank PIN".into()),
@@ -716,6 +741,8 @@ mod tests {
         };
         assert_eq!(odd_code.describe(), "RateLimitError status=429");
         assert_eq!(ApiError::Timeout.describe(), "APITimeoutError");
-        assert!(!ApiError::Connection("reset".into()).describe().contains("reset"));
+        assert!(!ApiError::Connection("reset".into())
+            .describe()
+            .contains("reset"));
     }
 }
