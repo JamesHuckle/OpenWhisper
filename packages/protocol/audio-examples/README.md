@@ -9,8 +9,8 @@ parts join: what the service answers for each part (null for a silent part,
 which is never sent), the earlier text each part's prompt quotes, the parts
 dropped because they only repeat it, and the transcript pasted.
 
-The worker's tests (`apps/worker/tests/test_audio_rules.py`,
-`test_openai_client.py`) and the Android unit tests (`AudioRulesTest`,
-`LongAudioChunkingTest`) run every case, so the desktop and Android decide the
-same way. `make_examples.py` writes the WAV files; rerun it from the
+The desktop's Rust tests (`apps/desktop/src-tauri/src/audio_rules.rs` and
+`transcriber.rs`, run by `cargo test` in `apps/desktop/src-tauri/core-tests`)
+and the Android unit tests (`AudioRulesTest`, `LongAudioChunkingTest`) run
+every case, so the desktop and Android decide the same way. `make_examples.py` writes the WAV files; rerun it from the
 repository root only to change them, and keep `cases.json` in step.

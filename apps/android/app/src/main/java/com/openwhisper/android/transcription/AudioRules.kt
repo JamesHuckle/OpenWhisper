@@ -7,7 +7,7 @@ import java.io.RandomAccessFile
 import kotlin.math.abs
 
 /**
- * The dictation rules the desktop worker also follows. The values come from
+ * The dictation rules the desktop app also follows. The values come from
  * packages/protocol/audio-rules.json when the app is built, and the example
  * recordings in packages/protocol/audio-examples test both apps.
  */
@@ -70,7 +70,7 @@ object AudioRules {
      * A later part's text, or nothing when it only repeats [previous], the
      * earlier text its prompt quoted: a part that is mostly silence makes the
      * model say its prompt back, which would paste a sentence twice. The
-     * desktop worker keeps the same rule; both apps test it on
+     * desktop app keeps the same rule; both apps test it on
      * packages/protocol/audio-examples/cases.json (long_recording_parts).
      */
     fun keptPartText(text: String, previous: String): String =

@@ -77,7 +77,6 @@ export function androidVersionCode(version) {
 // Paths that end up inside the Windows installer or the Android APK.
 const appPaths = [
   "apps/desktop/",
-  "apps/worker/",
   "apps/android/",
   "packages/protocol/",
   "scripts/build-windows-installer.ps1",

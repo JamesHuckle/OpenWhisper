@@ -8,10 +8,10 @@ Every push to `main` runs the release workflow in GitHub Actions
 (`.github/workflows/release.yml`). It does not matter which machine pushed: a
 Windows PC, a Linux VM and an agent's worktree all release the same way.
 
-1. It runs every test: the website, the Python worker, the desktop's Rust logic
-   and UI, the Android unit tests and the release steps themselves.
+1. It runs every test: the website, the desktop's Rust logic and UI, the
+   Android unit tests and the release steps themselves.
 2. When app code changed since the last release tag (anything under
-   `apps/desktop`, `apps/worker`, `apps/android` or `packages/protocol`, or the
+   `apps/desktop`, `apps/android` or `packages/protocol`, or the
    two build scripts, except tests and Markdown), it builds and signs the
    Windows installer and the Android APK. Website-only and docs-only pushes
    stop after the tests.
@@ -68,7 +68,7 @@ Opens at [http://localhost:3000](http://localhost:3000). For production build: `
 .\scripts\run-local.ps1
 ```
 
-**Prerequisites:** [Rust](https://rustup.rs), [uv](https://docs.astral.sh/uv/) (Python), [Node.js](https://nodejs.org). On Linux/WSL, install native deps: `sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf`
+**Prerequisites:** [Rust](https://rustup.rs), [Node.js](https://nodejs.org). On Linux/WSL, install native deps: `sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf`
 
 On WSL with GPU issues, use software rendering:
 ```bash
@@ -142,39 +142,38 @@ the updater signing key from `.env`. Pass `-CargoTargetDir <folder>` to compile
 into another folder; the release workflow passes the one its Rust cache keeps
 between releases.
 
-This repository uses a hybrid architecture:
+This repository holds:
 
-- `apps/desktop`: Tauri 2 desktop shell (UI + tray + local control plane)
+- `apps/desktop`: Tauri 2 desktop app (UI, tray, hotkeys, text insertion, and
+  transcription: it calls OpenAI directly from Rust, with no helper process)
 - `apps/android`: native Android companion and accessibility keyboard overlay
-- `apps/worker`: Python worker for OpenAI transcription and text post-processing
 - `apps/web`: Next.js marketing site and download page (deployed on Vercel)
-- `packages/protocol`: shared JSON protocol contract for IPC
+- `packages/protocol`: the model list and dictation rules both apps read
 - `docs`: architecture and milestone plan
 
 ## Why this architecture
 
 - Native desktop reliability for global hotkeys, focus tracking, and text insertion
-- Python velocity for model routing and transcription orchestration
-- Strict local IPC boundary to keep modules clean and replaceable
+- One program: the desktop app sends recordings to OpenAI itself, as the
+  Android app does, so nothing else is installed or kept running beside it
+- Shared model list and dictation rules, tested against the same examples on
+  both apps
 
 ## Quick start
 
 1. Create environment file:
    - `cp .env.example .env`
    - `OPENAI_API_KEY` is optional in development. In the desktop app, users can paste their key in Settings.
-2. Install Python worker dependencies:
-   - `cd apps/worker`
-   - `uv sync`
-3. Install desktop dependencies:
-   - `cd ../desktop`
+2. Install desktop dependencies:
+   - `cd apps/desktop`
    - `npm install`
-4. Install Rust toolchain (required by Tauri):
+3. Install Rust toolchain (required by Tauri):
    - `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
    - Restart shell, then verify with `cargo --version`.
-5. Install Linux native dependencies (Linux/WSL only):
+4. Install Linux native dependencies (Linux/WSL only):
    - `sudo apt-get update`
    - `sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf`
-6. Run desktop app:
+5. Run desktop app:
    - `npm run tauri:dev`
    - On WSL GPU-constrained setups, use software rendering:
      - `LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run tauri:dev`
@@ -185,7 +184,7 @@ Releases happen **automatically** in GitHub Actions when a push to `main`
 changes app code (see the push-to-release contract above). Releasing needs no
 local tools: commit and push normally.
 
-The workflow caches npm, uv, Cargo and Gradle downloads and builds, and the
+The workflow caches npm, Cargo and Gradle downloads and builds, and the
 JDK, Android SDK and Gradle that `scripts/bootstrap-android.ps1` installs (they
 download again only when that script changes), so a release only rebuilds what
 changed.
@@ -216,9 +215,9 @@ base64 -w0 openwhisper-release.jks | gh secret set OPENWHISPER_ANDROID_KEYSTORE_
 
 **What a release run does:**
 
-1. Test and production-build the website; test the Python worker, the
-   desktop's Rust logic (`cargo test` in `apps/desktop/src-tauri/core-tests`,
-   which needs no Tauri), the desktop UI, the Android unit tests and
+1. Test and production-build the website; test the desktop's Rust logic,
+   including the transcriber against local stand-ins for OpenAI (`cargo test`
+   in `apps/desktop/src-tauri/core-tests`, which needs no Tauri), the desktop UI, the Android unit tests and
    `scripts/release.mjs`.
 2. Decide whether app code changed since the last tag and choose the version
    (`node scripts/release.mjs plan`).

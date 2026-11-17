@@ -8,7 +8,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Android decides like the desktop worker on the shared example audio. */
+/** Android decides like the desktop app on the shared example audio. */
 class AudioRulesTest {
     private val protocolDir: File = generateSequence(File(System.getProperty("user.dir")).absoluteFile) {
         it.parentFile

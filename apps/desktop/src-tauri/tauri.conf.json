@@ -31,8 +31,7 @@
     "active": true,
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
-    "icon": ["icons/icon.ico", "icons/icon.png"],
-    "resources": ["binaries/**/*"]
+    "icon": ["icons/icon.ico", "icons/icon.png"]
   },
   "plugins": {
     "updater": {

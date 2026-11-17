@@ -23,14 +23,6 @@ out/
 
 # Build artifacts
 build/
-# PyInstaller rewrites this from the flags in scripts/build-windows-installer.ps1.
-apps/worker/*.spec
-*.toc
-*.pyz
-*.pkg
-base_library.zip
-warn-*.txt
-xref-*.html
 
 # Built executables
 binaries/

@@ -2,7 +2,7 @@
 
 ## System overview
 
-WhisperFlow is split into three runtime layers:
+WhisperFlow is split into two runtime layers, in one process:
 
 1. Desktop shell (`apps/desktop`, Tauri 2):
    - settings UI
@@ -32,10 +32,14 @@ WhisperFlow is split into three runtime layers:
      named above), and `src-tauri/core-tests` runs their tests on any system.
      The Windows-only `text_inserter.rs` and `overlay_positioner.rs` make the
      Win32 calls.
-3. Model worker (`apps/worker`, Python):
-   - OpenAI model catalog and routing
-   - speech session orchestration
-   - transcript post-processing
+   - transcription: the app calls OpenAI itself, as the Android app does;
+     nothing runs beside it. `transcription_sessions.rs` holds each
+     dictation's session, `transcriber.rs` sends a saved recording (in
+     parts when it is long) and tidies the text, `openai_api.rs` makes the
+     two HTTP calls (reqwest with rustls) and `realtime.rs` is the Live
+     websocket. The shared rules are in `audio_rules.rs` and
+     `saved_parts.rs`. All of them need no Tauri, so `core-tests` runs their
+     tests against local stand-ins for OpenAI.
 
 ## Data flow
 
@@ -44,7 +48,9 @@ WhisperFlow is split into three runtime layers:
    suspended between recordings. The paste target is locked and the WAV
    file opened meanwhile; audio captured before the file opens is held,
    then saved first. The recording file commands run off the main thread.
-2. Desktop shell opens session in worker via JSON-over-stdio protocol.
+2. The shell starts a session (`worker_start_session`) with the settings
+   saved at that moment. A Live session opens its Realtime websocket at
+   once.
 3. The shell saves every audio chunk once, to the recording's WAV file
    (`src-tauri/src/recording_store.rs`). The page sends each chunk as raw
    bytes, with its recording or session id in a header, never as base64
@@ -52,27 +58,29 @@ WhisperFlow is split into three runtime layers:
    date about once a second. Its `metadata.json` is written only when the
    recording starts and closes: meanwhile the recordings list reads its size
    from the WAV file.
-   Live transcription also streams each chunk to the worker using
-   `append_audio_chunk` (the shell encodes it to base64 once, for the
-   worker's JSON line), because it transcribes while the user speaks. The
-   worker keeps no copy of these chunks: it only counts their bytes and
-   loudest sample, to tell silence or a quick tap from speech at the end.
-   Only Live sessions accept chunks.
-4. Worker pushes transcript updates and final text as session events.
-5. Desktop finalizes transcription using `finalize_session_audio`. For
-   standard transcription the shell closes the WAV file and passes its
-   `audio_path`, and the worker reads it from disk in parts
+   Live transcription also sends each chunk to its Realtime websocket
+   (`worker_append_audio_chunk`), because it transcribes while the user
+   speaks. No copy of these chunks is kept: the session only counts their
+   bytes and loudest sample, to tell silence or a quick tap from speech at
+   the end. Only Live sessions accept chunks. A Live session moves to a new
+   connection every 25 minutes of audio and joins the text.
+4. The session pushes transcript updates and the final text as events.
+5. The shell finalizes the transcription. A Live session commits its audio
+   and waits for the text (`worker_finalize_session_audio`); a connection
+   that closes without it is an error. For standard transcription the shell
+   closes the WAV file and the transcriber reads it from disk in parts
    (`recording_transcribe`). For a microphone recording the shell first
    encodes the WAV once as lossless FLAC (`src-tauri/src/flac_upload.rs`,
    about half the bytes for speech), split into parts that each fit one
-   upload, and passes them as `upload_parts` with the byte range of the WAV
-   each holds. The worker checks the WAV for silence and uploads the parts,
+   upload, with the byte range of the WAV each holds. The transcriber
+   checks the WAV for silence and uploads the parts,
    one request each; a long recording's later parts are prompted with the
    text before them. When the service refuses a FLAC part the rest of the
    recording goes as WAV parts. The shell deletes the FLAC parts when the
    request finishes. A recording sent in parts has each finished part saved
    in `parts.json` beside it (`parts_path`), so a retry after a failure sends
-   only the parts that did not finish. A silent part (the same silence level
+   only the parts that did not finish (the same file and key the Python
+   worker used, so a retry begun before still sends only the rest). A silent part (the same silence level
    as the whole-recording check) is never uploaded and is saved as finished
    and empty, and a part whose text only repeats its prompt is kept with no
    text, as on Android. The shell deletes that file once the transcription completes
@@ -88,64 +96,38 @@ One-way data flow rule:
 - UI and tree components never mutate parent-owned commit state during initialization.
 - Pending state remains local until explicit save/commit action.
 
-## IPC contract
+## Session commands and events
 
-Each request from desktop to worker:
+The window calls five commands; they kept the names they had when a Python
+worker did the work:
 
-```json
-{ "id": "uuid", "method": "list_models", "params": {} }
-```
+- `worker_start_session { profileId }` returns `{ session_id }`. An
+  unsupported model is refused; an empty saved key falls back to the
+  `OPENAI_API_KEY` environment variable.
+- `worker_append_audio_chunk` (raw bytes, `session-id` header) sends Live
+  audio.
+- `worker_finalize_session_audio { sessionId, mimeType }` finishes a Live
+  session; `recording_transcribe { recordingId, sessionId }` finishes a
+  Standard one from its saved recording.
+- `worker_stop_session { sessionId }` cancels the session's token: a running
+  upload or tidy request is dropped at once, the session sends no more
+  events, and its finalize returns `{ "final_text": "", "cancelled": true }`.
+- `worker_ping` reports the default and tidy models.
 
-Each dictation starts a session that names every setting it uses, so the
-desktop never restarts the worker when settings are saved. The worker keeps
-one OpenAI client for the last key and model and replaces it only when they
-change; an empty key falls back to the worker's `OPENAI_API_KEY`:
+Errors are returned as `code: message` text, such as
+`bad_request: Unknown session_id`.
 
-```json
-{ "id": "uuid", "method": "start_session", "params": { "profile_id": "default", "openai_api_key": "sk-...", "transcription_model": "gpt-transcribe", "prompt": "...", "refine_enabled": true, "refine_prompt": "..." } }
-```
-
-Audio pipeline methods:
-
-```json
-{ "id": "uuid", "method": "append_audio_chunk", "params": { "session_id": "...", "chunk_base64": "..." } }
-```
-
-```json
-{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/pcm;rate=24000" } }
-```
-
-```json
-{ "id": "uuid", "method": "finalize_session_audio", "params": { "session_id": "...", "mime_type": "audio/wav", "audio_path": "C:\\...\\audio.wav", "upload_parts": [{ "path": "C:\\...\\audio.part-1.flac", "start": 0, "end": 50331648 }, { "path": "C:\\...\\audio.part-2.flac", "start": 50331648, "end": 86400000 }], "upload_mime_type": "audio/flac", "parts_path": "C:\\...\\parts.json" } }
-```
-
-Each response from worker:
-
-```json
-{ "id": "uuid", "ok": true, "result": { "models": [] } }
-```
-
-Error response:
-
-```json
-{ "id": "uuid", "ok": false, "error": { "code": "bad_request", "message": "..." } }
-```
-
-Requests run side by side in the worker, so replies can arrive in a different
-order than the requests; each reply carries its request's `id`. The desktop
-waits for each reply within a time limit per method and starts the worker
-again only after it stops. `stop_session` is answered at once even while that session is being
-transcribed, and the transcription stops before its next audio part or the
-tidy pass.
-
-Session events share stdout with replies. They have no `id` and are written as
-soon as they happen; the desktop forwards them to the UI as the
-`worker-session-event` Tauri event. `done` marks the session's last event,
-after which the worker forgets the session:
+Progress, live text, warnings and the result reach the window as the
+`worker-session-event` Tauri event. `done` marks the session's last event (a
+`final` or `error`), after which the session is forgotten:
 
 ```json
 { "session_id": "...", "event": { "type": "partial", "text": "Transcribing part 2 of 5..." }, "done": false }
 ```
+
+Errors and warnings never quote the request: a failed transcription's
+message has the vocabulary prompt removed, and a failed tidy pass reports
+only the error type, status and code.
 
 ## Windows insertion engine
 
@@ -197,11 +179,11 @@ and app-specific adapters.
 
 ### Milestone 1: Core MVP
 - Tauri shell with session controls
-- Python worker request/response protocol
+- session commands from the window to the native transcriber
 - OpenAI model listing and test transcription endpoint
 
 ### Milestone 2: Streaming
-- session event push stream (worker stdout to Tauri events)
+- session event push stream (Tauri events)
 - partial/final transcript events in desktop UI
 - realtime session transport to OpenAI speech endpoint
 
@@ -217,18 +199,14 @@ and app-specific adapters.
 
 ## Local development
 
-### Worker
-
-Recommended tooling:
-- `uv sync`
-- `uv run python -m whisperflow_worker`
-
-Environment variables (used when a `start_session` request names no key or
-model, as when the worker runs on its own):
-- `OPENAI_API_KEY`: required for transcription calls
-- `OPENWHISPER_MODEL`: optional override (default: `gpt-transcribe`)
-
 ### Desktop
+
+Environment variables, read by the app when a dictation names no key or
+model (no key saved in the settings, as in some development runs):
+- `OPENAI_API_KEY`: used when no key is saved
+- `OPENWHISPER_MODEL`: optional override (default: `gpt-transcribe`)
+- `OPENWHISPER_POLISH_MODEL`, `OPENWHISPER_POLISH_REASONING`: optional
+  tidy model and reasoning effort (default `gpt-5-nano`, `minimal`)
 
 Use your package manager (`npm`, `pnpm`, or `bun`) and run Tauri dev mode.
 On Linux (including WSL), saving the API key in the app needs a running

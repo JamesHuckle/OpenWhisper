@@ -17,11 +17,6 @@ if (-not (Test-Path .env)) {
     Write-Host "Created .env from .env.example"
 }
 
-# Sync Python worker
-Push-Location apps\worker
-uv sync
-Pop-Location
-
 # Run desktop app
 Push-Location apps\desktop
 npm install

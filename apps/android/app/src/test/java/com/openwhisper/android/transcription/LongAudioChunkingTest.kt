@@ -15,7 +15,7 @@ class LongAudioChunkingTest {
         .let { JSONObject(it.readText()).getJSONArray("long_recording_parts") }
 
     /**
-     * Android joins a long recording's parts like the desktop worker: the
+     * Android joins a long recording's parts like the desktop app: the
      * shared examples give each part's reply (null for a silent part, which
      * is never sent), the earlier text each prompt quotes, the parts dropped
      * as echoes and the transcript pasted.

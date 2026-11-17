@@ -49,7 +49,7 @@ describe("release decision", () => {
       "apps/android/app/src/main/java/com/openwhisper/android/MainActivity.kt",
       "apps/desktop/src/main.ts",
       "apps/desktop/src-tauri/src/lib.rs",
-      "apps/worker/src/openwhisper_worker/server.py",
+      "apps/desktop/src-tauri/src/transcriber.rs",
       "packages/protocol/audio-rules.json",
       "scripts/build-windows-installer.ps1",
     ]) {
@@ -60,7 +60,6 @@ describe("release decision", () => {
       "README.md",
       "docs/android.md",
       "apps/desktop/src/ui-regressions.test.ts",
-      "apps/worker/tests/test_realtime_server.py",
       "apps/android/app/src/test/java/com/openwhisper/android/AudioRulesTest.kt",
       "apps/desktop/src-tauri/core-tests/lib.rs",
       "packages/protocol/README.md",
@@ -174,12 +173,11 @@ describe("build caches", () => {
     assert.match(job("test-android"), /gradle\/actions\/setup-gradle@/);
   });
 
-  it("caches npm and uv downloads in every job that installs them", () => {
+  it("caches npm downloads in every job that installs them", () => {
     for (const name of ["test-web", "test-desktop", "build-windows"]) {
       assert.match(job(name), /cache: npm\s+cache-dependency-path: apps\/(web|desktop)\/package-lock\.json/, name);
     }
-    for (const name of ["test-worker", "build-windows"]) {
-      assert.match(job(name), /setup-uv@v\d+\s+with:\s+enable-cache: true/, name);
-    }
+    // The desktop calls OpenAI itself; no Python is set up or bundled.
+    assert.doesNotMatch(workflow, /setup-uv|apps\/worker/);
   });
 });

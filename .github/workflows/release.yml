@@ -3,7 +3,7 @@
 # to a draft GitHub Release, checks both update feeds and publishes the draft
 # as latest. Website-only pushes stop after the tests (Vercel deploys apps/web).
 # The release steps live in scripts/release.mjs.
-# Every job caches what it downloads or compiles (npm, uv, Cargo, Gradle and
+# Every job caches what it downloads or compiles (npm, Cargo, Gradle and
 # the Android toolchain), so a release only rebuilds what changed.
 name: Release
 
@@ -60,20 +60,6 @@ jobs:
       - run: npm test
       - run: npm run build
 
-  test-worker:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/worker
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: apps/worker/uv.lock
-      - run: uv sync
-      - run: uv run python -m unittest discover -s tests
-
   test-desktop:
     runs-on: ubuntu-latest
     steps:
@@ -83,7 +69,7 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri/core-tests
       # The desktop's Rust files that need no Tauri (recordings, the WAV
-      # backup, model settings, the worker link, the write rules).
+      # backup, model settings, the OpenAI transcriber, the write rules).
       - name: Test desktop Rust logic
         working-directory: apps/desktop/src-tauri/core-tests
         run: cargo test --locked
@@ -115,7 +101,7 @@ jobs:
         run: sh ./gradlew --no-daemon testDebugUnitTest
 
   build-windows:
-    needs: [plan, test-web, test-worker, test-desktop, test-android]
+    needs: [plan, test-web, test-desktop, test-android]
     # A manual run on another branch only tests; releases come from main.
     if: needs.plan.outputs.release == 'true' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
@@ -126,10 +112,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          cache-dependency-glob: apps/worker/uv.lock
       - uses: dtolnay/rust-toolchain@stable
       # Keeps the compiled crates between releases. The build script is given
       # the same target folder (rust-cache needs it inside the workspace).
@@ -158,7 +140,7 @@ jobs:
             artifacts/windows-installer/OpenWhisper_x64-setup.exe
 
   build-android:
-    needs: [plan, test-web, test-worker, test-desktop, test-android]
+    needs: [plan, test-web, test-desktop, test-android]
     # A manual run on another branch only tests; releases come from main.
     if: needs.plan.outputs.release == 'true' && github.ref == 'refs/heads/main'
     runs-on: windows-latest

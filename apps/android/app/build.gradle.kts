@@ -2,7 +2,7 @@ plugins {
     id("com.android.application")
 }
 
-// The dictation rules the desktop worker also follows: the shortest recording
+// The dictation rules the desktop app also follows: the shortest recording
 // worth sending, the silence level, the prompt-echo check, the largest upload
 // and the "No audio found" text. See packages/protocol/README.md.
 val audioRules = groovy.json.JsonSlurper()

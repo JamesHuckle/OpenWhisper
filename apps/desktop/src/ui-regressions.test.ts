@@ -146,7 +146,7 @@ describe("desktop regression contracts", () => {
     expect(workflow).toMatch(/on:\n  push:\n    branches: \[main\]/);
     for (const build of ["build-windows", "build-android"]) {
       expect(job(build)).toContain(
-        "needs: [plan, test-web, test-worker, test-desktop, test-android]",
+        "needs: [plan, test-web, test-desktop, test-android]",
       );
       expect(job(build)).toContain("if: needs.plan.outputs.release == 'true'");
       expect(job(build)).toContain("node scripts/release.mjs set-version");
@@ -171,8 +171,9 @@ describe("desktop regression contracts", () => {
     );
 
     expect(buildScript).not.toContain("Get-Process node");
-    expect(buildScript).not.toMatch(/Get-Process python\*, pythonw\* [^\n]*\| Stop-Process/);
-    expect(buildScript).toContain(".StartsWith($venvAbs)");
+    // No Python is built any more, so no Python process is ever stopped.
+    expect(buildScript).not.toContain("Get-Process python");
+    expect(buildScript).not.toContain("Stop-Process");
   });
 
   it("builds signed releases without waiting for an interactive key prompt", () => {
@@ -286,7 +287,7 @@ describe("desktop regression contracts", () => {
     expect(main).not.toMatch(/setInterval\([^)]*get_foreground_app/);
   });
 
-  it("ships the worker as a folder build so it starts without unpacking", () => {
+  it("ships the app alone, with no Python helper beside it", () => {
     const buildScript = readFileSync(
       resolve(repositoryRoot, "scripts/build-windows-installer.ps1"),
       "utf8",
@@ -295,10 +296,10 @@ describe("desktop regression contracts", () => {
       readFileSync(resolve(desktopRoot, "src-tauri/tauri.conf.json"), "utf8"),
     );
 
-    expect(buildScript).toContain("--onedir");
-    expect(buildScript).not.toContain("--onefile");
-    // A plain "binaries/*" skips folders, which would leave out the worker.
-    expect(tauriConfig.bundle.resources).toEqual(["binaries/**/*"]);
+    // The app calls OpenAI itself (src-tauri/src/transcription_sessions.rs).
+    expect(buildScript).not.toContain("pyinstaller");
+    expect(buildScript).not.toContain("uv sync");
+    expect(tauriConfig.bundle.resources).toBeUndefined();
   });
 
   it("asks before installing an update and reassures users that settings are kept", () => {
