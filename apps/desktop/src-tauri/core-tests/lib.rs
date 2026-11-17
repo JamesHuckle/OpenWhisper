@@ -5,6 +5,8 @@
 
 #[path = "../src/api_key_store.rs"]
 mod api_key_store;
+#[path = "../src/automation_client.rs"]
+mod automation_client;
 #[path = "../src/debug_log.rs"]
 mod debug_log;
 #[path = "../src/flac_upload.rs"]

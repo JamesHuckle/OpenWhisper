@@ -1,4 +1,7 @@
 mod api_key_store;
+// Keeps the UI Automation client the Windows writer reuses.
+#[cfg(target_os = "windows")]
+mod automation_client;
 mod debug_log;
 mod flac_upload;
 #[cfg(target_os = "windows")]

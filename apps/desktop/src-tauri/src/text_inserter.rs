@@ -979,9 +979,16 @@ fn unicode_key(unit: u16, flags: u32) -> KbdInput {
 
 /// Windows UI Automation: the only way to see that a browser or modern
 /// app field is a password field.
+///
+/// Each thread that writes keeps one COM setup and one automation client for
+/// its whole life (`automation_client` has the reuse rules); the focused
+/// element and its password flag are still read again on every write.
 mod uia {
+    use crate::automation_client::ReusedClient;
+    use std::cell::RefCell;
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_MULTITHREADED,
     };
     use windows::Win32::UI::Accessibility::{
         CUIAutomation, CUIAutomation8, IUIAutomation, IUIAutomation2,
@@ -990,11 +997,43 @@ mod uia {
     /// A hung target app must not stall dictation.
     const UIA_TIMEOUT_MS: u32 = 1000;
 
-    fn automation() -> Option<IUIAutomation> {
+    /// COM joined once by this thread, and left when the thread ends.
+    struct ComThread {
+        joined: bool,
+    }
+
+    impl ComThread {
+        fn join() -> Self {
+            // A thread already initialised in another mode can still use
+            // UIA; that call failed, so it is not balanced on exit.
+            let joined = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+            Self { joined }
+        }
+    }
+
+    impl Drop for ComThread {
+        fn drop(&mut self) {
+            if self.joined {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    struct Context {
+        // Fields drop in order: the client is released before COM is left.
+        automation: ReusedClient<IUIAutomation, fn() -> Option<IUIAutomation>>,
+        _com: ComThread,
+    }
+
+    thread_local! {
+        static CONTEXT: RefCell<Context> = RefCell::new(Context {
+            _com: ComThread::join(),
+            automation: ReusedClient::new(create_automation),
+        });
+    }
+
+    fn create_automation() -> Option<IUIAutomation> {
         unsafe {
-            // COM stays initialised on this worker thread; a thread that
-            // is already initialised in another mode can still use UIA.
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             if let Ok(automation) = CoCreateInstance::<_, IUIAutomation2>(
                 &CUIAutomation8,
                 None,
@@ -1010,13 +1049,17 @@ mod uia {
 
     /// `None` when UI Automation cannot tell.
     pub fn focused_element_is_password() -> Option<bool> {
-        let automation = automation()?;
-        unsafe {
-            let element = automation.GetFocusedElement().ok()?;
-            element
-                .CurrentIsPassword()
-                .ok()
-                .map(|value| value.as_bool())
-        }
+        CONTEXT
+            .try_with(|context| {
+                context.borrow_mut().automation.query(|automation| unsafe {
+                    let element = automation.GetFocusedElement().map_err(|e| e.code().0)?;
+                    element
+                        .CurrentIsPassword()
+                        .map(|value| value.as_bool())
+                        .map_err(|e| e.code().0)
+                })
+            })
+            .ok()
+            .flatten()
     }
 }
