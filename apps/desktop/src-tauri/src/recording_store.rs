@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 /// Sample rate of the microphone audio the desktop UI sends.
 pub const MICROPHONE_SAMPLE_RATE: u32 = 24_000;
-/// How often the open recording's WAV header and size are brought up to date.
+/// How often the open recording's WAV header is brought up to date.
 pub const HEADER_SYNC_INTERVAL: Duration = Duration::from_secs(1);
 /// Audio files the import picker offers.
 pub const IMPORT_EXTENSIONS: &[&str] = &["wav", "mp3", "m4a", "mp4", "mpeg", "mpga", "webm", "ogg"];
@@ -75,7 +75,7 @@ impl PcmWavWriter {
     }
 
     /// Adds audio to the end of the file. Returns true when the header was
-    /// also brought up to date, so the caller can record the new size.
+    /// also brought up to date.
     pub fn append(&mut self, pcm: &[u8], now: Instant) -> io::Result<bool> {
         self.file.seek(SeekFrom::End(0))?;
         self.file.write_all(pcm)?;

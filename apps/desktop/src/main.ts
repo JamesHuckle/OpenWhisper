@@ -30,7 +30,12 @@ import {
   PCM_WORKLET_NAME,
 } from "./pcm-capture";
 import pcmCaptureWorkletUrl from "./pcm-capture.worklet?worker&url";
-import { SessionAudioQueue, startCaptureFirst } from "./recording-pipeline";
+import {
+  joinAudioParts,
+  sendAudioChunk,
+  SessionAudioQueue,
+  startCaptureFirst,
+} from "./recording-pipeline";
 import { finalWriteNotice, type TargetWrite } from "./target-write";
 import "./styles.css";
 
@@ -113,10 +118,7 @@ let pressToTalkStarting = false;
 let toggleRecordingStarting = false;
 let toggleStopRequestedDuringStart = false;
 const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
-  invoke<void>("worker_append_audio_chunk", {
-    sessionId,
-    chunkBase64: toBase64(buffer),
-  }),
+  sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer),
 );
 
 let micStream: MediaStream | null = null;
@@ -685,19 +687,6 @@ function setWaveBarLevels(levels: number[]) {
 }
 
 // ---------------------------------------------------------------------------
-// Base64 helper
-// ---------------------------------------------------------------------------
-function toBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
-// ---------------------------------------------------------------------------
 // Volume monitor — show wobbly line when mic is silent during recording
 // ---------------------------------------------------------------------------
 // The scrolling waveform while recording. It listens on the running
@@ -828,26 +817,12 @@ function flushAudioBatch() {
   pendingAudioParts = [];
   pendingAudioBytes = 0;
 
-  const chunkBase64 = toBase64(combined.buffer);
   backupTail = backupTail
-    .then(() => invoke<void>("recording_append_chunk", {
-      recordingId,
-      chunkBase64,
-    }))
+    .then(() => sendAudioChunk(invoke, "recording_append_chunk", recordingId, combined))
     .catch((error) => {
       backupError ??= error;
     });
   if (streamAudioToWorker) audioQueue.append(combined.buffer);
-}
-
-function joinAudioParts(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
-  const combined = new Uint8Array(parts.reduce((bytes, part) => bytes + part.byteLength, 0));
-  let offset = 0;
-  for (const part of parts) {
-    combined.set(part, offset);
-    offset += part.byteLength;
-  }
-  return combined;
 }
 
 function errorMessage(error: unknown, fallback = "Transcription failed"): string {
@@ -1266,10 +1241,12 @@ async function startRecording() {
           const audio = audioCancelledBeforeBackup.get(cancelsBefore + 1);
           audioCancelledBeforeBackup.delete(cancelsBefore + 1);
           if (audio?.length) {
-            await invoke("recording_append_chunk", {
-              recordingId: backup.id,
-              chunkBase64: toBase64(joinAudioParts(audio).buffer),
-            }).catch((error) => {
+            await sendAudioChunk(
+              invoke,
+              "recording_append_chunk",
+              backup.id,
+              joinAudioParts(audio),
+            ).catch((error) => {
               logDebug(`recording append failed=${errorMessage(error)}`);
             });
           }
@@ -1642,10 +1619,9 @@ if (import.meta.env.DEV) {
     targetWriteQueue = Promise.resolve();
     setState("recording");
     for (const chunkBase64 of chunks) {
-      await invoke("worker_append_audio_chunk", {
-        sessionId: currentSessionId,
-        chunkBase64,
-      });
+      // The test audio arrives as base64 text; the app sends raw bytes.
+      const chunk = Uint8Array.from(atob(chunkBase64), (char) => char.charCodeAt(0));
+      await sendAudioChunk(invoke, "worker_append_audio_chunk", currentSessionId, chunk);
       await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
     }
     setState("transcribing");

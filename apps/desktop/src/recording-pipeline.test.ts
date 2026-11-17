@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { SessionAudioQueue, startCaptureFirst } from "./recording-pipeline";
+import {
+  joinAudioParts,
+  sendAudioChunk,
+  SessionAudioQueue,
+  startCaptureFirst,
+  type Invoke,
+} from "./recording-pipeline";
 
 function chunk(value: number): ArrayBuffer {
   return Uint8Array.of(value).buffer;
@@ -218,5 +224,53 @@ describe("recording startup latency contracts", () => {
     await queue.drain();
 
     expect(uploaded).toEqual([]);
+  });
+
+  it("sends batched audio to the shell as the same raw bytes, in order", async () => {
+    const calls: { command: string; bytes: number[]; headers: unknown }[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const invoke: Invoke = async (command, args, options) => {
+      // Raw bytes, not a JSON object holding base64 text.
+      expect(args instanceof Uint8Array || args instanceof ArrayBuffer).toBe(true);
+      const bytes = Array.from(new Uint8Array(args as ArrayBuffer | Uint8Array));
+      // The first batch is slow to save; the second still waits for it.
+      if (bytes[0] === 1) await firstGate;
+      calls.push({ command, bytes, headers: options?.headers });
+    };
+
+    // The backup gets each batch, joined from the captured parts, in order.
+    let backupTail = Promise.resolve();
+    for (const parts of [[Uint8Array.of(1, 2), Uint8Array.of(3)], [Uint8Array.of(4, 255)]]) {
+      const combined = joinAudioParts(parts);
+      backupTail = backupTail.then(() =>
+        sendAudioChunk(invoke, "recording_append_chunk", "recording-1", combined),
+      );
+    }
+    // A Live session gets the same batches through its queue.
+    const queue = new SessionAudioQueue((sessionId, buffer) =>
+      sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer),
+    );
+    queue.append(Uint8Array.of(5, 6).buffer);
+    queue.attachSession("session-1");
+    queue.append(Uint8Array.of(7).buffer);
+
+    await settle();
+    releaseFirst();
+    await backupTail;
+    await queue.drain();
+
+    const backup = calls.filter((call) => call.command === "recording_append_chunk");
+    const live = calls.filter((call) => call.command === "worker_append_audio_chunk");
+    expect(backup).toEqual([
+      { command: "recording_append_chunk", bytes: [1, 2, 3], headers: { "recording-id": "recording-1" } },
+      { command: "recording_append_chunk", bytes: [4, 255], headers: { "recording-id": "recording-1" } },
+    ]);
+    expect(live).toEqual([
+      { command: "worker_append_audio_chunk", bytes: [5, 6], headers: { "session-id": "session-1" } },
+      { command: "worker_append_audio_chunk", bytes: [7], headers: { "session-id": "session-1" } },
+    ]);
   });
 });

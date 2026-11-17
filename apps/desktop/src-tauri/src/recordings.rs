@@ -66,6 +66,8 @@ pub fn write_recording_metadata(root: &std::path::Path, metadata: &RecordingMeta
     json_file::write_json_atomic(&recording_metadata_path(root, &metadata.id), metadata)
 }
 
+/// Lists the saved recordings, newest first. A recording still being written
+/// shows the size of its audio file so far.
 pub fn list_recording_metadata(root: &std::path::Path) -> Result<Vec<RecordingMetadata>> {
     if !root.exists() {
         return Ok(Vec::new());
@@ -76,9 +78,19 @@ pub fn list_recording_metadata(root: &std::path::Path) -> Result<Vec<RecordingMe
         if !entry.file_type()?.is_dir() {
             continue;
         }
-        if let Ok(metadata) = read_recording_metadata(root, &entry.file_name().to_string_lossy()) {
-            recordings.push(metadata);
+        let Ok(mut metadata) = read_recording_metadata(root, &entry.file_name().to_string_lossy())
+        else {
+            continue;
+        };
+        if metadata.status == "recording" {
+            // Its details are saved only when it starts and closes, so the
+            // size so far is the audio file's.
+            let audio_path = root.join(&metadata.id).join(&metadata.file_name);
+            if let Ok(audio) = fs::metadata(audio_path) {
+                metadata.bytes = audio.len();
+            }
         }
+        recordings.push(metadata);
     }
     recordings.sort_by(|left, right| right.created_at_ms.cmp(&left.created_at_ms));
     Ok(recordings)
@@ -303,6 +315,43 @@ mod tests {
         assert!(recordings.lock().unwrap().is_empty());
         // Closing again (transcribe, then finish) is harmless.
         close_active_recording(&recordings, &root, id).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_open_recording_is_listed_with_the_size_of_its_file_so_far() {
+        let root = std::env::temp_dir().join(format!("openwhisper-wav-test-{}", Uuid::new_v4()));
+        let id = "active";
+        fs::create_dir_all(root.join(id)).unwrap();
+        let started = Instant::now();
+        let mut writer =
+            PcmWavWriter::create(&root.join(id).join("audio.wav"), 24_000, started).unwrap();
+        write_recording_metadata(
+            &root,
+            &RecordingMetadata {
+                id: id.to_string(),
+                created_at_ms: 1,
+                name: "Active".to_string(),
+                source: "microphone".to_string(),
+                mime_type: "audio/wav".to_string(),
+                file_name: "audio.wav".to_string(),
+                status: "recording".to_string(),
+                bytes: writer.file_bytes(),
+                transcript: String::new(),
+                error: String::new(),
+            },
+        )
+        .unwrap();
+        let details = fs::read(recording_metadata_path(&root, id)).unwrap();
+
+        // Well past the header's once-a-second update.
+        writer.append(&[0; 100], started).unwrap();
+        writer.append(&[0; 50], started + std::time::Duration::from_secs(2)).unwrap();
+
+        let listed = list_recording_metadata(&root).unwrap();
+        assert_eq!(listed[0].bytes, 194);
+        // Appending audio left the saved details alone.
+        assert_eq!(fs::read(recording_metadata_path(&root, id)).unwrap(), details);
         fs::remove_dir_all(root).unwrap();
     }
 

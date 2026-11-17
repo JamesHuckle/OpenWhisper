@@ -39,7 +39,7 @@ use recordings::{
     lock_recordings, now_ms, read_recording_metadata, recording_parts_path,
     write_recording_metadata, ActiveRecording, RecordingMetadata, RecordingStartResponse,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use settings::{frontend_settings_from, start_session_params, AppSettings, FrontendSettings};
 use std::collections::HashMap;
@@ -48,7 +48,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use std::borrow::Cow;
 use tauri::{
+    ipc::{InvokeBody, Request},
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, LogicalSize, Manager, Size, State, Window, WindowEvent,
@@ -316,30 +318,46 @@ fn recording_begin(
     Ok(RecordingStartResponse { id })
 }
 
+/// Reads an audio chunk the page sends as raw bytes, with the id of its
+/// recording or session in a header. Raw bytes skip the base64 text a JSON
+/// argument needs, so a chunk is never encoded on the page's main thread.
+/// If the webview blocks Tauri's IPC protocol, Tauri sends the same bytes as
+/// a JSON list of numbers instead, which is read here too.
+fn audio_chunk_request<'a>(
+    request: &'a Request<'_>,
+    id_header: &str,
+) -> Result<(&'a str, Cow<'a, [u8]>), String> {
+    let id = request
+        .headers()
+        .get(id_header)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| format!("The audio chunk has no {id_header} header"))?;
+    let chunk = match request.body() {
+        InvokeBody::Raw(bytes) => Cow::Borrowed(bytes.as_slice()),
+        InvokeBody::Json(value) => Cow::Owned(
+            Vec::<u8>::deserialize(value).map_err(|e| format!("Invalid audio chunk: {e}"))?,
+        ),
+    };
+    Ok((id, chunk))
+}
+
+/// Appends audio to an open recording's WAV file. Its `metadata.json` is not
+/// rewritten while it records: the recordings list reads the size of an open
+/// recording from its file, and closing the recording saves the final size.
 #[tauri::command(async)]
 fn recording_append_chunk(
-    app_handle: AppHandle,
+    request: Request<'_>,
     state: State<'_, Arc<AppState>>,
-    recording_id: String,
-    chunk_base64: String,
 ) -> Result<(), String> {
-    let chunk = base64::engine::general_purpose::STANDARD
-        .decode(chunk_base64)
-        .map_err(|e| format!("Invalid audio chunk: {e}"))?;
+    let (recording_id, chunk) = audio_chunk_request(&request, "recording-id")?;
     let mut recordings = lock_recordings(&state.recordings)?;
     let active = recordings
-        .get_mut(&recording_id)
+        .get_mut(recording_id)
         .ok_or_else(|| "This recording is no longer being saved".to_string())?;
-    let synced = active
+    active
         .writer
         .append(&chunk, Instant::now())
         .map_err(|e| e.to_string())?;
-    if synced {
-        // The saved size follows the header, about once a second.
-        active.metadata.bytes = active.writer.file_bytes();
-        let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
-        write_recording_metadata(&root, &active.metadata).map_err(|e| e.to_string())?;
-    }
     Ok(())
 }
 
@@ -662,23 +680,20 @@ async fn worker_stop_session(
     .await
 }
 
+/// Streams a Live recording's audio chunk, sent by the page as raw bytes, to
+/// the worker. It is encoded once here, for the worker's JSON line.
 #[tauri::command]
 async fn worker_append_audio_chunk(
     app_handle: AppHandle,
     state: State<'_, Arc<AppState>>,
-    session_id: String,
-    chunk_base64: String,
+    request: Request<'_>,
 ) -> Result<serde_json::Value, String> {
-    with_worker_request(
-        &app_handle,
-        &state,
-        "append_audio_chunk",
-        json!({
-            "session_id": session_id,
-            "chunk_base64": chunk_base64
-        }),
-    )
-    .await
+    let (session_id, chunk) = audio_chunk_request(&request, "session-id")?;
+    let params = json!({
+        "session_id": session_id,
+        "chunk_base64": base64::engine::general_purpose::STANDARD.encode(&chunk),
+    });
+    with_worker_request(&app_handle, &state, "append_audio_chunk", params).await
 }
 
 #[tauri::command]

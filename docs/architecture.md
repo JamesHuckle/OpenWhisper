@@ -46,10 +46,15 @@ WhisperFlow is split into three runtime layers:
    then saved first. The recording file commands run off the main thread.
 2. Desktop shell opens session in worker via JSON-over-stdio protocol.
 3. The shell saves every audio chunk once, to the recording's WAV file
-   (`src-tauri/src/recording_store.rs`). The file stays open while recording;
-   its header and size are brought up to date about once a second.
+   (`src-tauri/src/recording_store.rs`). The page sends each chunk as raw
+   bytes, with its recording or session id in a header, never as base64
+   text. The file stays open while recording; its header is brought up to
+   date about once a second. Its `metadata.json` is written only when the
+   recording starts and closes: meanwhile the recordings list reads its size
+   from the WAV file.
    Live transcription also streams each chunk to the worker using
-   `append_audio_chunk`, because it transcribes while the user speaks. The
+   `append_audio_chunk` (the shell encodes it to base64 once, for the
+   worker's JSON line), because it transcribes while the user speaks. The
    worker keeps no copy of these chunks: it only counts their bytes and
    loudest sample, to tell silence or a quick tap from speech at the end.
    Only Live sessions accept chunks.

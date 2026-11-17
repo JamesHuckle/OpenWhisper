@@ -329,6 +329,27 @@ describe("desktop regression contracts", () => {
     expect(native).not.toContain("fn append_pcm_chunk(");
   });
 
+  it("sends recording audio as raw bytes and saves no details while recording", () => {
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const lib = readFileSync(resolve(nativeSourceDir, "lib.rs"), "utf8");
+    const appendBody = lib.slice(
+      lib.indexOf("fn recording_append_chunk("),
+      lib.indexOf("/// Lets the user choose an audio file"),
+    );
+
+    // The page never turns audio into base64 text; the shell reads raw bytes.
+    expect(main).not.toContain("btoa(");
+    expect(main).not.toContain("chunkBase64:");
+    expect(main).toContain('sendAudioChunk(invoke, "recording_append_chunk", recordingId, combined)');
+    expect(main).toContain('sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer)');
+    expect(lib).toContain("InvokeBody::Raw(bytes) => Cow::Borrowed(bytes.as_slice())");
+    // Live audio is encoded once, in the shell, for the worker's JSON line.
+    expect(lib.match(/STANDARD\.encode\(&chunk\)/g)).toHaveLength(1);
+    // Appending audio writes only the WAV file, not metadata.json each second.
+    expect(appendBody).toContain(".append(&chunk, Instant::now())");
+    expect(appendBody).not.toContain("write_recording_metadata");
+  });
+
   it("imports audio files by copying them on disk, not through the window", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const native = readNativeSource();
