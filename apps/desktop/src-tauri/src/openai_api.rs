@@ -21,6 +21,9 @@ pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 /// transcribe, so a request may wait this long between pieces of its answer.
 const READ_TIMEOUT: Duration = Duration::from_secs(1800);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// The whole of one transcription request: ten minutes to upload a part and
+/// thirty to hear back, as before.
+const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(40 * 60);
 /// The whole of one tidy request.
 const POLISH_TIMEOUT: Duration = Duration::from_secs(420);
 
@@ -204,6 +207,7 @@ impl OpenAiApi for HttpApi {
             .client
             .post(format!("{}/audio/transcriptions", self.base_url))
             .bearer_auth(key)
+            .timeout(TRANSCRIBE_TIMEOUT)
             .multipart(form)
             .send()
             .await

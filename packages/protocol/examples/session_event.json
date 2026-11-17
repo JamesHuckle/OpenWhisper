@@ -1,7 +1,0 @@
-{
-  "event": {
-    "session_id": "5f0c6a1e-8b2d-4c3a-9e7f-1a2b3c4d5e6f",
-    "event": { "type": "final", "text": "Hello from OpenWhisper." },
-    "done": true
-  }
-}

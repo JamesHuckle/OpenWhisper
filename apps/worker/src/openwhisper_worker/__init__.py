@@ -1,2 +1,0 @@
-"""OpenWhisper worker package."""
-
