@@ -159,27 +159,36 @@ impl<W: AsyncWrite + Unpin + Send> WorkerConnection<W> {
         // The time limit covers waiting to send as well as the reply, so a
         // worker that stops reading its input cannot hold a request forever.
         let deadline = tokio::time::Instant::now() + limit;
+        let not_taken = || {
+            // A line may have been cut off part way, so this link cannot
+            // carry another request; the next one starts a new worker.
+            fail_link(&self.shared, "Worker stopped reading requests");
+            anyhow!(
+                "Worker did not take {} within {} seconds",
+                method,
+                limit.as_secs()
+            )
+        };
+        let Ok(mut stdin) = tokio::time::timeout_at(deadline, self.stdin.lock()).await else {
+            return Err(not_taken());
+        };
+        // A request that waited here behind one that timed out must not
+        // finish that request's cut-off line.
+        if let Some(message) = &lock(&self.shared).exited {
+            return Err(anyhow!("{}", message));
+        }
         let sent = tokio::time::timeout_at(deadline, async {
-            let mut stdin = self.stdin.lock().await;
             stdin.write_all(line.as_bytes()).await?;
             stdin.flush().await
         })
         .await;
         match sent {
             Ok(result) => result?,
-            Err(_) => {
-                // A line may have been cut off part way, so this link cannot
-                // carry another request; the next one starts a new worker.
-                lock(&self.shared)
-                    .exited
-                    .get_or_insert_with(|| "Worker stopped reading requests".to_string());
-                return Err(anyhow!(
-                    "Worker did not take {} within {} seconds",
-                    method,
-                    limit.as_secs()
-                ));
-            }
+            // Marked while this request still holds the input, so no request
+            // waiting for it can write first.
+            Err(_) => return Err(not_taken()),
         }
+        drop(stdin);
 
         match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(reply)) => reply.map_err(|message| anyhow!("{}", message)),
@@ -201,6 +210,23 @@ struct PendingGuard<'a> {
 impl Drop for PendingGuard<'_> {
     fn drop(&mut self) {
         lock(self.shared).pending.remove(self.id);
+    }
+}
+
+/// Marks the link unusable and fails every request still waiting for a reply,
+/// so none waits out its own time limit.
+fn fail_link(shared: &StdMutex<Shared>, message: &str) {
+    let (message, waiters) = {
+        let mut shared = lock(shared);
+        let message = shared
+            .exited
+            .get_or_insert_with(|| message.to_string())
+            .clone();
+        let waiters = shared.pending.drain().map(|(_, tx)| tx).collect::<Vec<_>>();
+        (message, waiters)
+    };
+    for waiter in waiters {
+        let _ = waiter.send(Err(message.clone()));
     }
 }
 
@@ -390,6 +416,52 @@ mod tests {
         assert!(!connection.is_alive());
         let after = connection.request("ping", json!({})).await.unwrap_err();
         assert_eq!(after.to_string(), "Worker stopped reading requests");
+    }
+
+    #[tokio::test]
+    async fn a_send_that_times_out_fails_every_waiting_request_and_queued_send() {
+        let (connection, mut worker, _events, _exit) = connect();
+        let waiting = connection.clone();
+        let finalize = tokio::spawn(async move {
+            waiting
+                .request("finalize_session_audio", json!({ "session_id": "s1" }))
+                .await
+        });
+        worker.next_request().await;
+
+        // Larger than the pipe, and the worker stops reading part way.
+        let stuck = connection.clone();
+        let chunk = "x".repeat(256 * 1024);
+        let append = tokio::spawn(async move {
+            stuck
+                .request_within(
+                    "append_audio_chunk",
+                    json!({ "chunk_base64": chunk }),
+                    Duration::from_millis(50),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let queued = connection.clone();
+        let ping = tokio::spawn(async move {
+            queued
+                .request_within("ping", json!({}), Duration::from_secs(5))
+                .await
+        });
+
+        let append = append.await.unwrap().unwrap_err().to_string();
+        assert!(append.contains("did not take append_audio_chunk"), "{append}");
+        let finalize = tokio::time::timeout(Duration::from_secs(5), finalize)
+            .await
+            .expect("the waiting request fails at once")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(finalize.to_string(), "Worker stopped reading requests");
+        let ping = ping.await.unwrap().unwrap_err();
+        assert_eq!(ping.to_string(), "Worker stopped reading requests");
+        // The worker reads on: the cut-off line is never finished by the ping.
+        let rest = tokio::time::timeout(Duration::from_millis(200), worker.requests.next_line()).await;
+        assert!(rest.is_err(), "another request was written after the cut-off line");
     }
 
     #[tokio::test]
