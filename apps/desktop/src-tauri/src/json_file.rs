@@ -10,7 +10,7 @@
 //! by the next save.
 
 use anyhow::{anyhow, Result};
-use serde::de::{DeserializeOwned, IgnoredAny};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs::{self, File};
 use std::io::Write;
@@ -42,8 +42,9 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Saves `value` as pretty JSON at `path`, keeping the previous file as the
-/// backup. A damaged previous file never replaces a good backup.
-pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+/// backup. A previous file that does not read back as `T` never replaces a
+/// good backup.
+pub fn write_json_atomic<T: Serialize + DeserializeOwned>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -55,7 +56,7 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         file.sync_all()?;
     }
     if let Ok(previous) = fs::read(path) {
-        if serde_json::from_slice::<IgnoredAny>(&previous).is_ok() {
+        if serde_json::from_slice::<T>(&previous).is_ok() {
             fs::copy(path, backup_path(path))?;
         }
     }
@@ -216,6 +217,20 @@ mod tests {
         let backup: Details = serde_json::from_slice(&fs::read(backup_path(&path)).unwrap()).unwrap();
         assert_eq!(backup, details("old", 1));
         assert!(matches!(read(&path), JsonRead::Read(d) if d == details("newest", 3)));
+    }
+
+    #[test]
+    fn valid_json_of_the_wrong_shape_never_overwrites_a_good_backup() {
+        let dir = TempDir::new();
+        let path = dir.0.join("metadata.json");
+        write_json_atomic(&path, &details("old", 1)).unwrap();
+        write_json_atomic(&path, &details("good", 2)).unwrap();
+        fs::write(&path, b"null").unwrap();
+
+        write_json_atomic(&path, &details("newest", 3)).unwrap();
+
+        let backup: Details = serde_json::from_slice(&fs::read(backup_path(&path)).unwrap()).unwrap();
+        assert_eq!(backup, details("old", 1));
     }
 
     #[test]
