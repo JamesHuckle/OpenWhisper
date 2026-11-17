@@ -212,27 +212,21 @@ describe("desktop regression contracts", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
 
+    // dictation-controller.test.ts checks the type_to_target and
+    // insert_final_text calls; the live text shows on the pill, not a panel.
     expect(main).not.toContain('id="live-transcript"');
-    expect(main).toContain('invoke<TargetWrite>("type_to_target", { text: delta })');
-    expect(readFileSync(resolve(import.meta.dirname, "target-write.ts"), "utf8")).toContain(
-      'invoke("insert_final_text", { text: transcript })',
-    );
     expect(main).toContain("import.meta.env.DEV");
     expect(main).toContain("__openwhisperRealtimeSmoke");
     expect(css).not.toMatch(/\.live-transcript\s*\{/);
   });
 
   it("writes into the field locked at the start without clipboard-pasting live pieces", () => {
-    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const lib = readNativeSource();
 
     // The clipboard is no longer used for live pieces or blind Backspaces.
-    expect(main).not.toContain("paste_to_target");
-    expect(main).not.toContain("replace_streamed_target");
+    // dictation-controller.test.ts checks live typing ends once the native side stops it.
     expect(lib).not.toContain("fn paste_to_target(");
     expect(lib).not.toContain("fn replace_streamed_target(");
-    // Live typing ends for the recording once the native side stops it.
-    expect(main).toContain('if (write.outcome !== "typed") {');
     // Focus changes only track; a recording's target is locked separately.
     expect(lib).toContain("text_inserter::track_foreground();");
     expect(lib).toContain("text_inserter::capture_target();");
@@ -316,33 +310,27 @@ describe("desktop regression contracts", () => {
     const native = readNativeSource();
 
     expect(main).toContain('transcribeButton.textContent = "Transcribe"');
-    expect(main).toContain("retranscribeRecording(recording)");
-    expect(main).toContain('status: "transcribing"');
+    expect(main).toContain("dictation.retranscribeRecording(recording.id)");
     // Only the recording id crosses to the app, which reads the saved file
-    // from disk, so the audio is never loaded into the window.
-    expect(main).toContain('invoke("recording_transcribe", { recordingId, sessionId })');
+    // from disk, so the audio is never loaded into the window
+    // (dictation-controller.test.ts checks the commands).
     expect(main).not.toContain('"recording_read"');
     expect(native).not.toContain("fn recording_read(");
     expect(native).toContain("async fn recording_transcribe(");
     expect(native).toContain("FinalizeAudio::Saved(audio)");
   });
 
-  it("sends each piece of normal dictation once, to the saved backup", () => {
-    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+  it("keeps the saved backup open while recording", () => {
     const native = readNativeSource();
 
-    // Only live transcription streams audio to OpenAI while recording.
-    expect(main).toContain("if (streamAudioToWorker) audioQueue.append(combined.buffer);");
-    expect(main).toContain(
-      "streamAudioToWorker = isLiveTranscription(settings.transcriptionModel);",
-    );
+    // dictation-controller.test.ts checks that only Live transcription streams
+    // audio to OpenAI while recording.
     // The backup file stays open and its header is not rewritten per piece.
     expect(native).toContain("recordings: std::sync::Mutex<HashMap<String, ActiveRecording>>");
     expect(native).not.toContain("fn append_pcm_chunk(");
   });
 
-  it("sends recording audio as raw bytes and saves no details while recording", () => {
-    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+  it("reads recording audio as raw bytes and saves no details while recording", () => {
     const lib = readFileSync(resolve(nativeSourceDir, "lib.rs"), "utf8");
     const realtime = readFileSync(resolve(nativeSourceDir, "realtime.rs"), "utf8");
     const appendBody = lib.slice(
@@ -350,11 +338,7 @@ describe("desktop regression contracts", () => {
       lib.indexOf("/// Lets the user choose an audio file"),
     );
 
-    // The page never turns audio into base64 text; the shell reads raw bytes.
-    expect(main).not.toContain("btoa(");
-    expect(main).not.toContain("chunkBase64:");
-    expect(main).toContain('sendAudioChunk(invoke, "recording_append_chunk", recordingId, combined)');
-    expect(main).toContain('sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer)');
+    // The page sends raw bytes (dictation-controller.test.ts); the shell reads them as they are.
     expect(lib).toContain("InvokeBody::Raw(bytes) => Cow::Borrowed(bytes.as_slice())");
     // Live audio is encoded once, for the Realtime websocket.
     expect(lib).not.toContain("STANDARD.encode");
@@ -370,7 +354,6 @@ describe("desktop regression contracts", () => {
 
     expect(main).not.toContain('type="file"');
     expect(main).not.toContain(".arrayBuffer()");
-    expect(main).toContain('invoke<{ id: string } | null>("recording_import")');
     expect(native).toContain(".blocking_pick_file()");
     expect(native).toContain("fs::copy(source, dir.join(&file_name))");
   });
@@ -389,7 +372,6 @@ describe("desktop regression contracts", () => {
     expect(main).not.toContain("context.close();\n  micStream");
     // Settings come from memory; the app is asked only when they are unknown.
     expect(main.match(/invoke<AppSettings>\("app_get_settings"\)/g)).toHaveLength(2);
-    expect(main).toContain('openBackup: () => invoke<{ id: string }>("recording_begin"');
     // File work runs off the main thread, and starting a recording prunes nothing.
     for (const command of [
       "recording_begin",
@@ -403,24 +385,13 @@ describe("desktop regression contracts", () => {
     expect(beginBody).not.toContain("prune_recordings");
   });
 
-  it("shows the listening pill at the shortcut press and never wakes the speakers to record", () => {
+  it("shows the starting pill as a recording and never wakes the speakers to record", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const pkg = readFileSync(resolve(import.meta.dirname, "..", "package.json"), "utf8");
-    const startBody = main.slice(
-      main.indexOf("async function startRecording()"),
-      main.indexOf("async function stopRecording()"),
-    );
 
-    // The pill turns on before the first await of a recording start.
-    const starting = startBody.indexOf('setState("starting")');
-    expect(starting).toBeGreaterThan(-1);
-    expect(starting).toBeLessThan(startBody.indexOf("await "));
-    // It looks like a recording that has not heard sound yet.
+    // dictation-controller.test.ts checks the pill turns on before anything
+    // is awaited. It looks like a recording that has not heard sound yet.
     expect(main).toContain('widget.dataset.state = next === "starting" ? "recording" : next;');
-    // A press while the microphone opens stops the recording once it starts.
-    expect(main).toContain(
-      'if (toggleRecordingStarting && (state === "idle" || state === "starting")) {',
-    );
     // Capture opens no speaker, and the waveform and silence check listen in
     // the capture context instead of opening contexts (and speakers) of their own.
     expect(main).toContain('sinkId: { type: "none" }');
@@ -442,16 +413,12 @@ describe("desktop regression contracts", () => {
     expect(main).toContain("return navigator.mediaDevices.getUserMedia({ audio: true });");
   });
 
-  it("records only through the PCM worklet, so a Live finalize always names PCM", () => {
+  it("records only through the PCM worklet", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
-    const finalizeBody = main.slice(
-      main.indexOf("async function finalizeRecording("),
-      main.indexOf("async function", main.indexOf("async function finalizeRecording(") + 1),
-    );
 
+    // dictation-controller.test.ts checks a Live finalize names PCM.
     expect(main).not.toContain("MediaRecorder");
     expect(main).not.toContain("recordingMimeType");
-    expect(finalizeBody).toContain("mimeType: PCM_MIME_TYPE,");
   });
 
   it("calls OpenAI from the app itself and keeps no unused session commands", () => {
@@ -510,10 +477,11 @@ describe("desktop regression contracts", () => {
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
     const css = readFileSync(resolve(import.meta.dirname, "styles.css"), "utf8");
     const failureHandler = main.slice(
-      main.indexOf("async function handleTranscriptionFailure"),
+      main.indexOf("function showFailure("),
       main.indexOf("function showWidgetNotice"),
     );
 
+    // dictation-controller.test.ts checks a failure goes to showFailure, not a toast.
     expect(failureHandler).toContain("showWidgetNotice(");
     expect(failureHandler).not.toContain("openMenu()");
     expect(failureHandler).not.toContain("showToast(");

@@ -17,7 +17,7 @@ function valueOf(buffer: ArrayBuffer): number {
 
 type FakeInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 
-// Builds the startup steps the way main.ts does, over a fake Tauri invoke.
+// Builds the startup steps the way dictation-controller.ts does, over a fake Tauri invoke.
 function microphoneStartup(invoke: FakeInvoke, events: string[], cancelled = () => false) {
   return startCaptureFirst({
     lockPasteTarget: () => invoke("capture_paste_target"),

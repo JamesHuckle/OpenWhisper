@@ -28,7 +28,7 @@ describe("final transcript notices", () => {
   });
 });
 
-// Runs the delivery the way main.ts does, over a fake Tauri invoke that
+// Runs the delivery the way dictation-controller.ts does, over a fake Tauri invoke that
 // records every command and can make one of them fail.
 function delivery(options: {
   paste?: boolean;

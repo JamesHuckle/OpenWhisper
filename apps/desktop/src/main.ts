@@ -16,7 +16,6 @@ import {
 } from "./overlay-layout";
 import {
   DEFAULT_TRANSCRIPTION_MODEL,
-  isLiveTranscription,
   REFINE_MODEL,
   transcriptionModelHint,
   transcriptionModelOptionsHtml,
@@ -25,26 +24,22 @@ import {
 import {
   PCM_FLUSH_REQUEST,
   PCM_FLUSHED,
-  PCM_MIME_TYPE,
   PCM_SAMPLE_RATE,
   PCM_WORKLET_NAME,
 } from "./pcm-capture";
 import pcmCaptureWorkletUrl from "./pcm-capture.worklet?worker&url";
 import {
-  joinAudioParts,
-  sendAudioChunk,
-  SessionAudioQueue,
-  startCaptureFirst,
-} from "./recording-pipeline";
-import { deliverFinalTranscript, type TargetWrite } from "./target-write";
+  createDictationController,
+  errorMessage,
+  type AudioCapture,
+  type WidgetState,
+  type WorkerSessionEvent,
+} from "./dictation-controller";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-type TranscriptEvent = { type: "partial" | "final" | "warning" | "error"; text: string };
-// One update the app pushes for a session; `done` marks its last one.
-type WorkerSessionEvent = { session_id: string; event: TranscriptEvent; done?: boolean };
 type AppSettings = {
   hasOpenaiApiKey: boolean;
   openaiApiKeyPreview: string | null;
@@ -55,9 +50,6 @@ type AppSettings = {
   showIdlePill: boolean;
   holdToTalk: boolean;
 };
-// "starting" shows the listening pill the moment the shortcut is pressed,
-// while the microphone is still opening.
-type WidgetState = "idle" | "starting" | "recording" | "transcribing" | "error";
 type MicDevice = { id: string; label: string };
 type RecordingMetadata = {
   id: string;
@@ -75,20 +67,6 @@ type RecordingMetadata = {
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let state: WidgetState = "idle";
-let currentSessionId: string | null = null;
-// Advanced by every cancel, so a session that was still starting when the
-// user cancelled is stopped instead of transcribed.
-let cancelCount = 0;
-let sessionEventTail: Promise<void> = Promise.resolve();
-let finalTranscript = "";
-let liveTranscript = "";
-let streamTextToTarget = false;
-// Live transcription hears audio while it is recorded, so its session gets
-// every chunk. Otherwise audio goes only to the saved backup, and the
-// transcriber reads that file once the recording stops.
-let streamAudioToWorker = false;
-let targetWriteQueue: Promise<void> = Promise.resolve();
 let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
 // The settings the menu shows. Every change passes through applySettingsUi,
 // so a recording reads them here instead of asking the app each time.
@@ -101,25 +79,8 @@ let pcmAudioContext: AudioContext | null = null;
 let pcmSource: MediaStreamAudioSourceNode | null = null;
 let pcmProcessor: AudioWorkletNode | null = null;
 let pcmSilentGain: GainNode | null = null;
-let isRecording = false;
-let currentRecordingId: string | null = null;
-let lastFailedRecordingId: string | null = null;
-let backupTail: Promise<void> = Promise.resolve();
-let backupError: unknown = null;
-let pendingAudioParts: Uint8Array[] = [];
-let pendingAudioBytes = 0;
-// Audio captured before the backup file opened, kept by the number of the
-// cancel that stopped its recording, so the backup still saves it once it opens.
-const audioCancelledBeforeBackup = new Map<number, Uint8Array[]>();
-let sessionFailure = "";
-let shouldPasteFinalTranscript = true;
-let pressToTalkHeld = false;
-let pressToTalkStarting = false;
-let toggleRecordingStarting = false;
-let toggleStopRequestedDuringStart = false;
-const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
-  sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer),
-);
+// Where the running capture sends its audio.
+let pcmOnAudio: ((chunk: ArrayBuffer) => void) | null = null;
 
 let micStream: MediaStream | null = null;
 let soundVisualizer: { start: () => void; stop: () => void } | null = null;
@@ -136,7 +97,6 @@ const NOTICE_DURATION_MS = 5000;
 // Left inset + status dot + gaps + dropdown button around the notice text.
 const NOTICE_CHROME_WIDTH = 52;
 const NOTICE_MAX_WIDTH = 180;
-const AUDIO_BATCH_BYTES = 16 * 1024;
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -350,13 +310,86 @@ let noticeTimeoutId: number | null = null;
 let lastAppliedLayout: { width: number; height: number; anchorOffsetY: number; visible: boolean } | null = null;
 let overlayLayoutQueue: Promise<void> = Promise.resolve();
 
+// ---------------------------------------------------------------------------
+// Dictation: dictation-controller.ts runs the flow and holds its state; the
+// page gives it the microphone and shows what it does.
+// ---------------------------------------------------------------------------
+const microphoneCapture: AudioCapture = {
+  async start(onAudio) {
+    const constraints: MediaStreamConstraints = {
+      audio: selectedMicId === "default" ? true : { deviceId: { exact: selectedMicId } },
+    };
+    micStream = await openMicrophone(constraints);
+    await startPcmCapture(micStream, onAudio);
+  },
+  isActive: () => pcmAudioContext !== null,
+  stop: () => stopPcmCapture(),
+  discard() {
+    if (pcmAudioContext) void stopPcmCapture(false);
+    micStream?.getTracks().forEach((track) => track.stop());
+    micStream = null;
+  },
+};
+
+const dictation = createDictationController({
+  invoke,
+  capture: microphoneCapture,
+  settings: currentSettings,
+  apiKeyKnownMissing: () => appSettings?.hasOpenaiApiKey === false,
+  setState,
+  showToast,
+  showFailure,
+  clearNotice: clearWidgetNotice,
+  startMeter() {
+    widget.dataset.silent = "true";
+    soundVisualizer = startMeterVisualizer();
+    soundVisualizer?.start();
+    startVolumeMonitor();
+  },
+  stopMeter(waiting) {
+    soundVisualizer?.stop();
+    soundVisualizer = null;
+    stopVolumeMonitor();
+    if (waiting) setWaveBarLevels(Array(VOLUME_BAR_COUNT).fill(0.5));
+  },
+  showTranscript(text, final) {
+    widget.dataset.liveTranscript = text;
+    widget.setAttribute("aria-label", `${final ? "Transcription" : "Live transcription"}: ${text}`);
+  },
+  clearTranscript() {
+    widget.removeAttribute("data-live-transcript");
+    widget.setAttribute("aria-label", "Click to start or stop transcription");
+  },
+  rememberTranscript(transcript) {
+    lastTranscript = transcript;
+    syncWidgetFrame();
+    localStorage.setItem("ow_last_transcript", transcript);
+  },
+  recordingsChanged: () => void refreshRecordings(),
+  closeMenu,
+  log: logDebug,
+});
+
+// The app pushes progress, live text and the result of each session.
+void listen<WorkerSessionEvent>("worker-session-event", ({ payload }) => {
+  void dictation.receiveSessionEvent(payload);
+});
+
+// Native end-to-end smoke hook for development builds (runRealtimeSmoke in
+// dictation-controller.ts): real commands and events, deterministic audio.
+if (import.meta.env.DEV) {
+  (window as typeof window & {
+    __openwhisperRealtimeSmoke?: (chunks: string[], intervalMs?: number) => Promise<void>;
+  }).__openwhisperRealtimeSmoke = dictation.runRealtimeSmoke;
+}
+
 function logDebug(message: string) {
   const timestamp = new Date().toISOString();
   void invoke("debug_log", { message: `${timestamp} ${message}` }).catch(() => {});
 }
 
 function isWidgetExpanded() {
-  return widgetHovered || menuOpen || state !== "idle" || noticeWidth > 0;
+  return widgetHovered || menuOpen || dictation.state !== "idle" || noticeWidth > 0;
 }
 
 function getWidgetSize() {
@@ -383,7 +416,7 @@ function syncWidgetFrame() {
 }
 
 function syncApiKeyBubble() {
-  const show = settingsLoaded && !hasOpenaiApiKey && state === "idle";
+  const show = settingsLoaded && !hasOpenaiApiKey && dictation.state === "idle";
   if (show) {
     apiKeyBubble.classList.remove("hidden");
   } else {
@@ -405,7 +438,7 @@ function getWindowLayout() {
     expanded: isWidgetExpanded(),
     noticeWidth,
     settingsLoaded,
-    hasOpenaiApiKey: hasOpenaiApiKey || state !== "idle",
+    hasOpenaiApiKey: hasOpenaiApiKey || dictation.state !== "idle",
     menuVisible,
     menuWidth: menuRect?.width,
     menuHeight: menuRect?.height,
@@ -414,7 +447,7 @@ function getWindowLayout() {
     ...layout,
     visible: isOverlayVisible({
       showIdlePill,
-      idle: state === "idle",
+      idle: dictation.state === "idle",
       menuOpen,
       manualReveal: manualOverlayReveal,
       noticeShowing: noticeWidth > 0,
@@ -568,34 +601,34 @@ function handleWidgetClick(e: MouseEvent) {
     return;
   }
 
-  if (state === "recording" || state === "transcribing") {
+  if (dictation.state === "recording" || dictation.state === "transcribing") {
     e.stopPropagation();
     e.preventDefault();
-    if (state === "recording") {
-      void stopRecording();
+    if (dictation.state === "recording") {
+      void dictation.stopRecording();
     } else {
-      void cancelTranscription();
+      void dictation.cancelTranscription();
     }
     return;
   }
   if (btnMic.contains(e.target as Node) || btnDropdown.contains(e.target as Node)) return;
-  void toggleRecording();
+  void dictation.toggleRecording();
 }
 
 function handleWidgetKeydown(e: KeyboardEvent) {
-  if (state === "recording" || state === "transcribing") {
+  if (dictation.state === "recording" || dictation.state === "transcribing") {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      if (state === "recording") void stopRecording();
+      if (dictation.state === "recording") void dictation.stopRecording();
       else {
-        void cancelTranscription();
+        void dictation.cancelTranscription();
       }
     }
     return;
   }
   if ((e.key === "Enter" || e.key === " ") && !btnMic.contains(e.target as Node) && !btnDropdown.contains(e.target as Node)) {
     e.preventDefault();
-    void toggleRecording();
+    void dictation.toggleRecording();
   }
 }
 
@@ -662,8 +695,6 @@ function showToast(msg: string, durationMs = 3000) {
 // Visual state
 // ---------------------------------------------------------------------------
 function setState(next: WidgetState) {
-  logDebug(`setState ${state} -> ${next}`);
-  state = next;
   // Starting looks like a recording that has not heard sound yet, so the pill
   // does not change when the microphone comes on.
   widget.dataset.state = next === "starting" ? "recording" : next;
@@ -767,7 +798,7 @@ function startVolumeMonitor() {
   const data = new Uint8Array(analyser.fftSize);
 
   function tick() {
-    if (state !== "recording") return;
+    if (dictation.state !== "recording") return;
     analyser.getByteTimeDomainData(data);
     let min = 255, max = 0;
     for (let i = 0; i < data.length; i++) {
@@ -800,69 +831,14 @@ function stopVolumeMonitor() {
 }
 
 // ---------------------------------------------------------------------------
-// Recording
+// Failures
 // ---------------------------------------------------------------------------
-function queueAudioChunk(buffer: ArrayBuffer) {
-  pendingAudioParts.push(new Uint8Array(buffer));
-  pendingAudioBytes += buffer.byteLength;
-  if (pendingAudioBytes >= AUDIO_BATCH_BYTES) flushAudioBatch();
-}
-
-function flushAudioBatch() {
-  // Audio captured while the backup file is still opening waits here, and
-  // is saved first once it opens.
-  const recordingId = currentRecordingId;
-  if (pendingAudioBytes === 0 || !recordingId) return;
-  const combined = joinAudioParts(pendingAudioParts);
-  pendingAudioParts = [];
-  pendingAudioBytes = 0;
-
-  backupTail = backupTail
-    .then(() => sendAudioChunk(invoke, "recording_append_chunk", recordingId, combined))
-    .catch((error) => {
-      backupError ??= error;
-    });
-  if (streamAudioToWorker) audioQueue.append(combined.buffer);
-}
-
-function errorMessage(error: unknown, fallback = "Transcription failed"): string {
-  if (error instanceof Error && error.message.trim()) return error.message;
-  const message = String(error ?? "").trim();
-  return message || fallback;
-}
-
-async function finishCurrentRecording(status: string, transcript: string, error: string) {
-  const recordingId = currentRecordingId;
-  if (!recordingId) return;
-  currentRecordingId = null;
-  try {
-    await invoke("recording_finish", {
-      recordingId,
-      status,
-      transcript,
-      error,
-    });
-  } catch (finishError) {
-    logDebug(`recording metadata update failed=${errorMessage(finishError)}`);
-  }
-  void refreshRecordings();
-}
-
-async function handleTranscriptionFailure(error: unknown) {
-  if (pcmAudioContext) await stopPcmCapture();
-  flushAudioBatch();
-  await backupTail;
-  const message = errorMessage(error);
-  const recordingId = currentRecordingId;
-  if (recordingId) {
-    lastFailedRecordingId = recordingId;
-    await finishCurrentRecording("failed", "", message);
-  }
+function showFailure(message: string, recordingSaved: boolean) {
   const sentence = /[.!?]$/.test(message) ? message : `${message}.`;
-  failureMessage.textContent = recordingId
+  failureMessage.textContent = recordingSaved
     ? `${sentence} The raw audio was saved locally and can be opened below.`
     : message;
-  failureOpenRecording.disabled = !lastFailedRecordingId;
+  failureOpenRecording.disabled = !dictation.lastFailedRecordingId;
   failurePanel.classList.remove("hidden");
   // Failures never open the menu or steal the flow: the pill briefly shows a
   // short notice in place, and the menu (with the raw audio) stays one click
@@ -1011,9 +987,10 @@ async function refreshRecordings() {
         transcribeButton.textContent = "Transcribe";
         transcribeButton.title = `Transcribe ${recording.name}`;
         transcribeButton.setAttribute("aria-label", `Transcribe ${recording.name}`);
-        transcribeButton.disabled = state !== "idle" || recording.id === currentRecordingId;
+        transcribeButton.disabled =
+          dictation.state !== "idle" || recording.id === dictation.currentRecordingId;
         transcribeButton.addEventListener("click", () => {
-          void retranscribeRecording(recording);
+          void dictation.retranscribeRecording(recording.id);
         });
         card.appendChild(transcribeButton);
       }
@@ -1032,8 +1009,9 @@ async function refreshRecordings() {
 }
 
 failureOpenRecording.addEventListener("click", () => {
-  if (!lastFailedRecordingId) return;
-  void invoke("recording_open", { recordingId: lastFailedRecordingId }).catch((error) => {
+  const recordingId = dictation.lastFailedRecordingId;
+  if (!recordingId) return;
+  void invoke("recording_open", { recordingId }).catch((error) => {
     showToast(errorMessage(error, "Could not open recording"));
   });
 });
@@ -1049,7 +1027,7 @@ menuOpenRecordings.addEventListener("click", () => {
   });
 });
 
-menuImportAudio.addEventListener("click", () => void transcribeImportedFile());
+menuImportAudio.addEventListener("click", () => void dictation.transcribeImportedFile());
 
 // The context runs at the upload rate, so the browser's filtered resampler
 // converts the microphone audio. The worklet only packs it as 16-bit PCM, on
@@ -1091,7 +1069,7 @@ function pcmCaptureContext(): Promise<AudioContext> {
   return pcmContextReady;
 }
 
-async function startPcmCapture(stream: MediaStream) {
+async function startPcmCapture(stream: MediaStream, onAudio: (chunk: ArrayBuffer) => void) {
   let context = await pcmCaptureContext();
   if (context.state === "closed") {
     pcmContextReady = null;
@@ -1114,7 +1092,7 @@ async function startPcmCapture(stream: MediaStream) {
     throw error;
   }
   processor.port.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
-    if (event.data instanceof ArrayBuffer) queueAudioChunk(event.data);
+    if (event.data instanceof ArrayBuffer) onAudio(event.data);
   };
   // A silent path to the speakers keeps the browser pulling audio through
   // the worklet.
@@ -1127,16 +1105,20 @@ async function startPcmCapture(stream: MediaStream) {
   pcmSource = source;
   pcmProcessor = processor;
   pcmSilentGain = silentGain;
+  pcmOnAudio = onAudio;
 }
 
 // Asks the worklet for the samples that did not yet fill a chunk, so the end
 // of the recording is kept. Gives up after a short wait.
-function flushPcmWorklet(processor: AudioWorkletNode): Promise<void> {
+function flushPcmWorklet(
+  processor: AudioWorkletNode,
+  onAudio: (chunk: ArrayBuffer) => void,
+): Promise<void> {
   return new Promise((resolve) => {
     const timeout = window.setTimeout(resolve, 250);
     processor.port.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
       if (event.data instanceof ArrayBuffer) {
-        queueAudioChunk(event.data);
+        onAudio(event.data);
       } else if (event.data === PCM_FLUSHED) {
         window.clearTimeout(timeout);
         resolve();
@@ -1149,8 +1131,9 @@ function flushPcmWorklet(processor: AudioWorkletNode): Promise<void> {
 // keepTail is false when the recording is being thrown away.
 async function stopPcmCapture(keepTail = true) {
   const processor = pcmProcessor;
-  if (processor && keepTail && pcmAudioContext?.state === "running") {
-    await flushPcmWorklet(processor);
+  const onAudio = pcmOnAudio;
+  if (processor && onAudio && keepTail && pcmAudioContext?.state === "running") {
+    await flushPcmWorklet(processor, onAudio);
     // Another stop finished this capture while the tail was on its way.
     if (pcmProcessor !== processor) return;
   }
@@ -1161,530 +1144,18 @@ async function stopPcmCapture(keepTail = true) {
   pcmSource = null;
   pcmProcessor = null;
   pcmSilentGain = null;
+  pcmOnAudio = null;
   const context = pcmAudioContext;
   pcmAudioContext = null;
   micStream?.getTracks().forEach((track) => track.stop());
-  isRecording = false;
   // Kept for the next recording; suspended, it does no work meanwhile. One
   // the system closed is rebuilt when the next recording starts.
   if (context) await context.suspend().catch(() => undefined);
 }
 
-async function startRecording() {
-  const startupStartedAt = performance.now();
-  logDebug(
-    `startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
-  );
-  if (state !== "idle") return;
-  const cancelsBefore = cancelCount;
-  // Show the pill before anything is awaited, so it appears as the shortcut
-  // is pressed. A missing key, when already known, shows only its toast.
-  // The notice is cleared after, so a pill already showing one stays up.
-  if (appSettings?.hasOpenaiApiKey !== false) setState("starting");
-  clearWidgetNotice();
-
-  try {
-    const settings = await currentSettings();
-    if (!settings.hasOpenaiApiKey) {
-      showToast("Set your OpenAI API key first (click arrow)");
-      setState("idle");
-      return;
-    }
-    streamAudioToWorker = isLiveTranscription(settings.transcriptionModel);
-
-    const constraints: MediaStreamConstraints = {
-      audio: selectedMicId === "default" ? true : { deviceId: { exact: selectedMicId } },
-    };
-    currentRecordingId = null;
-    backupTail = Promise.resolve();
-    backupError = null;
-    pendingAudioParts = [];
-    pendingAudioBytes = 0;
-    sessionFailure = "";
-    shouldPasteFinalTranscript = true;
-
-    const result = await startCaptureFirst({
-      lockPasteTarget: () => invoke("capture_paste_target"),
-      // Capture is deliberately attached before the backup file, the session
-      // or any network startup. Its opening chunks wait until those are ready.
-      startCapture: async () => {
-        micStream = await openMicrophone(constraints);
-        await startPcmCapture(micStream);
-        isRecording = true;
-        return micStream;
-      },
-      onCaptureStarted: async (stream) => {
-        setState("recording");
-        widget.dataset.silent = "true";
-        soundVisualizer = startMeterVisualizer();
-        soundVisualizer?.start();
-        startVolumeMonitor();
-        logDebug(`capture ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
-
-        // A hold shortcut may be released, or a toggle shortcut may be pressed
-        // again, while microphone permission/capture is still starting.
-        if (
-          (pressToTalkStarting && !pressToTalkHeld) ||
-          toggleStopRequestedDuringStart
-        ) {
-          await stopRecording();
-        }
-      },
-      openBackup: () => invoke<{ id: string }>("recording_begin", {
-        source: "microphone",
-        name: `Recording ${new Date().toLocaleString()}`,
-      }),
-      onBackupOpened: async (backup) => {
-        if (cancelCount !== cancelsBefore) {
-          // Cancelled while the file was opening; the cancel already tidied
-          // up, and a new recording may have started since.
-          const audio = audioCancelledBeforeBackup.get(cancelsBefore + 1);
-          audioCancelledBeforeBackup.delete(cancelsBefore + 1);
-          if (audio?.length) {
-            await sendAudioChunk(
-              invoke,
-              "recording_append_chunk",
-              backup.id,
-              joinAudioParts(audio),
-            ).catch((error) => {
-              logDebug(`recording append failed=${errorMessage(error)}`);
-            });
-          }
-          await invoke("recording_finish", {
-            recordingId: backup.id,
-            status: "cancelled",
-            transcript: "",
-            error: "Cancelled by user",
-          }).catch((error) => {
-            logDebug(`recording metadata update failed=${errorMessage(error)}`);
-          });
-          void refreshRecordings();
-          return false;
-        }
-        currentRecordingId = backup.id;
-        flushAudioBatch();
-        return true;
-      },
-      startSession: () => invoke<{ session_id: string }>("worker_start_session", {
-        profileId: "default",
-      }),
-    });
-    if (!result) return;
-    if (cancelCount !== cancelsBefore) {
-      // Cancelled while the session was starting; the cancel already tidied up.
-      await invoke("worker_stop_session", { sessionId: result.session_id }).catch((error) => {
-        logDebug(`stop session failed=${errorMessage(error)}`);
-      });
-      return;
-    }
-    currentSessionId = result.session_id;
-    audioQueue.attachSession(currentSessionId);
-    finalTranscript = "";
-    liveTranscript = "";
-    streamTextToTarget = isLiveTranscription(settings.transcriptionModel);
-    targetWriteQueue = Promise.resolve();
-    logDebug(`session ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
-
-    if (state === "transcribing") {
-      await finalizeRecording();
-      return;
-    }
-    logDebug(`startRecording ready session=${currentSessionId ?? "none"} held=${pressToTalkHeld}`);
-  } catch (err) {
-    audioCancelledBeforeBackup.delete(cancelsBefore + 1);
-    logDebug(`startRecording error=${err instanceof Error ? err.message : String(err)}`);
-    if (pcmAudioContext) await stopPcmCapture();
-    flushAudioBatch();
-    await backupTail;
-    await handleTranscriptionFailure(err);
-    cleanup();
-    setState("idle");
-  }
-}
-
-async function stopRecording() {
-  logDebug(`stopRecording enter state=${state} session=${currentSessionId ?? "none"}`);
-  if (state !== "recording") return;
-  setState("transcribing");
-  if (soundVisualizer) {
-    soundVisualizer.stop();
-    soundVisualizer = null;
-  }
-  stopVolumeMonitor();
-  setWaveBarLevels(Array(VOLUME_BAR_COUNT).fill(0.5));
-
-  if (pcmAudioContext) {
-    await stopPcmCapture();
-    flushAudioBatch();
-  }
-
-  if (currentSessionId) await finalizeRecording();
-}
-
-async function finalizeRecording() {
-  const sessionId = currentSessionId;
-  if (!sessionId) return;
-  try {
-    await audioQueue.drain();
-    await backupTail;
-    if (backupError) throw backupError;
-    if (currentSessionId !== sessionId) return;
-    if (streamAudioToWorker) {
-      await invoke("worker_finalize_session_audio", {
-        sessionId,
-        mimeType: PCM_MIME_TYPE,
-      });
-    } else {
-      // The transcriber reads the saved backup from disk, so the audio
-      // crosses to it once, at the end, instead of a second time while
-      // recording.
-      const recordingId = currentRecordingId;
-      if (!recordingId) throw new Error("The recording was not saved");
-      await invoke("recording_transcribe", { recordingId, sessionId });
-    }
-    logDebug(`stopRecording finalized session=${sessionId}`);
-  } catch (err) {
-    logDebug(`stopRecording error=${err instanceof Error ? err.message : String(err)}`);
-    // Cancel answers at once, so a cancelled session's last request can
-    // still fail here; the cancel already tidied up.
-    if (currentSessionId !== sessionId) return;
-    await handleTranscriptionFailure(err);
-    cleanup();
-    setState("idle");
-  }
-}
-
-async function cancelTranscription() {
-  cancelCount += 1;
-  if (!currentRecordingId && pendingAudioParts.length > 0) {
-    // The backup is still opening; it saves this audio once it opens.
-    audioCancelledBeforeBackup.set(cancelCount, pendingAudioParts);
-  }
-  const sessionId = currentSessionId;
-  if (sessionId) {
-    await invoke("worker_stop_session", { sessionId }).catch((error) => {
-      logDebug(`stop session failed=${errorMessage(error)}`);
-    });
-  }
-  // Capture has stopped; let its last pieces reach the backup before closing it.
-  await backupTail;
-  await finishCurrentRecording("cancelled", "", "Cancelled by user");
-  cleanup();
-  setState("idle");
-  showToast("Transcription cancelled. Raw audio is still saved.", 4000);
-}
-
-async function transcribeImportedFile() {
-  if (state !== "idle") {
-    showToast("Finish the current recording first");
-    return;
-  }
-  try {
-    const settings = await currentSettings();
-    if (!settings.hasOpenaiApiKey) {
-      throw new Error("Set your OpenAI API key before importing audio");
-    }
-    if (isLiveTranscription(settings.transcriptionModel)) {
-      throw new Error("Choose Standard transcription for imported audio files");
-    }
-    // The native picker hands the path to the app, which copies the file
-    // from disk; the audio never passes through this window.
-    const stored = await invoke<{ id: string } | null>("recording_import");
-    if (!stored) return;
-    if (state !== "idle") {
-      showToast("Finish the current recording first");
-      return;
-    }
-    await transcribeStoredAudio(stored.id, "file-import");
-  } catch (error) {
-    await handleTranscriptionFailure(error);
-    cleanup();
-    setState("idle");
-  }
-}
-
-async function retranscribeRecording(recording: RecordingMetadata) {
-  if (state !== "idle") {
-    showToast("Finish the current recording first");
-    return;
-  }
-  try {
-    const settings = await currentSettings();
-    if (!settings.hasOpenaiApiKey) {
-      throw new Error("Set your OpenAI API key before transcribing saved audio");
-    }
-    if (isLiveTranscription(settings.transcriptionModel)) {
-      throw new Error("Choose Standard transcription for saved audio files");
-    }
-    await transcribeStoredAudio(recording.id, "recording-retry");
-  } catch (error) {
-    await handleTranscriptionFailure(error);
-    cleanup();
-    setState("idle");
-  }
-}
-
-async function transcribeStoredAudio(recordingId: string, profileId: string) {
-  clearWidgetNotice();
-  currentRecordingId = recordingId;
-  lastFailedRecordingId = null;
-  sessionFailure = "";
-  shouldPasteFinalTranscript = false;
-  finalTranscript = "";
-  liveTranscript = "";
-  targetWriteQueue = Promise.resolve();
-  await invoke("recording_finish", {
-    recordingId,
-    status: "transcribing",
-    transcript: "",
-    error: "",
-  });
-  setState("transcribing");
-  closeMenu();
-
-  const cancelsBefore = cancelCount;
-  const session = await invoke<{ session_id: string }>("worker_start_session", {
-    profileId,
-  });
-  const sessionId = session.session_id;
-  if (cancelCount !== cancelsBefore) {
-    // Cancelled while the session was starting; the cancel already tidied up.
-    await invoke("worker_stop_session", { sessionId }).catch((error) => {
-      logDebug(`stop session failed=${errorMessage(error)}`);
-    });
-    return;
-  }
-  currentSessionId = sessionId;
-  const cancelled = () => currentSessionId !== sessionId;
-  try {
-    // The app finds the saved file and reads it from disk, so the audio is
-    // never loaded into this window.
-    await invoke("recording_transcribe", { recordingId, sessionId });
-  } catch (error) {
-    // A cancel during the transcription already tidied up; its failure is expected.
-    if (cancelled()) return;
-    throw error;
-  }
-}
-
-function cleanup() {
-  logDebug(`cleanup state=${state} session=${currentSessionId ?? "none"}`);
-  if (soundVisualizer) {
-    soundVisualizer.stop();
-    soundVisualizer = null;
-  }
-  stopVolumeMonitor();
-  if (pcmAudioContext) void stopPcmCapture(false);
-  micStream?.getTracks().forEach((t) => t.stop());
-  micStream = null;
-  currentSessionId = null;
-  audioQueue.reset();
-  pendingAudioParts = [];
-  pendingAudioBytes = 0;
-  liveTranscript = "";
-  streamTextToTarget = false;
-  streamAudioToWorker = false;
-}
-
-// ---------------------------------------------------------------------------
-// Session events: the app pushes progress, live text and the result as
-// they happen. They are handled one at a time, in the order they arrive.
-// ---------------------------------------------------------------------------
-function queueSessionWork(work: () => Promise<void>) {
-  sessionEventTail = sessionEventTail.then(work).catch((error) => {
-    logDebug(`session event failed=${errorMessage(error)}`);
-  });
-}
-
-void listen<WorkerSessionEvent>("worker-session-event", ({ payload }) => {
-  queueSessionWork(() => handleSessionEvent(payload));
-});
-
-async function handleSessionEvent(message: WorkerSessionEvent) {
-  if (!currentSessionId || message.session_id !== currentSessionId) return;
-  try {
-    await applyTranscriptEvent(message.event);
-    if (message.done) await completeSession(message.session_id);
-  } catch (error) {
-    const text = errorMessage(error, "Could not finish the transcription");
-    logDebug(`session event failed=${text}`);
-    if (message.done && (state === "recording" || state === "transcribing")) {
-      await handleTranscriptionFailure(text);
-      cleanup();
-      setState("idle");
-    }
-  }
-}
-
-async function applyTranscriptEvent(ev: TranscriptEvent) {
-  if (ev.type === "final") {
-    finalTranscript = `${finalTranscript} ${ev.text}`.trim();
-    liveTranscript = ev.text;
-    widget.dataset.liveTranscript = liveTranscript;
-    widget.setAttribute("aria-label", `Transcription: ${liveTranscript}`);
-  } else if (
-    ev.type === "partial" &&
-    ev.text !== "Refining transcript..." &&
-    !ev.text.startsWith("Transcribing part ")
-  ) {
-    liveTranscript += ev.text;
-    widget.dataset.liveTranscript = liveTranscript;
-    widget.setAttribute("aria-label", `Live transcription: ${liveTranscript}`);
-    if (streamTextToTarget) {
-      const delta = ev.text;
-      targetWriteQueue = targetWriteQueue.then(async () => {
-        if (!streamTextToTarget) return;
-        // The native side checks the field before each piece. Once it stops
-        // (field changed, cursor moved, password field), the final text is
-        // pasted without deleting what the user did.
-        const write = await invoke<TargetWrite>("type_to_target", { text: delta });
-        if (write.outcome !== "typed") {
-          streamTextToTarget = false;
-          logDebug(`live target typing stopped reason=${write.reason ?? "unknown"}`);
-        }
-      }).catch((err) => {
-        logDebug(`live target write failed=${err instanceof Error ? err.message : String(err)}`);
-      });
-    }
-  } else if (ev.type === "error") {
-    sessionFailure = ev.text || "Transcription failed";
-    await handleTranscriptionFailure(sessionFailure);
-  } else if (ev.type === "warning") {
-    showToast(ev.text, 8000);
-  }
-}
-
-async function completeSession(sessionId: string) {
-  // A cancel (or a new recording) while this waits takes the session over;
-  // then nothing more is written, recorded or cleaned up here.
-  const owned = () => currentSessionId === sessionId;
-  if (finalTranscript) {
-    // Saved before it is copied or pasted, so a delivery error never turns a
-    // paid transcription into a failed recording.
-    await deliverFinalTranscript({
-      invoke,
-      transcript: finalTranscript,
-      paste: shouldPasteFinalTranscript,
-      owned,
-      saveRecording: (transcript) => finishCurrentRecording("complete", transcript, ""),
-      rememberLocally: (transcript) => {
-        lastTranscript = transcript;
-        syncWidgetFrame();
-        localStorage.setItem("ow_last_transcript", transcript);
-      },
-      liveTypingDone: () => targetWriteQueue,
-      notify: showToast,
-      log: logDebug,
-    });
-  } else if (sessionFailure) {
-    await finishCurrentRecording("failed", "", sessionFailure);
-  }
-  if (!owned()) return;
-  cleanup();
-  widget.removeAttribute("data-live-transcript");
-  widget.setAttribute("aria-label", "Click to start or stop transcription");
-  setState("idle");
-}
-
-// Native end-to-end smoke hook for development builds. This deliberately uses
-// the same Tauri commands, session events, and target-field streaming as a
-// microphone recording; only the PCM source is deterministic test audio.
-if (import.meta.env.DEV) {
-  (window as typeof window & {
-    __openwhisperRealtimeSmoke?: (chunks: string[], intervalMs?: number) => Promise<void>;
-  }).__openwhisperRealtimeSmoke = async (chunks, intervalMs = 100) => {
-    if (state !== "idle") throw new Error(`Cannot start smoke test while state=${state}`);
-    // Only a Live session takes audio chunks; Standard reads the saved file.
-    const settings = await currentSettings();
-    if (!isLiveTranscription(settings.transcriptionModel)) {
-      throw new Error("Choose Live transcription before the realtime smoke test");
-    }
-    await invoke("capture_paste_target");
-    const result = await invoke<{ session_id: string }>("worker_start_session", {
-      profileId: "realtime-smoke",
-    });
-    currentSessionId = result.session_id;
-    finalTranscript = "";
-    liveTranscript = "";
-    streamTextToTarget = true;
-    targetWriteQueue = Promise.resolve();
-    setState("recording");
-    for (const chunkBase64 of chunks) {
-      // The test audio arrives as base64 text; the app sends raw bytes.
-      const chunk = Uint8Array.from(atob(chunkBase64), (char) => char.charCodeAt(0));
-      await sendAudioChunk(invoke, "worker_append_audio_chunk", currentSessionId, chunk);
-      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
-    }
-    setState("transcribing");
-    await invoke("worker_finalize_session_audio", {
-      sessionId: currentSessionId,
-      mimeType: PCM_MIME_TYPE,
-    });
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Toggle
-// ---------------------------------------------------------------------------
-async function toggleRecording() {
-  // A second press while the microphone is still opening stops the recording
-  // as soon as it starts (and a third press keeps it going after all).
-  if (toggleRecordingStarting && (state === "idle" || state === "starting")) {
-    toggleStopRequestedDuringStart = !toggleStopRequestedDuringStart;
-    return;
-  }
-  if (state === "idle") {
-    toggleRecordingStarting = true;
-    toggleStopRequestedDuringStart = false;
-    try {
-      await startRecording();
-      if (toggleStopRequestedDuringStart && state === "recording") {
-        await stopRecording();
-      }
-    } finally {
-      toggleRecordingStarting = false;
-      toggleStopRequestedDuringStart = false;
-    }
-  } else if (state === "recording") {
-    await stopRecording();
-  }
-}
-
-async function handlePressToTalkStart() {
-  logDebug(
-    `pressToTalkStart event state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
-  );
-  pressToTalkHeld = true;
-  if (state !== "idle" || pressToTalkStarting) return;
-
-  pressToTalkStarting = true;
-  try {
-    await startRecording();
-  } finally {
-    pressToTalkStarting = false;
-  }
-
-  // If the user released the shortcut while startup was still in flight,
-  // stop immediately once recording is actually active.
-  if (!pressToTalkHeld && isRecording) {
-    logDebug("pressToTalkStart detected release during startup");
-    await stopRecording();
-  }
-}
-
-async function handlePressToTalkStop() {
-  logDebug(
-    `pressToTalkStop event state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`,
-  );
-  pressToTalkHeld = false;
-  if (state === "recording") {
-    await stopRecording();
-  }
-}
-
 btnMic.addEventListener("click", (e) => {
   e.stopPropagation();
-  void toggleRecording();
+  void dictation.toggleRecording();
 });
 
 // ---------------------------------------------------------------------------
@@ -1727,10 +1198,10 @@ function syncModelHint() {
 
 function applySettingsUi(settings: AppSettings, configuredLabel = "Key configured") {
   appSettings = settings;
-  const bubbleWasVisible = settingsLoaded && !hasOpenaiApiKey && state === "idle";
+  const bubbleWasVisible = settingsLoaded && !hasOpenaiApiKey && dictation.state === "idle";
   hasOpenaiApiKey = settings.hasOpenaiApiKey;
   settingsLoaded = true;
-  const bubbleVisibilityChanged = bubbleWasVisible !== (!hasOpenaiApiKey && state === "idle");
+  const bubbleVisibilityChanged = bubbleWasVisible !== (!hasOpenaiApiKey && dictation.state === "idle");
   syncApiKeyBubble();
   applyStoredKeyPreview(settings.openaiApiKeyPreview);
   menuKeyStatus.textContent = settings.hasOpenaiApiKey ? configuredLabel : "Not configured";
@@ -2014,15 +1485,15 @@ void listen<string | null>("foreground-app-changed", (event) => showForegroundAp
 // ---------------------------------------------------------------------------
 void listen("toggle-recording", () => {
   logDebug("event toggle-recording");
-  return void toggleRecording();
+  return void dictation.toggleRecording();
 });
 void listen("press-to-talk-start", () => {
   logDebug("event press-to-talk-start");
-  return void handlePressToTalkStart();
+  return void dictation.pressToTalkStart();
 });
 void listen("press-to-talk-stop", () => {
   logDebug("event press-to-talk-stop");
-  return void handlePressToTalkStop();
+  return void dictation.pressToTalkStop();
 });
 void listen<boolean>("overlay-revealed", (event) => {
   manualOverlayReveal = event.payload;
@@ -2068,7 +1539,7 @@ if (import.meta.env.DEV) {
   });
 }
 
-widget.dataset.state = state;
+widget.dataset.state = dictation.state;
 syncWidgetFrame();
 syncApiKeyBubble();
 void loadSettings().then(() => applyOverlayLayout(true));
