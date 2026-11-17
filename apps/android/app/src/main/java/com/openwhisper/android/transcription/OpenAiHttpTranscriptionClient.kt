@@ -102,11 +102,11 @@ class OpenAiHttpTranscriptionClient(
                 start = end
                 continue
             }
-            val prompt = transcripts.lastOrNull(String::isNotBlank)?.takeLast(1_200).orEmpty()
+            val prompt = AudioRules.previousPartText(transcripts)
             val text = transcribePart(key, audio.file, start, count, sampleRate, prompt, started).trim()
             // Each later part is sent with the previous part's text as its
             // prompt; a near-silent part can still make the model repeat it.
-            val kept = if (AudioRules.echoesPrompt(text, prompt)) "" else text
+            val kept = AudioRules.keptPartText(text, prompt)
             saved.add(index, SavedPart(start, end, prompt, kept))
             transcripts += kept
             start = end

@@ -31,6 +31,9 @@ object AudioRules {
     const val NO_AUDIO_MESSAGE: String = BuildConfig.NO_AUDIO_MESSAGE
 
     private const val SCAN_BYTES = 1024 * 1024
+
+    /** How much of the text before it a long recording's next part is prompted with. */
+    private const val PREVIOUS_PART_CHARS = 1_200
     private val WORD = Regex("[a-z0-9]+")
 
     /**
@@ -55,6 +58,23 @@ object AudioRules {
         if (spoken.isEmpty() || hints.isEmpty()) return false
         return hints.contains(spoken) && spoken.length >= hints.length * PROMPT_ECHO_MIN_SHARE
     }
+
+    /**
+     * The text a long recording's next part is prompted with: the end of the
+     * last part that had text.
+     */
+    fun previousPartText(transcripts: List<String>): String =
+        transcripts.lastOrNull(String::isNotBlank)?.takeLast(PREVIOUS_PART_CHARS).orEmpty()
+
+    /**
+     * A later part's text, or nothing when it only repeats [previous], the
+     * earlier text its prompt quoted: a part that is mostly silence makes the
+     * model say its prompt back, which would paste a sentence twice. The
+     * desktop worker keeps the same rule; both apps test it on
+     * packages/protocol/audio-examples/cases.json (long_recording_parts).
+     */
+    fun keptPartText(text: String, previous: String): String =
+        if (echoesPrompt(text, previous)) "" else text
 
     private fun normalizeWords(text: String): String =
         WORD.findAll(text.lowercase()).joinToString(" ") { it.value }

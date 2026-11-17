@@ -67,8 +67,11 @@ during dictation still cancel insertion.
   accidental tap or a muted microphone is never uploaded, and the user sees
   "No audio found", as on the desktop; so do an empty transcript and a part
   that only repeats its prompt. Long recordings are split at the same upload
-  size as the desktop. `AudioRulesTest` and the worker's tests run the same
-  example recordings in `packages/protocol/audio-examples`.
+  size as the desktop, and their parts are joined by the same rules: each
+  later part is prompted with the end of the text before it, and dropped when
+  its text only repeats that prompt. `AudioRulesTest`, `LongAudioChunkingTest`
+  and the worker's tests run the same examples in
+  `packages/protocol/audio-examples`.
 - `SecureApiKeyStore` encrypts a user-supplied API key with AES-256-GCM using a
   non-exportable Android Keystore key. App backup and device transfer are
   disabled. This protects the key at rest, but a rooted/compromised phone is
