@@ -103,6 +103,9 @@ let backupTail: Promise<void> = Promise.resolve();
 let backupError: unknown = null;
 let pendingAudioParts: Uint8Array[] = [];
 let pendingAudioBytes = 0;
+// Audio captured before the backup file opened, kept by the number of the
+// cancel that stopped its recording, so the backup still saves it once it opens.
+const audioCancelledBeforeBackup = new Map<number, Uint8Array[]>();
 let sessionFailure = "";
 let shouldPasteFinalTranscript = true;
 let pressToTalkHeld = false;
@@ -821,12 +824,7 @@ function flushAudioBatch() {
   // is saved first once it opens.
   const recordingId = currentRecordingId;
   if (pendingAudioBytes === 0 || !recordingId) return;
-  const combined = new Uint8Array(pendingAudioBytes);
-  let offset = 0;
-  for (const part of pendingAudioParts) {
-    combined.set(part, offset);
-    offset += part.byteLength;
-  }
+  const combined = joinAudioParts(pendingAudioParts);
   pendingAudioParts = [];
   pendingAudioBytes = 0;
 
@@ -840,6 +838,16 @@ function flushAudioBatch() {
       backupError ??= error;
     });
   if (streamAudioToWorker) audioQueue.append(combined.buffer);
+}
+
+function joinAudioParts(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
+  const combined = new Uint8Array(parts.reduce((bytes, part) => bytes + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    combined.set(part, offset);
+    offset += part.byteLength;
+  }
+  return combined;
 }
 
 function errorMessage(error: unknown, fallback = "Transcription failed"): string {
@@ -1255,6 +1263,16 @@ async function startRecording() {
         if (cancelCount !== cancelsBefore) {
           // Cancelled while the file was opening; the cancel already tidied
           // up, and a new recording may have started since.
+          const audio = audioCancelledBeforeBackup.get(cancelsBefore + 1);
+          audioCancelledBeforeBackup.delete(cancelsBefore + 1);
+          if (audio?.length) {
+            await invoke("recording_append_chunk", {
+              recordingId: backup.id,
+              chunkBase64: toBase64(joinAudioParts(audio).buffer),
+            }).catch((error) => {
+              logDebug(`recording append failed=${errorMessage(error)}`);
+            });
+          }
           await invoke("recording_finish", {
             recordingId: backup.id,
             status: "cancelled",
@@ -1296,6 +1314,7 @@ async function startRecording() {
     }
     logDebug(`startRecording ready session=${currentSessionId ?? "none"} held=${pressToTalkHeld}`);
   } catch (err) {
+    audioCancelledBeforeBackup.delete(cancelsBefore + 1);
     logDebug(`startRecording error=${err instanceof Error ? err.message : String(err)}`);
     if (pcmAudioContext) await stopPcmCapture();
     flushAudioBatch();
@@ -1359,6 +1378,10 @@ async function finalizeRecording() {
 
 async function cancelTranscription() {
   cancelCount += 1;
+  if (!currentRecordingId && pendingAudioParts.length > 0) {
+    // The backup is still opening; it saves this audio once it opens.
+    audioCancelledBeforeBackup.set(cancelCount, pendingAudioParts);
+  }
   const sessionId = currentSessionId;
   if (sessionId) {
     await invoke("worker_stop_session", { sessionId }).catch((error) => {
