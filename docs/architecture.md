@@ -181,6 +181,10 @@ with the write rules in `paste_target.rs`:
    restores the saved clipboard unless something else changed it meanwhile.
    If Windows refuses the keys, the transcript stays on the clipboard. Bitmaps are restored in their
    DIB form; GDI-handle and private formats are not restored.
+7. The transcript is saved with its recording before any of this. If copying
+   or pasting then fails, the user is told it was saved and can copy it from
+   the recording in the menu; the recording is never marked failed, so it is
+   not transcribed (and paid for) again.
 
 Not built yet: writing through UI Automation `ValuePattern` / `TextPattern`
 and app-specific adapters.

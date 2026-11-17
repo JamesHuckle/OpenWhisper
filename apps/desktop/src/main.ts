@@ -36,7 +36,7 @@ import {
   SessionAudioQueue,
   startCaptureFirst,
 } from "./recording-pipeline";
-import { finalWriteNotice, type TargetWrite } from "./target-write";
+import { deliverFinalTranscript, type TargetWrite } from "./target-write";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -1561,20 +1561,23 @@ async function completeSession(sessionId: string) {
   // then nothing more is written, recorded or cleaned up here.
   const owned = () => currentSessionId === sessionId;
   if (finalTranscript) {
-    lastTranscript = finalTranscript;
-    localStorage.setItem("ow_last_transcript", lastTranscript);
-    syncWidgetFrame();
-    await targetWriteQueue;
-    if (!owned()) return;
-    if (!shouldPasteFinalTranscript) {
-      await invoke("copy_to_clipboard", { text: finalTranscript });
-      showToast("Transcript copied to clipboard", 3000);
-    } else {
-      const write = await invoke<TargetWrite>("insert_final_text", { text: finalTranscript });
-      showToast(finalWriteNotice(write), write.outcome === "copied" ? 5000 : 2000);
-    }
-    if (!owned()) return;
-    await finishCurrentRecording("complete", finalTranscript, "");
+    // Saved before it is copied or pasted, so a delivery error never turns a
+    // paid transcription into a failed recording.
+    await deliverFinalTranscript({
+      invoke,
+      transcript: finalTranscript,
+      paste: shouldPasteFinalTranscript,
+      owned,
+      saveRecording: (transcript) => finishCurrentRecording("complete", transcript, ""),
+      rememberLocally: (transcript) => {
+        lastTranscript = transcript;
+        syncWidgetFrame();
+        localStorage.setItem("ow_last_transcript", transcript);
+      },
+      liveTypingDone: () => targetWriteQueue,
+      notify: showToast,
+      log: logDebug,
+    });
   } else if (sessionFailure) {
     await finishCurrentRecording("failed", "", sessionFailure);
   }

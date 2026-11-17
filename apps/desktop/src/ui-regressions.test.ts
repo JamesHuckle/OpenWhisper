@@ -203,7 +203,9 @@ describe("desktop regression contracts", () => {
 
     expect(main).not.toContain('id="live-transcript"');
     expect(main).toContain('invoke<TargetWrite>("type_to_target", { text: delta })');
-    expect(main).toContain('invoke<TargetWrite>("insert_final_text", { text: finalTranscript })');
+    expect(readFileSync(resolve(import.meta.dirname, "target-write.ts"), "utf8")).toContain(
+      'invoke("insert_final_text", { text: transcript })',
+    );
     expect(main).toContain("import.meta.env.DEV");
     expect(main).toContain("__openwhisperRealtimeSmoke");
     expect(css).not.toMatch(/\.live-transcript\s*\{/);

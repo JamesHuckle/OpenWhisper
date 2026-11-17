@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { finalWriteNotice } from "./target-write";
+import {
+  deliverFinalTranscript,
+  finalWriteNotice,
+  type FinalTranscriptDelivery,
+} from "./target-write";
 
 describe("final transcript notices", () => {
   it("confirms text written into the target field", () => {
@@ -21,5 +25,92 @@ describe("final transcript notices", () => {
     expect(finalWriteNotice({ outcome: "copied", reason: "unsupported" })).toBe(
       "Transcript copied to clipboard",
     );
+  });
+});
+
+// Runs the delivery the way main.ts does, over a fake Tauri invoke that
+// records every command and can make one of them fail.
+function delivery(options: {
+  paste?: boolean;
+  fail?: string;
+  storageThrows?: boolean;
+  cancelWhileTyping?: boolean;
+}) {
+  const commands: string[] = [];
+  const saved: { status: string; transcript: string }[] = [];
+  const notices: string[] = [];
+  let owner = "session-1";
+  let remembered = "";
+  const steps: FinalTranscriptDelivery = {
+    invoke: async (command) => {
+      commands.push(command);
+      if (command === options.fail) throw new Error(`${command} failed`);
+      return command === "insert_final_text" ? { outcome: "pasted", reason: null } : null;
+    },
+    transcript: "Hello world",
+    paste: options.paste ?? true,
+    owned: () => owner === "session-1",
+    saveRecording: async (transcript) => {
+      saved.push({ status: "complete", transcript });
+    },
+    rememberLocally: (transcript) => {
+      remembered = transcript;
+      if (options.storageThrows) throw new Error("QuotaExceededError");
+    },
+    liveTypingDone: async () => {
+      if (options.cancelWhileTyping) owner = "cancelled";
+    },
+    notify: (message) => notices.push(message),
+    log: () => {},
+  };
+  return { steps, commands, saved, notices, remembered: () => remembered };
+}
+
+// No step may ask the worker or the service for a new transcription.
+function expectNoNewTranscription(commands: string[]) {
+  const deliveryCommands = ["copy_to_clipboard", "insert_final_text"];
+  expect(commands.filter((command) => !deliveryCommands.includes(command))).toEqual([]);
+}
+
+describe("delivering the final transcript", () => {
+  it("saves the transcript before pasting it", async () => {
+    const run = delivery({});
+    await deliverFinalTranscript(run.steps);
+    expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
+    expect(run.commands).toEqual(["insert_final_text"]);
+    expect(run.notices).toEqual(["Transcribed and pasted"]);
+  });
+
+  it("keeps the transcript when the clipboard copy fails", async () => {
+    const run = delivery({ paste: false, fail: "copy_to_clipboard" });
+    await expect(deliverFinalTranscript(run.steps)).resolves.toBeUndefined();
+    expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
+    expect(run.remembered()).toBe("Hello world");
+    expect(run.notices).toEqual(["Transcript saved; could not copy it. Copy it from the menu"]);
+    expectNoNewTranscription(run.commands);
+  });
+
+  it("keeps the transcript when pasting into the field fails", async () => {
+    const run = delivery({ fail: "insert_final_text" });
+    await expect(deliverFinalTranscript(run.steps)).resolves.toBeUndefined();
+    expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
+    expect(run.notices).toEqual(["Transcript saved; could not paste it. Copy it from the menu"]);
+    expectNoNewTranscription(run.commands);
+  });
+
+  it("still saves and pastes when localStorage throws", async () => {
+    const run = delivery({ storageThrows: true });
+    await expect(deliverFinalTranscript(run.steps)).resolves.toBeUndefined();
+    expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
+    expect(run.commands).toEqual(["insert_final_text"]);
+    expectNoNewTranscription(run.commands);
+  });
+
+  it("keeps the saved transcript but does not paste after a cancel during live typing", async () => {
+    const run = delivery({ cancelWhileTyping: true });
+    await deliverFinalTranscript(run.steps);
+    expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
+    expect(run.commands).toEqual([]);
+    expect(run.notices).toEqual([]);
   });
 });
