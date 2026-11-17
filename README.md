@@ -138,7 +138,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-windows-installer.ps1
 Installer output: `artifacts\windows-installer\OpenWhisper_x64-setup.exe` (with the
 versioned and signed build outputs also kept under
 `%USERPROFILE%\openwhisper-cargo-target\release\bundle\nsis\`). The build reads
-the updater signing key from `.env`.
+the updater signing key from `.env`. Pass `-CargoTargetDir <folder>` to compile
+into another folder; the release workflow passes the one its Rust cache keeps
+between releases.
 
 This repository uses a hybrid architecture:
 
@@ -182,6 +184,11 @@ This repository uses a hybrid architecture:
 Releases happen **automatically** in GitHub Actions when a push to `main`
 changes app code (see the push-to-release contract above). Releasing needs no
 local tools: commit and push normally.
+
+The workflow caches npm, uv, Cargo and Gradle downloads and builds, and the
+JDK, Android SDK and Gradle that `scripts/bootstrap-android.ps1` installs (they
+download again only when that script changes), so a release only rebuilds what
+changed.
 
 **One-time setup:**
 

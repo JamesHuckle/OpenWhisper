@@ -3,6 +3,8 @@
 # to a draft GitHub Release, checks both update feeds and publishes the draft
 # as latest. Website-only pushes stop after the tests (Vercel deploys apps/web).
 # The release steps live in scripts/release.mjs.
+# Every job caches what it downloads or compiles (npm, uv, Cargo, Gradle and
+# the Android toolchain), so a release only rebuilds what changed.
 name: Release
 
 on:
@@ -52,6 +54,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
       - run: npm test
       - run: npm run build
@@ -64,6 +68,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/worker/uv.lock
       - run: uv sync
       - run: uv run python -m unittest discover -s tests
 
@@ -72,6 +79,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri/core-tests
       # The desktop's Rust files that need no Tauri (recordings, the WAV
       # backup, model settings, the worker link, the write rules).
       - name: Test desktop Rust logic
@@ -80,6 +90,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
       - name: Test desktop UI
         working-directory: apps/desktop
         run: |
@@ -94,6 +106,10 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          # The open-source cache on GitHub's own cache storage.
+          cache-provider: basic
       - name: Android unit tests
         working-directory: apps/android
         run: sh ./gradlew --no-daemon testDebugUnitTest
@@ -108,8 +124,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
       - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/worker/uv.lock
       - uses: dtolnay/rust-toolchain@stable
+      # Keeps the compiled crates between releases. The build script is given
+      # the same target folder (rust-cache needs it inside the workspace).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
       - name: Set version ${{ needs.plan.outputs.version }}
         run: node scripts/release.mjs set-version ${{ needs.plan.outputs.version }}
       - name: Build the signed Windows installer
@@ -121,7 +147,7 @@ jobs:
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
             throw "The TAURI_SIGNING_PRIVATE_KEY repository secret is missing. See README, Releasing a new version."
           }
-          ./scripts/build-windows-installer.ps1
+          ./scripts/build-windows-installer.ps1 -CargoTargetDir (Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/target")
       - uses: actions/upload-artifact@v4
         with:
           name: windows-release
@@ -143,6 +169,17 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - name: Set version ${{ needs.plan.outputs.version }}
         run: node scripts/release.mjs set-version ${{ needs.plan.outputs.version }}
+      # The JDK, Android SDK and Gradle that bootstrap-android.ps1 installs.
+      # They download again only when that script changes.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .tools
+            !.tools/downloads
+          key: android-tools-${{ runner.os }}-${{ hashFiles('scripts/bootstrap-android.ps1') }}
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
       - name: Install the Android toolchain
         shell: pwsh
         run: ./scripts/bootstrap-android.ps1

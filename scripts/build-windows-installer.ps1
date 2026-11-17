@@ -1,6 +1,8 @@
 param(
   [switch]$SkipNpmInstall,
-  [string]$LocalBuildRoot
+  [string]$LocalBuildRoot,
+  # The release workflow passes a folder its Rust cache saves and restores.
+  [string]$CargoTargetDir
 )
 
 $ErrorActionPreference = "Stop"
@@ -108,7 +110,10 @@ $BinariesDir = Join-Path $DesktopDir "src-tauri/binaries"
 # Keep the Rust target dir outside the mirrored build root so it persists across runs.
 # This avoids Application Control policies blocking freshly-compiled build-script binaries
 # every time the build root is re-mirrored.
-$CargoTargetDir = Join-Path $env:USERPROFILE "openwhisper-cargo-target"
+if ([string]::IsNullOrWhiteSpace($CargoTargetDir)) {
+  $CargoTargetDir = Join-Path $env:USERPROFILE "openwhisper-cargo-target"
+}
+$CargoTargetDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($CargoTargetDir)
 if (-not (Test-Path $CargoTargetDir)) {
   New-Item -ItemType Directory -Path $CargoTargetDir | Out-Null
 }

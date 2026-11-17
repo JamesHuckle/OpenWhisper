@@ -147,3 +147,39 @@ describe("update feeds", () => {
     assert.ok(problems.some((problem) => problem.includes("wrong APK checksum")));
   });
 });
+
+describe("build caches", () => {
+  const workflow = readFileSync(join(repositoryRoot, ".github/workflows/release.yml"), "utf8");
+  const job = (name) => {
+    const match = workflow.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [a-z-]+:\\n|$)`));
+    assert.ok(match, `job ${name}`);
+    return match[1];
+  };
+
+  it("builds the Windows installer in the Rust folder the cache keeps", () => {
+    const windows = job("build-windows");
+    const cached = windows.match(/Swatinem\/rust-cache@v2\s+with:\s+workspaces: (\S+) -> (\S+)/);
+    assert.ok(cached, "build-windows caches its Rust build");
+    const built = windows.match(/build-windows-installer\.ps1 -CargoTargetDir \(Join-Path \$env:GITHUB_WORKSPACE "([^"]+)"\)/);
+    assert.ok(built, "build-windows passes its Rust folder to the build script");
+    assert.equal(built[1], `${cached[1]}/${cached[2]}`);
+    assert.ok(windows.indexOf("rust-cache") < windows.indexOf("build-windows-installer.ps1"));
+  });
+
+  it("downloads the Android toolchain again only when its script changes", () => {
+    const android = job("build-android");
+    assert.match(android, /actions\/cache@v\d[\s\S]*?\.tools[\s\S]*?hashFiles\('scripts\/bootstrap-android\.ps1'\)/);
+    assert.ok(android.indexOf("actions/cache") < android.indexOf("./scripts/bootstrap-android.ps1"));
+    assert.match(android, /gradle\/actions\/setup-gradle@/);
+    assert.match(job("test-android"), /gradle\/actions\/setup-gradle@/);
+  });
+
+  it("caches npm and uv downloads in every job that installs them", () => {
+    for (const name of ["test-web", "test-desktop", "build-windows"]) {
+      assert.match(job(name), /cache: npm\s+cache-dependency-path: apps\/(web|desktop)\/package-lock\.json/, name);
+    }
+    for (const name of ["test-worker", "build-windows"]) {
+      assert.match(job(name), /setup-uv@v\d+\s+with:\s+enable-cache: true/, name);
+    }
+  });
+});
