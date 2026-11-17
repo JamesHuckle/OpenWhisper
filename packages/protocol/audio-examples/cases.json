@@ -44,5 +44,42 @@
       "expected": false,
       "about": "An empty transcript is handled on its own"
     }
+  ],
+  "long_recording_parts": [
+    {
+      "about": "Every part holds speech; each prompt quotes the part before it",
+      "parts": ["We met on Monday.", "The robot is ready.", "Ship it on Friday."],
+      "quoted": ["", "We met on Monday.", "The robot is ready."],
+      "dropped": [],
+      "transcript": "We met on Monday. The robot is ready. Ship it on Friday."
+    },
+    {
+      "about": "A part that only repeats the text its prompt quoted is dropped; the next part quotes the last text kept",
+      "parts": ["We met on Monday to plan the launch.", "we met on Monday to plan the launch", "The robot ships on Friday."],
+      "quoted": ["", "We met on Monday to plan the launch.", "We met on Monday to plan the launch."],
+      "dropped": [1],
+      "transcript": "We met on Monday to plan the launch. The robot ships on Friday."
+    },
+    {
+      "about": "Saying back under half of the quoted text is real speech and is kept",
+      "parts": ["We met on Monday to plan the launch of the robot.", "The launch."],
+      "quoted": ["", "We met on Monday to plan the launch of the robot."],
+      "dropped": [],
+      "transcript": "We met on Monday to plan the launch of the robot. The launch."
+    },
+    {
+      "about": "A silent part (null) is never sent; the part after it quotes the last part that had text",
+      "parts": ["First part.", null, "Third part."],
+      "quoted": ["", null, "First part."],
+      "dropped": [],
+      "transcript": "First part. Third part."
+    },
+    {
+      "about": "A part the service answers with no text adds nothing and is not quoted",
+      "parts": ["First part.", "", "Third part."],
+      "quoted": ["", "First part.", "First part."],
+      "dropped": [],
+      "transcript": "First part. Third part."
+    }
   ]
 }

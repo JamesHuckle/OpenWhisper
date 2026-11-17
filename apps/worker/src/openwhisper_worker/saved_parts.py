@@ -23,7 +23,9 @@ from pathlib import Path
 # part is sent with, changes: older saved parts then no longer match.
 # 2: silent parts are skipped, and a part's prompt quotes the last part that
 # had text.
-CHUNKING_VERSION = 2
+# 3: the desktop's FLAC upload parts set the boundaries, and a part that only
+# repeats its prompt is saved with no text.
+CHUNKING_VERSION = 3
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ sending, the silence level, the prompt-echo check and the largest upload.
 
 from __future__ import annotations
 
+import re
 import sys
 from array import array
 from collections.abc import Callable
@@ -38,6 +39,8 @@ NO_AUDIO_MESSAGE: str = _SHARED["no_audio_message"]
 
 # How much PCM the silence check reads at a time.
 _PCM_SCAN_BYTES = 1024 * 1024
+# How much of the text before it a long recording's next part is prompted with.
+PREVIOUS_PART_CHARS = 1200
 
 
 def pcm_peak(block: bytes) -> int:
@@ -64,3 +67,35 @@ def pcm_is_silent(read: Callable[[int], bytes]) -> bool:
             return True
         if pcm_peak(block) >= SILENT_PCM_PEAK:
             return False
+
+
+def _normalize_words(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def echoes_prompt(text: str, prompt: str) -> bool:
+    """Transcription models answer silent or near-silent audio by repeating
+    the prompt they were sent. Such a transcript is no speech, not dictation."""
+    spoken = _normalize_words(text)
+    hints = _normalize_words(prompt)
+    if not spoken or not hints:
+        return False
+    return spoken in hints and len(spoken) >= len(hints) * PROMPT_ECHO_MIN_SHARE
+
+
+def previous_part_text(transcripts: list[str]) -> str:
+    """The text a long recording's next part is prompted with: the end of the
+    last part that had text."""
+    previous = next((text for text in reversed(transcripts) if text), "")
+    return previous[-PREVIOUS_PART_CHARS:]
+
+
+def kept_part_text(text: str, prompt: str, previous: str) -> str:
+    """A part's text, or nothing when it only repeats the prompt it was sent
+    with or the earlier text that prompt quotes. A part that is mostly
+    silence makes the model say its prompt back, which would paste a
+    sentence twice. The rules and their examples are shared with the Android
+    app (packages/protocol/audio-examples/cases.json, long_recording_parts)."""
+    if echoes_prompt(text, prompt) or echoes_prompt(text, previous):
+        return ""
+    return text

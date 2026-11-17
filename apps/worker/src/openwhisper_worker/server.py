@@ -9,6 +9,7 @@ import uuid
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import IO, Any, Callable
 
 import openai
@@ -17,14 +18,15 @@ from openwhisper_worker.audio_rules import (
     MAX_UPLOAD_BYTES,
     MIN_SPEECH_SECONDS,
     NO_AUDIO_MESSAGE,
-    PROMPT_ECHO_MIN_SHARE,
     SILENT_PCM_PEAK,
+    echoes_prompt,
     pcm_is_silent,
     pcm_peak,
 )
 from openwhisper_worker.openai_client import (
     OpenWhisperOpenAI,
     RealtimeTranscriptionStream,
+    UploadPart,
     describe_error,
     is_short_clean_transcript,
 )
@@ -87,20 +89,6 @@ def _without_private_text(message: str, *private: str) -> str:
     return message
 
 
-def _normalize_words(text: str) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
-
-
-def _echoes_prompt(text: str, prompt: str) -> bool:
-    """Transcription models answer silent or near-silent audio by repeating
-    the vocabulary prompt. Such a transcript is no speech, not dictation."""
-    spoken = _normalize_words(text)
-    hints = _normalize_words(prompt)
-    if not spoken or not hints:
-        return False
-    return spoken in hints and len(spoken) >= len(hints) * PROMPT_ECHO_MIN_SHARE
-
-
 def _pcm_rate(mime_type: str) -> int | None:
     if not mime_type.startswith("audio/pcm"):
         return None
@@ -141,17 +129,26 @@ def _no_speech_reason(path: str, mime_type: str, size: int) -> str | None:
         return None
 
 
-def _read_upload_copy(path: str) -> bytes | None:
-    """The desktop's smaller copy of a saved recording, or None when it is
-    missing, empty or too large for one request."""
-    try:
-        size = os.path.getsize(path)
+def _upload_parts(value: Any) -> list[UploadPart]:
+    """The desktop's smaller copies (FLAC) of a saved recording's parts, in
+    order, or none when any is missing, empty, too large for one request or
+    not where the one before it ended: the worker then sends the WAV."""
+    if not isinstance(value, list):
+        return []
+    parts: list[UploadPart] = []
+    for item in value:
+        try:
+            part = UploadPart(Path(str(item["path"])), int(item["start"]), int(item["end"]))
+            size = part.path.stat().st_size
+        except (TypeError, KeyError, ValueError, OSError):
+            return []
+        expected_start = parts[-1].end if parts else 0
+        if part.start != expected_start or part.end <= part.start:
+            return []
         if not 0 < size <= MAX_UPLOAD_BYTES:
-            return None
-        with open(path, "rb") as source:
-            return source.read()
-    except OSError:
-        return None
+            return []
+        parts.append(part)
+    return parts
 
 
 EventSink = Callable[[SessionEvent], None]
@@ -354,9 +351,10 @@ class WorkerServer:
         # A saved recording on disk, given in place of appended chunks. The
         # worker reads it in parts and never changes or removes it.
         audio_path = str(request.params.get("audio_path") or "")
-        # A smaller lossless copy of that file (FLAC) to upload in its place.
-        # The desktop removes it once this request finishes.
-        upload_path = str(request.params.get("upload_path") or "")
+        # Smaller lossless copies of that file's parts (FLAC), each with the
+        # byte range of the file's audio it holds, to upload in its place.
+        # The desktop removes them once this request finishes.
+        upload_parts = request.params.get("upload_parts") or []
         upload_mime_type = str(request.params.get("upload_mime_type") or "")
         # Where the finished parts of a long recording are saved, so a retry
         # sends only the parts that did not finish. The desktop deletes the
@@ -378,7 +376,7 @@ class WorkerServer:
                 session,
                 mime_type,
                 audio_path,
-                upload_path,
+                upload_parts,
                 upload_mime_type,
                 parts_path,
             )
@@ -399,7 +397,7 @@ class WorkerServer:
         session: Session,
         mime_type: str,
         audio_path: str = "",
-        upload_path: str = "",
+        upload_parts: Any = None,
         upload_mime_type: str = "",
         parts_path: str = "",
     ) -> WorkerResponse:
@@ -462,7 +460,7 @@ class WorkerServer:
                     session,
                     audio_path,
                     mime_type,
-                    upload_path,
+                    upload_parts,
                     upload_mime_type,
                     parts_path,
                     on_progress,
@@ -478,7 +476,7 @@ class WorkerServer:
         self._check_cancelled(session)
         if not text.strip():
             return self._finish_without_audio(request_id, session, "empty_transcript")
-        if _echoes_prompt(text, session.prompt):
+        if echoes_prompt(text, session.prompt):
             return self._finish_without_audio(request_id, session, "prompt_echo")
 
         # A short clean transcript is pasted at once: the default tidy pass
@@ -537,34 +535,40 @@ class WorkerServer:
         session: Session,
         audio_path: str,
         mime_type: str,
-        upload_path: str,
+        upload_parts: Any,
         upload_mime_type: str,
         parts_path: str,
         on_progress: Callable[[int, int], None],
     ) -> str:
-        """Transcribes a saved recording. Its upload copy goes in one request
-        when there is one; the saved file itself, in parts when it is long,
-        when there is none or the service refuses the copy."""
-        upload = _read_upload_copy(upload_path) if upload_path and upload_mime_type else None
-        if upload is not None:
+        """Transcribes a saved recording. Its upload parts go in place of the
+        saved file, one request each: a dictation's single part as it is, a
+        long recording's parts with the text before each as context. The
+        saved file itself goes, in parts when it is long, when there are none
+        or the service refuses one."""
+        parts = _upload_parts(upload_parts) if upload_mime_type else []
+        if len(parts) == 1:
             try:
+                upload = parts[0].path.read_bytes()
                 return session.openai.transcribe_bytes(
                     upload, upload_mime_type, prompt=session.prompt
                 )
-            except openai.BadRequestError as exc:
+            except (openai.BadRequestError, OSError) as exc:
                 self._check_cancelled(session)
                 sys.stderr.write(
-                    f"[worker] upload copy refused session_id={session.session_id!r} "
+                    f"[worker] upload part refused session_id={session.session_id!r} "
                     f"mime_type={upload_mime_type!r} error={describe_error(exc)}; "
                     "sending the saved file\n"
                 )
                 sys.stderr.flush()
+            parts = []
         return session.openai.transcribe_file(
             audio_path,
             mime_type=mime_type,
             prompt=session.prompt,
             on_progress=on_progress,
             parts_path=parts_path or None,
+            upload_parts=parts,
+            upload_mime_type=upload_mime_type,
         )
 
     def _cancelled(self, request_id: str, session: Session) -> WorkerResponse:

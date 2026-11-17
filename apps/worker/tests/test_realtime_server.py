@@ -8,12 +8,14 @@ import struct
 import tempfile
 import unittest
 import wave
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
 import openai
 
 from openwhisper_worker.audio_rules import MAX_UPLOAD_BYTES, NO_AUDIO_MESSAGE
+from openwhisper_worker.openai_client import UploadPart
 from openwhisper_worker.protocol import SessionEvent, WorkerRequest
 from openwhisper_worker.server import WorkerServer
 
@@ -94,6 +96,7 @@ class FakeFileOpenAI:
         self.transcribed = 0
         self.files: list[tuple[str, str]] = []
         self.parts_paths: list[str | None] = []
+        self.upload_parts: list[tuple[list, str]] = []
         self.uploads: list[tuple[bytes, str]] = []
         self.polished: list[str] = []
 
@@ -105,11 +108,20 @@ class FakeFileOpenAI:
         return self.transcript
 
     def transcribe_file(
-        self, path, mime_type: str, prompt: str = "", on_progress=None, parts_path=None
+        self,
+        path,
+        mime_type: str,
+        prompt: str = "",
+        on_progress=None,
+        parts_path=None,
+        upload_parts=(),
+        upload_mime_type: str = "",
     ) -> str:
         self.transcribed += 1
         self.files.append((str(path), mime_type))
         self.parts_paths.append(parts_path)
+        if upload_parts:
+            self.upload_parts.append((list(upload_parts), upload_mime_type))
         if self.transcribe_error:
             raise self.transcribe_error
         return self.transcript
@@ -448,7 +460,7 @@ class SavedFileWorkerServerTests(unittest.TestCase):
         return path
 
     def transcribe_saved(
-        self, server: WorkerServer, path: str, mime_type: str, **upload: str
+        self, server: WorkerServer, path: str, mime_type: str, **upload
     ) -> tuple:
         session_id = server.handle(
             request("start_session", refine_enabled=False)
@@ -465,9 +477,12 @@ class SavedFileWorkerServerTests(unittest.TestCase):
             )
         return finalized, server._emit_sink.events(session_id)
 
-    def flac_copy(self, content: bytes = b"fLaC smaller copy") -> dict[str, str]:
+    def flac_copy(self, content: bytes = b"fLaC smaller copy", end: int = 48_000) -> dict:
+        """A dictation's single FLAC upload part, holding all its audio."""
         return {
-            "upload_path": self.saved("audio.flac", content=content),
+            "upload_parts": [
+                {"path": self.saved("audio.part-1.flac", content=content), "start": 0, "end": end}
+            ],
             "upload_mime_type": "audio/flac",
         }
 
@@ -517,7 +532,7 @@ class SavedFileWorkerServerTests(unittest.TestCase):
         self.assertEqual(events[-1], {"type": "final", "text": "A voice memo."})
         self.assertEqual(server._openai.files, [(path, "audio/mpeg")])
 
-    def test_upload_copy_is_sent_in_place_of_the_saved_wav(self) -> None:
+    def test_a_dictations_single_upload_part_is_sent_in_place_of_the_saved_wav(self) -> None:
         path = self.saved("audio.wav", pcm=pcm_tone(1.0))
         copy = self.flac_copy()
         server, _ = new_server(FakeFileOpenAI("Zoon Robotics is hiring."))
@@ -529,9 +544,10 @@ class SavedFileWorkerServerTests(unittest.TestCase):
         self.assertEqual(server._openai.uploads, [(b"fLaC smaller copy", "audio/flac")])
         self.assertEqual(server._openai.files, [])
         # The desktop made the copy and removes it.
-        self.assertTrue(os.path.exists(copy["upload_path"]))
+        self.assertTrue(os.path.exists(copy["upload_parts"][0]["path"]))
+        self.assertEqual(server._openai.upload_parts, [])
 
-    def test_refused_upload_copy_falls_back_to_the_saved_wav_once(self) -> None:
+    def test_a_refused_single_upload_part_falls_back_to_the_saved_wav_once(self) -> None:
         path = self.saved("audio.wav", pcm=pcm_tone(1.0))
         response = httpx.Response(400, request=httpx.Request("POST", "https://api.openai.test/v1"))
         refused = openai.BadRequestError(
@@ -557,19 +573,72 @@ class SavedFileWorkerServerTests(unittest.TestCase):
         self.assertEqual(events[-1], {"type": "error", "text": "Connection reset"})
         self.assertEqual(server._openai.transcribed, 1)
 
-    def test_missing_empty_or_oversized_upload_copy_sends_the_saved_wav(self) -> None:
+    def test_missing_empty_oversized_or_misplaced_upload_parts_send_the_saved_wav(self) -> None:
         path = self.saved("audio.wav", pcm=pcm_tone(1.0))
+        first = self.saved("audio.part-1.flac", content=b"fLaC one")
+        second = self.saved("audio.part-2.flac", content=b"fLaC two")
         copies = [
-            {"upload_path": os.path.join(self.folder.name, "gone.flac"), "upload_mime_type": "audio/flac"},
+            {
+                "upload_parts": [
+                    {"path": os.path.join(self.folder.name, "gone.flac"), "start": 0, "end": 48_000}
+                ],
+                "upload_mime_type": "audio/flac",
+            },
             self.flac_copy(b""),
             self.flac_copy(b"f" * (MAX_UPLOAD_BYTES + 1)),
+            # A gap between parts, a part that does not start the audio, an
+            # empty range and a part without its range.
+            {
+                "upload_parts": [
+                    {"path": first, "start": 0, "end": 20_000},
+                    {"path": second, "start": 20_002, "end": 48_000},
+                ],
+                "upload_mime_type": "audio/flac",
+            },
+            {"upload_parts": [{"path": first, "start": 2, "end": 48_000}], "upload_mime_type": "audio/flac"},
+            {"upload_parts": [{"path": first, "start": 0, "end": 0}], "upload_mime_type": "audio/flac"},
+            {"upload_parts": [{"path": first}], "upload_mime_type": "audio/flac"},
+            {"upload_parts": "not a list", "upload_mime_type": "audio/flac"},
+            # Parts without their type.
+            {"upload_parts": [{"path": first, "start": 0, "end": 48_000}]},
         ]
         for copy in copies:
             server, _ = new_server(FakeFileOpenAI("Hello."))
             _, events = self.transcribe_saved(server, path, "audio/wav", **copy)
-            self.assertEqual(events[-1], {"type": "final", "text": "Hello."})
-            self.assertEqual(server._openai.uploads, [])
-            self.assertEqual(server._openai.files, [(path, "audio/wav")])
+            self.assertEqual(events[-1], {"type": "final", "text": "Hello."}, copy)
+            self.assertEqual(server._openai.uploads, [], copy)
+            self.assertEqual(server._openai.files, [(path, "audio/wav")], copy)
+            self.assertEqual(server._openai.upload_parts, [], copy)
+
+    def test_a_long_recordings_upload_parts_go_to_the_parts_loop(self) -> None:
+        path = self.saved("audio.wav", pcm=pcm_tone(1.0))
+        first = self.saved("audio.part-1.flac", content=b"fLaC one")
+        second = self.saved("audio.part-2.flac", content=b"fLaC two")
+        server, _ = new_server(FakeFileOpenAI("Zoon Robotics is hiring."))
+
+        finalized, _ = self.transcribe_saved(
+            server,
+            path,
+            "audio/wav",
+            upload_parts=[
+                {"path": first, "start": 0, "end": 20_000},
+                {"path": second, "start": 20_000, "end": 48_000},
+            ],
+            upload_mime_type="audio/flac",
+        )
+
+        self.assertEqual(finalized.result, {"final_text": "Zoon Robotics is hiring."})
+        self.assertEqual(server._openai.uploads, [])
+        self.assertEqual(server._openai.files, [(path, "audio/wav")])
+        self.assertEqual(
+            server._openai.upload_parts,
+            [
+                (
+                    [UploadPart(Path(first), 0, 20_000), UploadPart(Path(second), 20_000, 48_000)],
+                    "audio/flac",
+                )
+            ],
+        )
 
     def test_silence_and_taps_never_send_their_upload_copy(self) -> None:
         for pcm in (pcm_tone(0.1), bytes(24_000 * 2)):

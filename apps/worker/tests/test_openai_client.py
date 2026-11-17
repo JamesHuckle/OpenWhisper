@@ -18,8 +18,13 @@ from openwhisper_worker.saved_parts import parts_key
 from openwhisper_worker.openai_client import (
     OpenWhisperOpenAI,
     RealtimeTranscriptionStream,
+    UploadPart,
     describe_error,
     is_short_clean_transcript,
+)
+
+SHARED_CASES = (
+    Path(__file__).resolve().parents[3] / "packages" / "protocol" / "audio-examples" / "cases.json"
 )
 
 DICTATED = "My bank PIN is four four seven one, please remind me at noon."
@@ -290,14 +295,20 @@ class OpenWhisperOpenAITests(unittest.TestCase):
         path: Path,
         replies: list[str | Exception],
         prompt: str = "Zoon",
+        upload_parts: list[UploadPart] | None = None,
     ) -> tuple[str, list[str]]:
-        """Transcribes `path` with its parts saved beside it. Returns the text
-        and the prompt each uploaded part was sent with."""
+        """Transcribes `path` with its parts saved beside it, and FLAC upload
+        parts when given. Returns the text and the prompt each uploaded part
+        was sent with; `self.sent` holds each upload's type (and bytes, for
+        FLAC) and `self.progress` the progress reported."""
         prompts: list[str] = []
         pending = list(replies)
+        self.sent: list[tuple[str, bytes | None]] = []
+        self.progress: list[tuple[int, int]] = []
 
-        def fake_transcribe(_wav: bytes, _mime_type: str, prompt: str = "") -> str:
+        def fake_transcribe(audio: bytes, mime_type: str, prompt: str = "") -> str:
             prompts.append(prompt)
+            self.sent.append((mime_type, audio if mime_type == "audio/flac" else None))
             reply = pending.pop(0)
             if isinstance(reply, Exception):
                 raise reply
@@ -308,9 +319,158 @@ class OpenWhisperOpenAITests(unittest.TestCase):
             patch("sys.stderr", io.StringIO()),
         ):
             text = client.transcribe_file(
-                path, "audio/wav", prompt=prompt, parts_path=path.with_name("parts.json")
+                path,
+                "audio/wav",
+                prompt=prompt,
+                on_progress=lambda current, total: self.progress.append((current, total)),
+                parts_path=path.with_name("parts.json"),
+                upload_parts=upload_parts or (),
+                upload_mime_type="audio/flac" if upload_parts else "",
             )
+        self.assertEqual(pending, [], "every reply was used")
         return text, prompts
+
+    def flac_parts(self, path: Path, bounds: list[int]) -> list[UploadPart]:
+        """Stand-ins for the desktop's FLAC upload parts of `path`, split at
+        `bounds` (byte offsets in its audio)."""
+        edges = [0, *bounds, path.stat().st_size - 44]
+        parts = []
+        for number, (start, end) in enumerate(zip(edges, edges[1:]), start=1):
+            part = path.with_name(f"audio.part-{number}.flac")
+            part.write_bytes(f"fLaC part {number}".encode())
+            parts.append(UploadPart(part, start, end))
+        return parts
+
+    def saved_parts(self, path: Path) -> list[tuple[int, int, str]]:
+        saved = json.loads(path.with_name("parts.json").read_text(encoding="utf-8"))
+        return [(part["start"], part["end"], part["text"]) for part in saved["parts"]]
+
+    def test_a_long_recording_is_sent_as_its_flac_parts_with_chained_prompts(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory)
+            audio_bytes = path.stat().st_size - 44
+            parts = self.flac_parts(path, [2 * PART_BYTES])
+
+            text, prompts = self.transcribe_long(
+                client, path, ["First.", "Second."], upload_parts=parts
+            )
+            sent, progress = self.sent, self.progress
+            saved = self.saved_parts(path)
+            # A retry after both finished uploads nothing.
+            retry = self.transcribe_long(client, path, [], upload_parts=parts)
+
+        self.assertEqual(text, "First. Second.")
+        self.assertEqual(sent, [("audio/flac", b"fLaC part 1"), ("audio/flac", b"fLaC part 2")])
+        self.assertEqual(prompts, ["Zoon", "Zoon\nPrevious segment transcript: First."])
+        self.assertEqual(progress, [(1, 2), (2, 2)])
+        self.assertEqual(
+            saved, [(0, 2 * PART_BYTES, "First."), (2 * PART_BYTES, audio_bytes, "Second.")]
+        )
+        self.assertEqual(retry, ("First. Second.", []))
+
+    def test_a_refused_flac_part_sends_the_rest_of_the_recording_as_wav(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory)
+            parts = self.flac_parts(path, [PART_BYTES])
+
+            text, prompts = self.transcribe_long(
+                client,
+                path,
+                ["One.", bad_request_quoting("audio"), "Two.", "Three."],
+                upload_parts=parts,
+            )
+            sent, progress = self.sent, self.progress
+            # A retry tries the FLAC part once more, then reuses the WAV
+            # parts that finished.
+            retry = self.transcribe_long(
+                client, path, [bad_request_quoting("audio")], upload_parts=parts
+            )
+
+        self.assertEqual(text, "One. Two. Three.")
+        self.assertEqual(
+            [mime_type for mime_type, _ in sent],
+            ["audio/flac", "audio/flac", "audio/wav", "audio/wav"],
+        )
+        self.assertEqual(
+            prompts,
+            [
+                "Zoon",
+                "Zoon\nPrevious segment transcript: One.",
+                "Zoon\nPrevious segment transcript: One.",
+                "Zoon\nPrevious segment transcript: Two.",
+            ],
+        )
+        self.assertEqual(progress, [(1, 2), (2, 2), (2, 3), (3, 3)])
+        self.assertEqual(retry, ("One. Two. Three.", ["Zoon\nPrevious segment transcript: One."]))
+
+    def test_flac_parts_that_do_not_cover_the_recording_are_not_sent(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory)
+            short = self.flac_parts(path, [PART_BYTES])[:1]
+
+            text, _ = self.transcribe_long(client, path, ["A.", "B.", "C."], upload_parts=short)
+
+        self.assertEqual(text, "A. B. C.")
+        self.assertEqual([mime_type for mime_type, _ in self.sent], ["audio/wav"] * 3)
+
+    def test_a_silent_flac_part_is_never_uploaded(self) -> None:
+        client = OpenWhisperOpenAI()
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.long_wav(directory, peaks=[SPEECH, 0, 0])
+            audio_bytes = path.stat().st_size - 44
+            parts = self.flac_parts(path, [PART_BYTES])
+
+            text, _ = self.transcribe_long(client, path, ["Only part."], upload_parts=parts)
+            saved = self.saved_parts(path)
+
+        self.assertEqual(text, "Only part.")
+        self.assertEqual(self.sent, [("audio/flac", b"fLaC part 1")])
+        self.assertEqual(saved, [(0, PART_BYTES, "Only part."), (PART_BYTES, audio_bytes, "")])
+
+    def test_long_recordings_follow_the_part_rules_shared_with_android(self) -> None:
+        cases = json.loads(SHARED_CASES.read_text(encoding="utf-8"))["long_recording_parts"]
+        self.assertTrue(cases)
+        for case in cases:
+            for as_flac in (False, True):
+                with self.subTest(case=case["about"], as_flac=as_flac):
+                    self.check_part_rules(case, as_flac)
+
+    def check_part_rules(self, case: dict, as_flac: bool) -> None:
+        client = OpenWhisperOpenAI()
+        replies = case["parts"]
+        with tempfile.TemporaryDirectory() as directory:
+            # A silent part (null) never reaches the silence level.
+            path = self.long_wav(directory, peaks=[0 if r is None else SPEECH for r in replies])
+            parts = (
+                self.flac_parts(path, [PART_BYTES * n for n in range(1, len(replies))])
+                if as_flac
+                else None
+            )
+
+            text, prompts = self.transcribe_long(
+                client, path, [r for r in replies if r is not None], upload_parts=parts
+            )
+            saved = [part_text for _, _, part_text in self.saved_parts(path)]
+
+        self.assertEqual(text, case["transcript"])
+        self.assertEqual(
+            prompts,
+            [
+                f"Zoon\nPrevious segment transcript: {quoted}" if quoted else "Zoon"
+                for quoted in case["quoted"]
+                if quoted is not None
+            ],
+        )
+        self.assertEqual(
+            saved,
+            [
+                "" if reply is None or index in case["dropped"] else reply.strip()
+                for index, reply in enumerate(replies)
+            ],
+        )
 
     def test_a_retry_after_a_failed_last_part_sends_only_that_part(self) -> None:
         client = OpenWhisperOpenAI()

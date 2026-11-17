@@ -7,7 +7,6 @@ from pathlib import Path
 
 from openwhisper_worker import audio_rules
 from openwhisper_worker.server import (
-    _echoes_prompt,
     _no_speech_reason,
     _no_speech_reason_from_counters,
 )
@@ -67,7 +66,7 @@ class SharedAudioRulesTests(unittest.TestCase):
         self.assertTrue(cases)
         for case in cases:
             with self.subTest(text=case["text"], prompt=case["prompt"]):
-                self.assertEqual(_echoes_prompt(case["text"], case["prompt"]), case["expected"])
+                self.assertEqual(audio_rules.echoes_prompt(case["text"], case["prompt"]), case["expected"])
 
 
 if __name__ == "__main__":

@@ -9,14 +9,20 @@ import threading
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from httpx import Timeout
 from openai import BadRequestError, OpenAI
 
-from .audio_rules import MAX_UPLOAD_BYTES, pcm_is_silent
+from .audio_rules import (
+    MAX_UPLOAD_BYTES,
+    kept_part_text,
+    pcm_is_silent,
+    previous_part_text,
+)
 from .saved_parts import SavedPart, SavedParts, parts_key
 from .models import (
     DEFAULT_POLISH_MODEL,
@@ -41,6 +47,16 @@ _POLISH_REASONING_EFFORT = (
     os.getenv("OPENWHISPER_POLISH_REASONING", "").strip() or "minimal"
 )
 _FALLBACK_POLISH_REASONING_EFFORT = "low"
+
+
+@dataclass(frozen=True)
+class UploadPart:
+    """One of the desktop's smaller copies (FLAC) of a saved WAV's parts: its
+    audio from byte `start` to `end` of the WAV's audio data."""
+
+    path: Path
+    start: int
+    end: int
 
 
 class RealtimeTranscriptionStream:
@@ -199,6 +215,34 @@ def is_short_clean_transcript(text: str) -> bool:
     if end not in ".?!" or re.search(r"[.?!]\s", body) or "\n" in stripped:
         return False
     return _POLISH_NEEDED.search(stripped) is None
+
+
+def _parts_cover(
+    parts: Sequence[tuple[int, int, Path | None]], audio_bytes: int, frame_bytes: int
+) -> bool:
+    """Whether `parts` cover the audio, in order, each from a whole sample."""
+    expected = 0
+    for start, end, _ in parts:
+        if start != expected or end <= start or start % frame_bytes:
+            return False
+        expected = end
+    return expected == audio_bytes
+
+
+def _pcm_reader(source: wave.Wave_read, first_frame: int, frames: int) -> Callable[[int], bytes]:
+    """Reads `frames` audio frames of `source` from `first_frame`, a block at
+    a time, so a long part is never held in memory whole."""
+    source.setpos(first_frame)
+    frame_bytes = source.getnchannels() * source.getsampwidth()
+    remaining = frames
+
+    def read(size: int) -> bytes:
+        nonlocal remaining
+        count = min(remaining, max(1, size // frame_bytes))
+        remaining -= count
+        return source.readframes(count) if count else b""
+
+    return read
 
 
 def _elapsed_ms(started: float) -> int:
@@ -439,21 +483,27 @@ class OpenWhisperOpenAI:
         prompt: str = "",
         on_progress: Callable[[int, int], None] | None = None,
         parts_path: str | Path | None = None,
+        upload_parts: Sequence[UploadPart] = (),
+        upload_mime_type: str = "",
     ) -> str:
         """Transcribes a file on disk. A WAV too large for one request goes in
-        parts; with `parts_path`, each finished part is saved there and a
-        later call with the same audio and settings sends only the rest."""
+        parts; with `upload_parts`, a WAV goes as those smaller copies, one
+        request each. With `parts_path`, each finished part is saved there and
+        a later call with the same audio and settings sends only the rest."""
         audio_path = Path(path)
         if not audio_path.exists() or audio_path.stat().st_size == 0:
             raise RuntimeError("No audio bytes provided")
 
         size = audio_path.stat().st_size
-        if mime_type in {"audio/wav", "audio/x-wav"} and size > MAX_UPLOAD_BYTES:
+        uploads = upload_parts if upload_mime_type else ()
+        if mime_type in {"audio/wav", "audio/x-wav"} and (size > MAX_UPLOAD_BYTES or uploads):
             saved = SavedParts(
                 Path(parts_path) if parts_path else None,
                 parts_key(audio_path, self._model, prompt),
             )
-            return self._transcribe_wav_file(audio_path, prompt, on_progress, saved)
+            return self._transcribe_wav_file(
+                audio_path, prompt, on_progress, saved, uploads, upload_mime_type
+            )
         if size > MAX_UPLOAD_BYTES:
             raise RuntimeError(
                 f"This compressed audio file is larger than {MAX_UPLOAD_BYTES // 2**20} MB. "
@@ -467,57 +517,94 @@ class OpenWhisperOpenAI:
         prompt: str,
         on_progress: Callable[[int, int], None] | None,
         saved: SavedParts,
+        upload_parts: Sequence[UploadPart] = (),
+        upload_mime_type: str = "",
     ) -> str:
+        """Sends a saved WAV in parts, in order, each prompted with the end of
+        the text before it. The upload parts, when they cover the whole WAV,
+        are sent in place of its bytes; once the service refuses one, the
+        rest of the recording goes as WAV parts."""
         with wave.open(str(path), "rb") as source:
             channels = source.getnchannels()
             sample_width = source.getsampwidth()
             sample_rate = source.getframerate()
-            total_frames = source.getnframes()
             frame_bytes = channels * sample_width
             if channels <= 0 or sample_width <= 0 or sample_rate <= 0:
                 raise RuntimeError("The WAV file has an invalid audio format")
-            frames_per_chunk = max(1, (MAX_UPLOAD_BYTES - 128) // frame_bytes)
-            total_chunks = max(1, (total_frames + frames_per_chunk - 1) // frames_per_chunk)
+            audio_bytes = source.getnframes() * frame_bytes
+            wav_part_bytes = max(1, (MAX_UPLOAD_BYTES - 128) // frame_bytes) * frame_bytes
+
+            def wav_parts(start: int) -> list[tuple[int, int, Path | None]]:
+                return [
+                    (offset, min(offset + wav_part_bytes, audio_bytes), None)
+                    for offset in range(start, audio_bytes, wav_part_bytes)
+                ]
+
+            parts: list[tuple[int, int, Path | None]] = [
+                (part.start, part.end, part.path) for part in upload_parts
+            ]
+            if parts and not _parts_cover(parts, audio_bytes, frame_bytes):
+                _log("[parts] upload parts do not match the recording; sending it as WAV")
+                parts = []
+            parts = parts or wav_parts(0)
             transcripts: list[str] = []
-            start = 0
-            for chunk_index in range(total_chunks):
-                frames = source.readframes(frames_per_chunk)
-                if not frames:
-                    break
-                end = start + len(frames)
-                done = saved.get(chunk_index, start, end)
+            index = 0
+            while index < len(parts):
+                start, end, upload = parts[index]
+                frames = b""
+                if upload is None:
+                    source.setpos(start // frame_bytes)
+                    frames = source.readframes((end - start) // frame_bytes)
+                    if not frames:
+                        break
+                    end = start + len(frames)
+                done = saved.get(index, start, end)
                 if done is not None:
                     # Finished on an earlier try: its text is reused, and
                     # builds the next part's prompt as before.
                     transcripts.append(done.text)
-                    start = end
+                    index += 1
                     continue
-                if sample_width == 2 and pcm_is_silent(io.BytesIO(frames).read):
+                if sample_width == 2 and pcm_is_silent(
+                    io.BytesIO(frames).read
+                    if upload is None
+                    else _pcm_reader(source, start // frame_bytes, (end - start) // frame_bytes)
+                ):
                     # A silent part is never uploaded: it costs a request and
                     # the model answers it by repeating its prompt. It is
                     # saved as finished and empty, so a retry skips it too.
-                    saved.add(chunk_index, SavedPart(start, end, "", ""))
+                    saved.add(index, SavedPart(start, end, "", ""))
                     transcripts.append("")
-                    start = end
+                    index += 1
                     continue
                 if on_progress:
-                    on_progress(chunk_index + 1, total_chunks)
+                    on_progress(index + 1, len(parts))
+                previous = previous_part_text(transcripts)
                 contextual_prompt = prompt
-                previous = next((text for text in reversed(transcripts) if text), "")
                 if previous:
                     contextual_prompt = (
-                        f"{prompt}\nPrevious segment transcript: {previous[-1200:]}"
+                        f"{prompt}\nPrevious segment transcript: {previous}"
                     ).strip()
-                wav = self._audio_frames_to_wav(
-                    frames,
-                    channels,
-                    sample_width,
-                    sample_rate,
-                )
-                text = self.transcribe_bytes(wav, "audio/wav", contextual_prompt).strip()
-                saved.add(chunk_index, SavedPart(start, end, contextual_prompt, text))
+                if upload is None:
+                    wav = self._audio_frames_to_wav(frames, channels, sample_width, sample_rate)
+                    text = self.transcribe_bytes(wav, "audio/wav", contextual_prompt)
+                else:
+                    try:
+                        text = self.transcribe_bytes(
+                            upload.read_bytes(), upload_mime_type, contextual_prompt
+                        )
+                    except (BadRequestError, OSError) as exc:
+                        _log(
+                            f"[parts] upload part refused part={index + 1} "
+                            f"mime_type={upload_mime_type!r} error={describe_error(exc)}; "
+                            "sending the rest as WAV"
+                        )
+                        parts[index:] = wav_parts(start)
+                        continue
+                text = kept_part_text(text.strip(), contextual_prompt, previous)
+                saved.add(index, SavedPart(start, end, contextual_prompt, text))
                 transcripts.append(text)
-                start = end
+                index += 1
         return " ".join(part for part in transcripts if part).strip()
 
     @staticmethod

@@ -32,7 +32,14 @@ class SlowFileOpenAI:
         self.on_transcribed = lambda: None
 
     def transcribe_file(
-        self, _path, mime_type: str, prompt: str = "", on_progress=None, parts_path=None
+        self,
+        _path,
+        mime_type: str,
+        prompt: str = "",
+        on_progress=None,
+        parts_path=None,
+        upload_parts=(),
+        upload_mime_type: str = "",
     ) -> str:
         for part in range(1, self.parts + 1):
             if on_progress:

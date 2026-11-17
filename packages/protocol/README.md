@@ -143,14 +143,24 @@ a saved file.
 }
 ```
 
-For a microphone recording the desktop also writes a smaller lossless copy
-(FLAC) beside the WAV and names it in `upload_path` and `upload_mime_type`.
-The worker still checks the WAV for silence or a quick tap, then uploads the
-copy in one request. It sends the WAV instead when the copy is missing, empty
-or larger than one upload, and once more when the service refuses the copy
-(HTTP 400). The desktop removes the copy when the request finishes.
+For a microphone recording the desktop also encodes the WAV once as smaller
+lossless FLAC, split into parts that each fit one upload
+(`audio.part-1.flac`, `audio.part-2.flac`, ... beside the WAV), and names them
+in `upload_parts` and `upload_mime_type`. Each part gives its `path` and the
+byte range of the WAV's audio data it holds (`start`, `end`); together they
+cover the audio in order. The worker still checks the WAV for silence or a
+quick tap, then uploads the parts, one request each, in place of the WAV. It
+sends the WAV instead when a part is missing, empty, larger than one upload
+or not where the part before it ended, and, from the refused part on, when
+the service refuses one (HTTP 400). The desktop removes the parts when the
+request finishes.
 
-A WAV too large for one request is sent in parts. The desktop names a
+A recording too long for one request is sent in parts: its FLAC parts, or the
+WAV cut at the upload size. Each part after the first is prompted with the
+end of the text before it, and a part whose text only repeats that prompt
+(the model answering a part that is mostly silence) is kept with no text, so
+a sentence is never pasted twice. Android keeps the same rules; both apps run
+the examples in `audio-examples/cases.json` (`long_recording_parts`). The desktop names a
 `parts_path` (`parts.json` in the recording's folder) where the worker saves
 each finished part's byte range, prompt and text, written atomically. A retry
 of the same recording skips the saved parts and sends only the rest, building
@@ -172,7 +182,10 @@ a finished recording again starts fresh) and when the recording is pruned.
     "session_id": "uuid",
     "mime_type": "audio/wav",
     "audio_path": "C:\\...\\audio.wav",
-    "upload_path": "C:\\...\\audio.flac",
+    "upload_parts": [
+      { "path": "C:\\...\\audio.part-1.flac", "start": 0, "end": 50331648 },
+      { "path": "C:\\...\\audio.part-2.flac", "start": 50331648, "end": 86400000 }
+    ],
     "upload_mime_type": "audio/flac",
     "parts_path": "C:\\...\\parts.json"
   }
