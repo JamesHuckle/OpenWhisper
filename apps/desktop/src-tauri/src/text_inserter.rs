@@ -647,13 +647,14 @@ fn paste_shortcut() -> bool {
 /// Paste `text` with Ctrl+V, then restore what the user had copied,
 /// unless something else changed the clipboard in the meantime.
 /// `before_paste` runs once `text` is on the clipboard. Returns false,
-/// leaving `text` on the clipboard, when Windows refused the keys.
+/// leaving `text` on the clipboard, when `before_paste` or Windows refused
+/// the keys, or the target did not handle them in time.
 fn paste_restoring_clipboard(
     text: &str,
     target: isize,
     before_paste: impl FnOnce() -> bool,
 ) -> Result<bool, String> {
-    let saved = {
+    let (saved, ours) = {
         let _open = clipboard_win::Clipboard::new_attempts(CLIPBOARD_OPEN_ATTEMPTS)
             .map_err(|e| format!("Could not open the clipboard: {e}"))?;
         let saved = save_clipboard();
@@ -664,13 +665,16 @@ fn paste_restoring_clipboard(
             "CanIncludeInClipboardHistory",
             "CanUploadToCloudClipboard",
         ]);
-        saved
+        // Read while the clipboard is still open, so it is our item's number.
+        (saved, clipboard_win::raw::seq_num())
     };
-    let ours = clipboard_win::raw::seq_num();
     if !before_paste() || !paste_shortcut() {
         return Ok(false);
     }
-    wait_until_pasted(target);
+    if !wait_until_pasted(target) {
+        // The target may still paste later; it must find the transcript.
+        return Ok(false);
+    }
     if let Ok(_open) = clipboard_win::Clipboard::new_attempts(CLIPBOARD_OPEN_ATTEMPTS) {
         // Checked while the clipboard is open, so no other app can copy
         // between this check and the restore.
@@ -681,10 +685,11 @@ fn paste_restoring_clipboard(
     Ok(true)
 }
 
-fn wait_until_pasted(target: isize) {
+/// False when the target did not handle its waiting input in time.
+fn wait_until_pasted(target: isize) -> bool {
     std::thread::sleep(Duration::from_millis(50));
     let mut result = 0usize;
-    unsafe {
+    let handled = unsafe {
         SendMessageTimeoutW(
             target,
             WM_NULL,
@@ -696,6 +701,7 @@ fn wait_until_pasted(target: isize) {
         )
     };
     std::thread::sleep(PASTE_SETTLE);
+    handled != 0
 }
 
 /// Clipboard formats whose data is plain memory. Bitmaps, metafiles and
