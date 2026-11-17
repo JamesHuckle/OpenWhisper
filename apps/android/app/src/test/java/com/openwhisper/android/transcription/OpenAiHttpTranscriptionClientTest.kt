@@ -184,7 +184,7 @@ class OpenAiHttpTranscriptionClientTest {
     @Test
     fun partsAreUploadedAsLosslessFlacWhenThePhoneCanEncodeIt() {
         val encoded = mutableListOf<Int>()
-        val service = FakeService("Hello.", encodeFlac = { _, _, length, rate ->
+        val service = FakeService("Hello.", encodeFlac = { _, _, length, rate, _ ->
             encoded += rate
             "fLaC".encodeToByteArray() + ByteArray(length / 2)
         })
@@ -213,7 +213,7 @@ class OpenAiHttpTranscriptionClientTest {
         val service = FakeService(
             "Unsupported file", "Hello.", "Again.",
             statuses = listOf(400),
-            encodeFlac = { _, _, _, _ -> encoded += 1; "fLaC1234".encodeToByteArray() },
+            encodeFlac = { _, _, _, _, _ -> encoded += 1; "fLaC1234".encodeToByteArray() },
         )
 
         assertEquals("Hello.", service.client.transcribe(pcmAudio()))
@@ -231,7 +231,7 @@ class OpenAiHttpTranscriptionClientTest {
         val service = FakeService(
             "Incorrect API key",
             statuses = listOf(401),
-            encodeFlac = { _, _, _, _ -> "fLaC1234".encodeToByteArray() },
+            encodeFlac = { _, _, _, _, _ -> "fLaC1234".encodeToByteArray() },
         )
 
         val error = assertThrows(TranscriptionHttpException::class.java) {
@@ -305,10 +305,30 @@ class OpenAiHttpTranscriptionClientTest {
         assertTrue(service.uploads.single().size < 6 * UploadAudio.COPY_BUFFER_BYTES)
     }
 
+    @Test
+    fun cancellingStopsFlacEncodingWithoutAnyUpload() {
+        var encoderSawCancel = false
+        lateinit var service: FakeService
+        service = FakeService("unused", encodeFlac = { _, _, _, _, cancelled ->
+            service.client.cancel()
+            encoderSawCancel = cancelled()
+            error("FLAC encoding cancelled")
+        })
+
+        val error = assertThrows(TranscriptionException::class.java) {
+            service.client.transcribe(pcmAudio())
+        }
+
+        assertEquals(OpenAiHttpTranscriptionClient.CANCELLED_MESSAGE, error.message)
+        assertTrue(encoderSawCancel)
+        assertTrue(service.uploads.isEmpty())
+    }
+
     private class FakeService(
         vararg responses: String,
         statuses: List<Int> = emptyList(),
-        encodeFlac: (File, Long, Int, Int) -> ByteArray = { _, _, _, _ -> error("No FLAC encoder in unit tests") },
+        encodeFlac: (File, Long, Int, Int, () -> Boolean) -> ByteArray =
+            { _, _, _, _, _ -> error("No FLAC encoder in unit tests") },
         private val onWrite: (Int) -> Unit = {},
     ) {
         private val texts = ArrayDeque(responses.toList())

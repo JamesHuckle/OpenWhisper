@@ -16,9 +16,11 @@ class OpenAiHttpTranscriptionClient(
     },
     /**
      * Encodes the 16-bit mono PCM at an offset and length in a file, at a
-     * sample rate, to FLAC, or throws.
+     * sample rate, to FLAC, or throws. It stops, throwing, once the last
+     * argument returns true (the transcription was cancelled).
      */
-    private val encodeFlac: (File, Long, Int, Int) -> ByteArray = FlacFileEncoder::encodePcm16Mono,
+    private val encodeFlac: (File, Long, Int, Int, () -> Boolean) -> ByteArray =
+        FlacFileEncoder::encodePcm16Mono,
 ) : TranscriptionClient {
     private val generation = AtomicLong(0)
 
@@ -123,8 +125,11 @@ class OpenAiHttpTranscriptionClient(
             null
         } else {
             try {
-                encodeFlac(file, offset, length, sampleRate).takeIf(ByteArray::isNotEmpty)
+                encodeFlac(file, offset, length, sampleRate) { generation.get() != started }
+                    .takeIf(ByteArray::isNotEmpty)
             } catch (_: Exception) {
+                // A cancel is reported as one, never answered with the WAV.
+                throwIfCancelled(started)
                 null
             }
         }

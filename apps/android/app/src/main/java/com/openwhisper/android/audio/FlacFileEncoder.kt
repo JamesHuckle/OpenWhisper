@@ -24,8 +24,15 @@ object FlacFileEncoder {
     /**
      * Encodes [length] bytes of 16-bit mono PCM from [offset] in [file]. The
      * samples are read in blocks as the encoder takes them, never whole.
+     * Stops, throwing, once [cancelled] returns true.
      */
-    fun encodePcm16Mono(file: File, offset: Long, length: Int, sampleRate: Int): ByteArray {
+    fun encodePcm16Mono(
+        file: File,
+        offset: Long,
+        length: Int,
+        sampleRate: Int,
+        cancelled: () -> Boolean = { false },
+    ): ByteArray {
         require(length > 0) { "No audio to encode" }
         val format: MediaFormat =
             MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_FLAC, sampleRate, 1)
@@ -38,7 +45,7 @@ object FlacFileEncoder {
             codec.start()
             return RandomAccessFile(file, "r").use { source ->
                 source.seek(offset)
-                withStreamHeader(drain(codec, source, length, sampleRate))
+                withStreamHeader(drain(codec, source, length, sampleRate, cancelled))
             }
         } finally {
             runCatching { codec.stop() }
@@ -53,6 +60,7 @@ object FlacFileEncoder {
         source: RandomAccessFile,
         length: Int,
         sampleRate: Int,
+        cancelled: () -> Boolean,
     ): Encoded {
         val output = ByteArrayOutputStream(length / 2)
         val block = ByteArray(INPUT_BYTES)
@@ -63,6 +71,7 @@ object FlacFileEncoder {
         var inputDone = false
         while (true) {
             check(System.nanoTime() < deadline) { "FLAC encoder did not finish" }
+            check(!cancelled()) { "FLAC encoding cancelled" }
             if (!inputDone) {
                 val index = codec.dequeueInputBuffer(TIMEOUT_US)
                 if (index >= 0) {
