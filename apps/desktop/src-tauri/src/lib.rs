@@ -1,4 +1,5 @@
 mod api_key_store;
+mod audio_rules;
 // Keeps the UI Automation client the Windows writer reuses.
 #[cfg(target_os = "windows")]
 mod automation_client;
@@ -22,6 +23,7 @@ mod settings;
 // Writes dictated text into the field focused when recording began.
 #[cfg(target_os = "windows")]
 mod text_inserter;
+mod wav_file;
 mod worker_client;
 mod worker_connection;
 
@@ -452,7 +454,7 @@ async fn recording_transcribe(
 /// recording's folder.
 async fn flac_upload_parts(wav_path: PathBuf, dir: PathBuf) -> Vec<flac_upload::UploadPart> {
     let written = tauri::async_runtime::spawn_blocking(move || {
-        flac_upload::write_upload_parts(&wav_path, &dir, flac_upload::max_upload_bytes())
+        flac_upload::write_upload_parts(&wav_path, &dir, audio_rules::max_upload_bytes())
     })
     .await;
     match written {

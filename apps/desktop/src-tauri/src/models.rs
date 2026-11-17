@@ -1,6 +1,5 @@
 //! The transcription models the settings allow, read from the one shared list
-//! in `packages/protocol/models.json` that the settings menu and the worker
-//! also read. The list is built into the app, so nothing is read at run time.
+//! in `packages/protocol/models.json` that the settings menu also reads. The list is built into the app, so nothing is read at run time.
 //!
 //! This file uses only serde so its tests run without Tauri.
 
@@ -13,8 +12,10 @@ const SHARED_MODELS_JSON: &str = include_str!("../../../../packages/protocol/mod
 #[derive(Debug, Deserialize)]
 struct SharedModels {
     default_transcription_model: String,
+    live_transcription_model: String,
     transcription_models: Vec<TranscriptionModelEntry>,
     legacy_transcription_models: HashMap<String, String>,
+    refine_model: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +42,33 @@ pub fn is_supported_transcription_model(model: &str) -> bool {
         .any(|entry| entry.id == model)
 }
 
+/// The model that types as the user speaks, over the Realtime websocket.
+pub fn live_transcription_model() -> &'static str {
+    &shared().live_transcription_model
+}
+
+/// The model that tidies a transcript; the settings text names it too.
+pub fn refine_model() -> &'static str {
+    &shared().refine_model
+}
+
+/// The model a dictation uses: a saved name from before the gpt-transcribe
+/// family moves to its replacement, and a model the app does not offer is
+/// refused.
+pub fn session_transcription_model(model: &str) -> Result<String, String> {
+    let model = model.trim();
+    let model = shared()
+        .legacy_transcription_models
+        .get(model)
+        .map(String::as_str)
+        .unwrap_or(model);
+    if is_supported_transcription_model(model) {
+        Ok(model.to_string())
+    } else {
+        Err(format!("Unsupported transcription model: {model}"))
+    }
+}
+
 /// Settings saved before the gpt-transcribe family move to its replacement;
 /// any other model the app no longer offers falls back to the default.
 pub fn migrate_transcription_model(model: &str) -> String {
@@ -65,6 +93,21 @@ mod tests {
         assert!(!is_supported_transcription_model("gpt-4o-mini-transcribe"));
         assert!(!is_supported_transcription_model("gpt-5.4"));
         assert!(!is_supported_transcription_model(""));
+    }
+
+    #[test]
+    fn a_dictation_uses_an_offered_model_or_is_refused() {
+        assert_eq!(live_transcription_model(), "gpt-live-transcribe");
+        assert_eq!(refine_model(), "gpt-5-nano");
+        assert_eq!(session_transcription_model("gpt-transcribe").unwrap(), "gpt-transcribe");
+        assert_eq!(
+            session_transcription_model("gpt-realtime-transcribe").unwrap(),
+            "gpt-live-transcribe"
+        );
+        assert_eq!(
+            session_transcription_model("whisper-1").unwrap_err(),
+            "Unsupported transcription model: whisper-1"
+        );
     }
 
     #[test]

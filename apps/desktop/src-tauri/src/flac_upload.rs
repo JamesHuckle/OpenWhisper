@@ -16,6 +16,7 @@ use flacenc::config;
 use flacenc::error::{Verified, Verify};
 use flacenc::source::{Context, Fill, FrameBuf};
 use std::fs::{self, File};
+use crate::wav_file::{read_up_to, read_wav_format};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -27,18 +28,6 @@ const BITS_PER_SAMPLE: usize = 16;
 /// "fLaC" and the STREAMINFO block. It is written last, once the length and
 /// checksum of the part's audio are known.
 const HEADER_BYTES: usize = 42;
-
-const SHARED_AUDIO_RULES_JSON: &str =
-    include_str!("../../../../packages/protocol/audio-rules.json");
-
-/// The largest file sent in one transcription request, shared with the worker
-/// and the Android app (packages/protocol/audio-rules.json).
-pub fn max_upload_bytes() -> u64 {
-    serde_json::from_str::<serde_json::Value>(SHARED_AUDIO_RULES_JSON)
-        .ok()
-        .and_then(|rules| rules["max_upload_bytes"].as_u64())
-        .expect("packages/protocol/audio-rules.json names max_upload_bytes")
-}
 
 /// The name of upload part `number` (from 1), in the recording's folder.
 pub fn part_file_name(number: usize) -> String {
@@ -58,7 +47,7 @@ pub struct UploadPart {
 /// whole FLAC file of at most `max_bytes`, in the order they are heard.
 ///
 /// Returns no parts when the WAV holds no audio. On an error no part file is
-/// left: the worker then sends the WAV itself, in parts when it is long.
+/// left: the transcriber then sends the WAV itself, in parts when it is long.
 pub fn write_upload_parts(
     wav_path: &Path,
     dir: &Path,
@@ -228,68 +217,22 @@ fn encode_parts(
     Ok(())
 }
 
-/// Reads until `buffer` is full or the audio ends; returns the bytes read.
-fn read_up_to(source: &mut impl Read, buffer: &mut [u8]) -> io::Result<usize> {
-    let mut filled = 0;
-    while filled < buffer.len() {
-        match source.read(&mut buffer[filled..]) {
-            Ok(0) => break,
-            Ok(count) => filled += count,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(filled)
-}
-
 /// Finds the format and audio of a 16-bit PCM WAV file. Leaves `file` at an
 /// unspecified position.
 fn read_pcm16_format(file: &mut File) -> io::Result<PcmWav> {
-    let file_bytes = file.metadata()?.len();
-    let mut riff = [0_u8; 12];
-    file.read_exact(&mut riff)?;
-    if &riff[0..4] != b"RIFF" || &riff[8..12] != b"WAVE" {
-        return Err(invalid("Not a WAV file"));
+    let format = read_wav_format(file)?;
+    if format.sample_width != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Not a 16-bit PCM WAV file",
+        ));
     }
-    let mut format = None;
-    loop {
-        let mut chunk = [0_u8; 8];
-        file.read_exact(&mut chunk)?;
-        let size = u64::from(u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]));
-        let start = file.stream_position()?;
-        match &chunk[0..4] {
-            b"fmt " if size >= 16 => {
-                let mut fmt = [0_u8; 16];
-                file.read_exact(&mut fmt)?;
-                let tag = u16::from_le_bytes([fmt[0], fmt[1]]);
-                let channels = usize::from(u16::from_le_bytes([fmt[2], fmt[3]]));
-                let sample_rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]) as usize;
-                let bits = u16::from_le_bytes([fmt[14], fmt[15]]);
-                if tag != 1 || bits != 16 || channels == 0 || sample_rate == 0 {
-                    return Err(invalid("Not a 16-bit PCM WAV file"));
-                }
-                format = Some((channels, sample_rate));
-            }
-            b"data" => {
-                let (channels, sample_rate) =
-                    format.ok_or_else(|| invalid("WAV audio comes before its format"))?;
-                return Ok(PcmWav {
-                    channels,
-                    sample_rate,
-                    data_offset: start,
-                    // A recording the app did not finish can state less or
-                    // more than the file holds.
-                    data_bytes: size.min(file_bytes.saturating_sub(start)),
-                });
-            }
-            _ => {}
-        }
-        file.seek(SeekFrom::Start(start + size + size % 2))?;
-    }
-}
-
-fn invalid(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
+    Ok(PcmWav {
+        channels: usize::from(format.channels),
+        sample_rate: format.sample_rate as usize,
+        data_offset: format.data_offset,
+        data_bytes: format.data_bytes,
+    })
 }
 
 fn encode_error(error: impl std::fmt::Display) -> io::Error {
@@ -299,6 +242,7 @@ fn encode_error(error: impl std::fmt::Display) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_rules::max_upload_bytes;
     use crate::recording_store::wav_header;
     use std::path::PathBuf;
 
