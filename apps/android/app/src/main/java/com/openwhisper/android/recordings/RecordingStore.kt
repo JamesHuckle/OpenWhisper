@@ -79,29 +79,33 @@ class RecordingStore private constructor(
         mimeType: String,
         extension: String,
         input: InputStream,
-    ): StoredRecording = synchronized(lock) {
-        root.mkdirs()
+    ): StoredRecording {
+        // Copied outside the shared lock, so a slow document provider never
+        // holds up a recording or the screen. Until its details are saved the
+        // new folder is not listed, so nothing reads or prunes it meanwhile.
         val id = UUID.randomUUID().toString()
         val directory = File(root, id).apply { mkdirs() }
         val safeExtension = extension.lowercase().takeIf { it in SUPPORTED_EXTENSIONS } ?: "audio"
         val file = File(directory, "audio.$safeExtension")
         input.use { source -> file.outputStream().buffered().use(source::copyTo) }
         check(file.length() > 0) { "The selected audio file is empty" }
-        val recording = StoredRecording(
-            id = id,
-            createdAtMs = System.currentTimeMillis(),
-            name = name,
-            source = "import",
-            mimeType = mimeType,
-            fileName = file.name,
-            status = "saved",
-            bytes = file.length(),
-            transcript = "",
-            error = "",
-        )
-        writeMetadata(recording)
-        prune()
-        recording
+        return synchronized(lock) {
+            val recording = StoredRecording(
+                id = id,
+                createdAtMs = System.currentTimeMillis(),
+                name = name,
+                source = "import",
+                mimeType = mimeType,
+                fileName = file.name,
+                status = "saved",
+                bytes = file.length(),
+                transcript = "",
+                error = "",
+            )
+            writeMetadata(recording)
+            prune()
+            recording
+        }
     }
 
     fun finish(id: String, status: String, transcript: String = "", error: String = "") = synchronized(lock) {

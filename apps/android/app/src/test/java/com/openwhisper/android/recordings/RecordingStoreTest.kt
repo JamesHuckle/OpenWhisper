@@ -2,6 +2,10 @@ package com.openwhisper.android.recordings
 
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.InputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -164,6 +168,45 @@ class RecordingStoreTest {
             }
             assertEquals(emptyList<String>(), reads)
             assertEquals(stored, store.get(stored.id))
+        }
+    }
+
+    @Test
+    fun aSlowImportDoesNotHoldUpTheOtherStores() {
+        withRoot { root ->
+            val screen = RecordingStore.forDirectory(root)
+            val service = RecordingStore.forDirectory(root)
+            val reading = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val slowInput = object : InputStream() {
+                private var sent = false
+
+                override fun read(): Int {
+                    reading.countDown()
+                    release.await()
+                    return if (sent) -1 else 7.also { sent = true }
+                }
+            }
+            var imported: StoredRecording? = null
+            val importing = Thread {
+                imported = screen.import("slow.wav", "audio/wav", "wav", slowInput)
+            }.apply { start() }
+            assertTrue(reading.await(5, TimeUnit.SECONDS))
+
+            val listed = Executors.newSingleThreadExecutor()
+            try {
+                val recording = listed.submit<PcmRecording> {
+                    service.beginPcm("Dictation", 16_000).finish("saved")
+                }
+                assertNotNull(recording.get(5, TimeUnit.SECONDS))
+                assertEquals(1, listed.submit<Int> { service.list().size }.get(5, TimeUnit.SECONDS))
+            } finally {
+                release.countDown()
+                importing.join()
+                listed.shutdown()
+            }
+            assertEquals(2, service.list().size)
+            assertNotNull(service.get(imported!!.id))
         }
     }
 
