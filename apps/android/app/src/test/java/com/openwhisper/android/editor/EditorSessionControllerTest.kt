@@ -123,6 +123,9 @@ private class FakeEditableNode(
     var setTextValue: String? = null
     var selectionValue: Int? = null
 
+    override val availability: EditorAvailability
+        get() = EditorAvailability(value.isPassword, value.isSensitive)
+
     override fun snapshot(): EditorSnapshot = value
 
     override fun setText(text: String): Boolean {

@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 import com.openwhisper.android.editor.EditableNode
+import com.openwhisper.android.editor.EditorAvailability
 import com.openwhisper.android.editor.EditorSnapshot
 import com.openwhisper.android.editor.FocusedEditorProvider
 
@@ -12,8 +13,11 @@ class AccessibilityEditorProvider(
     private val focusedNode: () -> AccessibilityNodeInfo?,
     private val windowRoots: () -> List<AccessibilityNodeInfo> = { emptyList() },
 ) : FocusedEditorProvider {
-    override fun focusedEditor(): EditableNode? {
-        val node = focusedNode()
+    override fun focusedEditor(): EditableNode? = focusedEditor(focusedNode())
+
+    /** The usable editor at [focused], or the first one found by walking every window. */
+    fun focusedEditor(focused: AccessibilityNodeInfo?): EditableNode? {
+        val node = focused
             ?.takeIf(::isUsableEditor)
             ?: windowRoots()
                 .asSequence()
@@ -59,13 +63,21 @@ private class AccessibilityEditableNode(
 ) : EditableNode {
     override val stableId: String = buildStableId(node)
 
-    override fun snapshot(): EditorSnapshot = EditorSnapshot(
-        text = node.text?.toString().orEmpty(),
-        selectionStart = node.textSelectionStart,
-        selectionEnd = node.textSelectionEnd,
-        isPassword = node.isPassword,
-        isSensitive = Build.VERSION.SDK_INT >= 34 && node.isAccessibilityDataSensitive,
-    )
+    override val availability: EditorAvailability
+        get() = EditorAvailability(
+            isPassword = node.isPassword,
+            isSensitive = Build.VERSION.SDK_INT >= 34 && node.isAccessibilityDataSensitive,
+        )
+
+    override fun snapshot(): EditorSnapshot = availability.let {
+        EditorSnapshot(
+            text = node.text?.toString().orEmpty(),
+            selectionStart = node.textSelectionStart,
+            selectionEnd = node.textSelectionEnd,
+            isPassword = it.isPassword,
+            isSensitive = it.isSensitive,
+        )
+    }
 
     override fun setText(text: String): Boolean {
         val arguments = Bundle().apply {
@@ -81,20 +93,25 @@ private class AccessibilityEditableNode(
         }
         return node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, arguments)
     }
+}
 
-    private companion object {
-        fun buildStableId(node: AccessibilityNodeInfo): String {
-            if (Build.VERSION.SDK_INT >= 33) {
-                node.uniqueId?.takeIf { it.isNotBlank() }?.let { return "unique:$it" }
-            }
-            val bounds = Rect().also(node::getBoundsInScreen)
-            return listOf(
-                node.windowId,
-                node.packageName,
-                node.viewIdResourceName,
-                node.className,
-                bounds.flattenToString(),
-            ).joinToString("|")
-        }
+/**
+ * Identifies the field that has input focus: the same field keeps the same key
+ * while the user types in it, so its flags can be remembered.
+ */
+internal fun focusKey(node: AccessibilityNodeInfo): String =
+    "${node.windowId}|${buildStableId(node)}"
+
+private fun buildStableId(node: AccessibilityNodeInfo): String {
+    if (Build.VERSION.SDK_INT >= 33) {
+        node.uniqueId?.takeIf { it.isNotBlank() }?.let { return "unique:$it" }
     }
+    val bounds = Rect().also(node::getBoundsInScreen)
+    return listOf(
+        node.windowId,
+        node.packageName,
+        node.viewIdResourceName,
+        node.className,
+        bounds.flattenToString(),
+    ).joinToString("|")
 }

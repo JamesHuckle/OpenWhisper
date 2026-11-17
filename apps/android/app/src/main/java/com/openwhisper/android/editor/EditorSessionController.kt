@@ -2,6 +2,9 @@ package com.openwhisper.android.editor
 
 interface EditableNode {
     val stableId: String
+
+    /** The field's password and sensitive flags, read without copying its text. */
+    val availability: EditorAvailability
     fun snapshot(): EditorSnapshot
     fun setText(text: String): Boolean
     fun setSelection(cursor: Int): Boolean

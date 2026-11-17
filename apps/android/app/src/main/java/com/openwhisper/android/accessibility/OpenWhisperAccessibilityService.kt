@@ -34,7 +34,6 @@ import com.openwhisper.android.editor.EditorSessionController
 import com.openwhisper.android.editor.InputConnectionEditorProvider
 import com.openwhisper.android.editor.InputConnectionEditorSessionController
 import com.openwhisper.android.editor.RoutingEditorSessionPort
-import com.openwhisper.android.overlay.FocusedField
 import com.openwhisper.android.overlay.OverlayContext
 import com.openwhisper.android.overlay.OverlayDecision
 import com.openwhisper.android.overlay.OverlayKeyGeometry
@@ -54,6 +53,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
     }
     private lateinit var settings: SettingsRepository
     private lateinit var editorProvider: AccessibilityEditorProvider
+    private lateinit var focusedFields: FocusedFieldLookup<AccessibilityNodeInfo>
     private var accessibilityInputMethod: InputConnectionEditorProvider? = null
     private lateinit var coordinator: DictationCoordinator
     private lateinit var overlay: DictationOverlayWindow
@@ -63,10 +63,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         settings = SettingsRepository(this)
         editorProvider = AccessibilityEditorProvider(
-            focusedNode = {
-                findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                    ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            },
+            focusedNode = ::inputFocus,
             windowRoots = {
                 windows
                     .asSequence()
@@ -74,6 +71,12 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                     .mapNotNull(AccessibilityWindowInfo::getRoot)
                     .toList()
             },
+        )
+        focusedFields = FocusedFieldLookup(
+            focusedNode = ::inputFocus,
+            focusKey = ::focusKey,
+            editorFor = editorProvider::focusedEditor,
+            inputConnectionEditor = { accessibilityInputMethod?.currentEditor() },
         )
         val accessibilityEditor = EditorSessionController(editorProvider)
         val editorController = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -131,13 +134,18 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // The service listens only for focus and window changes (not typing), and
+        // each one may have moved focus to another field.
+        if (::focusedFields.isInitialized) focusedFields.forget()
         scheduleRefresh(80)
     }
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     override fun onCreateInputMethod(): InputMethod =
-        OpenWhisperInputMethod(this) { scheduleRefresh(0) }
-            .also { accessibilityInputMethod = it }
+        OpenWhisperInputMethod(this) { inputChanged ->
+            if (inputChanged && ::focusedFields.isInitialized) focusedFields.forget()
+            scheduleRefresh(0)
+        }.also { accessibilityInputMethod = it }
 
     override fun onInterrupt() {
         if (::coordinator.isInitialized) coordinator.cancel()
@@ -186,7 +194,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
         )
         // The policy looks for the focused field only while a keyboard is open, so
         // browsing without one never walks the other app's accessibility tree.
-        val decision = OverlayPolicy().decide(context, ::focusedField)
+        val decision = OverlayPolicy().decide(context, focusedFields::focusedField)
         when (decision) {
             OverlayDecision.Hidden -> {
                 if (coordinator.currentState !is DictationState.Idle) coordinator.cancel()
@@ -201,15 +209,9 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun focusedField(): FocusedField? {
-        editorProvider.focusedEditor()?.snapshot()?.let {
-            return FocusedField(isPassword = it.isPassword, isSensitive = it.isSensitive)
-        }
-        // Rich-text editors without an editable node may still hold the input connection.
-        return accessibilityInputMethod?.currentEditor()?.availability?.let {
-            FocusedField(isPassword = it.isPassword, isSensitive = it.isSensitive)
-        }
-    }
+    private fun inputFocus(): AccessibilityNodeInfo? =
+        findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
 
     private fun render(state: DictationState) {
         overlay.render(state)

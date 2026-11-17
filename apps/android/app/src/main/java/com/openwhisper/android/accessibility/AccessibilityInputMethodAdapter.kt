@@ -14,19 +14,20 @@ import com.openwhisper.android.editor.InputConnectionEditorProvider
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 class OpenWhisperInputMethod(
     service: AccessibilityService,
-    private val onEditorStateChanged: () -> Unit,
+    /** Called with true when input moves to another field, false when only the selection moves. */
+    private val onEditorStateChanged: (inputChanged: Boolean) -> Unit,
 ) : InputMethod(service), InputConnectionEditorProvider {
     private var generation = 0L
 
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
         generation += 1
-        onEditorStateChanged()
+        onEditorStateChanged(true)
     }
 
     override fun onFinishInput() {
         generation += 1
-        onEditorStateChanged()
+        onEditorStateChanged(true)
         super.onFinishInput()
     }
 
@@ -38,7 +39,7 @@ class OpenWhisperInputMethod(
         candidatesStart: Int,
         candidatesEnd: Int,
     ) {
-        onEditorStateChanged()
+        onEditorStateChanged(false)
     }
 
     override fun currentEditor(): InputConnectionEditor? {
