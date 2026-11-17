@@ -1275,6 +1275,13 @@ async function startRecording() {
       }),
     });
     if (!result) return;
+    if (cancelCount !== cancelsBefore) {
+      // Cancelled while the session was starting; the cancel already tidied up.
+      await invoke("worker_stop_session", { sessionId: result.session_id }).catch((error) => {
+        logDebug(`stop session failed=${errorMessage(error)}`);
+      });
+      return;
+    }
     currentSessionId = result.session_id;
     audioQueue.attachSession(currentSessionId);
     finalTranscript = "";
