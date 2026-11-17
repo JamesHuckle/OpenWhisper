@@ -24,8 +24,10 @@ export async function startCaptureFirst<Capture, Backup, Session>(steps: {
   // The backup opens while the paste target is still being locked. It is
   // handed over first, so a paste target failure still finishes it.
   const proceed = await steps.onBackupOpened(await steps.openBackup());
+  // A cancelled recording neither waits for nor reports the paste target.
+  if (!proceed) return null;
   await pasteTarget;
-  return proceed ? steps.startSession() : null;
+  return steps.startSession();
 }
 
 /**

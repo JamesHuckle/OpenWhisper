@@ -80,6 +80,18 @@ describe("recording startup latency contracts", () => {
     expect(events).not.toContain("invoke worker_start_session");
   });
 
+  it("returns null for a cancelled recording without waiting for the paste target", async () => {
+    const events: string[] = [];
+    const invoke: FakeInvoke = (command) => {
+      events.push(`invoke ${command}`);
+      if (command === "capture_paste_target") return new Promise(() => undefined);
+      return Promise.resolve({ id: "rec-4" });
+    };
+
+    await expect(microphoneStartup(invoke, events, () => true)).resolves.toBeNull();
+    expect(events).not.toContain("invoke worker_start_session");
+  });
+
   it("hands over an opened backup before reporting a paste target failure", async () => {
     const events: string[] = [];
     const invoke: FakeInvoke = async (command) => {
