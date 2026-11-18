@@ -21,6 +21,13 @@ use uuid::Uuid;
 
 pub const RECORDING_RETENTION_COUNT: usize = 10;
 pub const PARTS_FILE_NAME: &str = "parts.json";
+/// The error of a recording the app stopped during, set by [`recover_interrupted`].
+pub const RECORDING_INTERRUPTED_MESSAGE: &str =
+    "Recording stopped when OpenWhisper closed. Its audio is saved; press Transcribe.";
+/// The error of a transcription the app stopped during (Android's wording).
+pub const TRANSCRIPTION_INTERRUPTED_MESSAGE: &str =
+    "Transcription stopped when OpenWhisper closed. \
+     Press Transcribe to finish it; parts that finished are not sent again.";
 
 pub struct ActiveRecording {
     pub writer: PcmWavWriter,
@@ -119,6 +126,35 @@ pub fn finish_recording(
         }
     }
     prune_recordings(root, RECORDING_RETENTION_COUNT)
+}
+
+/// Marks the recordings an earlier run left "recording" or "transcribing"
+/// (it crashed, quit or updated part way) as failed, so the user can press
+/// Transcribe to finish them. A recording's WAV header is brought up to date
+/// first, and the finished parts of a transcription are kept. Run once at
+/// start-up, before the window can start a recording or a transcription.
+pub fn recover_interrupted(root: &std::path::Path) -> Result<()> {
+    for mut metadata in list_recording_metadata(root)? {
+        match metadata.status.as_str() {
+            "recording" => {
+                let audio_path = root.join(&metadata.id).join(&metadata.file_name);
+                // An unreadable file is still marked failed: transcribing it
+                // then says why.
+                if let Ok(bytes) = recording_store::repair_wav_header(
+                    &audio_path,
+                    recording_store::MICROPHONE_SAMPLE_RATE,
+                ) {
+                    metadata.bytes = bytes;
+                }
+                metadata.error = RECORDING_INTERRUPTED_MESSAGE.to_string();
+            }
+            "transcribing" => metadata.error = TRANSCRIPTION_INTERRUPTED_MESSAGE.to_string(),
+            _ => continue,
+        }
+        metadata.status = "failed".to_string();
+        write_recording_metadata(root, &metadata)?;
+    }
+    Ok(())
 }
 
 pub fn prune_recordings(root: &std::path::Path, keep: usize) -> Result<()> {
@@ -387,6 +423,63 @@ mod tests {
         assert_eq!(finished.transcript, "Hello.");
         // Completing again without a parts file is fine.
         finish_recording(&root, "long", "complete".into(), "Hello.".into(), String::new()).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recordings_an_earlier_run_left_open_are_repaired_and_marked_failed() {
+        let root = std::env::temp_dir().join(format!("openwhisper-recover-test-{}", Uuid::new_v4()));
+        let save = |id: &str, status: &str, bytes: u64| {
+            fs::create_dir_all(root.join(id)).unwrap();
+            let metadata = RecordingMetadata {
+                id: id.to_string(),
+                created_at_ms: 1,
+                name: id.to_string(),
+                source: "microphone".to_string(),
+                mime_type: "audio/wav".to_string(),
+                file_name: "audio.wav".to_string(),
+                status: status.to_string(),
+                bytes,
+                transcript: if status == "complete" { "Hello.".to_string() } else { String::new() },
+                error: String::new(),
+            };
+            write_recording_metadata(&root, &metadata).unwrap();
+        };
+        // The app stopped while recording: the header still says no audio.
+        save("crashed", "recording", 44);
+        let mut wav = recording_store::wav_header(0, 24_000).to_vec();
+        wav.extend_from_slice(&[1, 2, 3, 4]);
+        fs::write(root.join("crashed").join("audio.wav"), &wav).unwrap();
+        save("sending", "transcribing", 48);
+        fs::write(root.join("sending").join("audio.wav"), recording_store::wav_header(4, 24_000))
+            .unwrap();
+        let parts = recording_parts_path(&root, "sending");
+        fs::write(&parts, b"{\"key\":\"k\",\"parts\":[]}").unwrap();
+        save("done", "complete", 48);
+        let done_details = fs::read(recording_metadata_path(&root, "done")).unwrap();
+        // Its audio file has gone; the others are still recovered.
+        save("lost", "recording", 44);
+
+        recover_interrupted(&root).unwrap();
+
+        let wav = fs::read(root.join("crashed").join("audio.wav")).unwrap();
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
+        assert_eq!(&wav[44..], &[1, 2, 3, 4]);
+        let crashed = read_recording_metadata(&root, "crashed").unwrap();
+        assert_eq!(crashed.status, "failed");
+        assert_eq!(crashed.error, RECORDING_INTERRUPTED_MESSAGE);
+        assert_eq!(crashed.bytes, 48);
+        let sending = read_recording_metadata(&root, "sending").unwrap();
+        assert_eq!(sending.status, "failed");
+        assert_eq!(sending.error, TRANSCRIPTION_INTERRUPTED_MESSAGE);
+        assert!(parts.exists(), "a retry sends only the parts that did not finish");
+        let lost = read_recording_metadata(&root, "lost").unwrap();
+        assert_eq!(lost.status, "failed");
+        assert_eq!(lost.bytes, 44);
+        assert_eq!(fs::read(recording_metadata_path(&root, "done")).unwrap(), done_details);
+        // Running it again changes nothing more.
+        recover_interrupted(&root).unwrap();
+        assert_eq!(read_recording_metadata(&root, "crashed").unwrap().status, "failed");
         fs::remove_dir_all(root).unwrap();
     }
 

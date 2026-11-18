@@ -70,7 +70,10 @@ WhisperFlow is split into two runtime layers, in one process:
    text. The file stays open while recording; its header is brought up to
    date about once a second. Its `metadata.json` is written only when the
    recording starts and closes: meanwhile the recordings list reads its size
-   from the WAV file.
+   from the WAV file. At start-up, before the window can act, a recording an
+   earlier run left "recording" (its header repaired) or "transcribing" is
+   marked failed with a message to press Transcribe, as Android does
+   (`recover_interrupted` in `src-tauri/src/recordings.rs`).
    Live transcription also sends each chunk to its Realtime websocket
    (`worker_append_audio_chunk`), because it transcribes while the user
    speaks. No copy of these chunks is kept: the session only counts their

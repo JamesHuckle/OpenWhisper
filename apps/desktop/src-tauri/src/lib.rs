@@ -41,7 +41,7 @@ use overlay_geometry::{
 use recording_store::PcmWavWriter;
 use recordings::{
     close_active_recording, finish_recording, import_recording, list_recording_metadata,
-    lock_recordings, now_ms, read_recording_metadata, recording_parts_path,
+    lock_recordings, now_ms, read_recording_metadata, recording_parts_path, recover_interrupted,
     write_recording_metadata, ActiveRecording, RecordingMetadata, RecordingStartResponse,
 };
 use serde::{Deserialize, Serialize};
@@ -1178,6 +1178,11 @@ pub fn run() {
             match app.path().app_log_dir() {
                 Ok(dir) => debug_log::init_log_file(&dir),
                 Err(error) => debug_log_line("log", &format!("no log folder: {error}")),
+            }
+            // Before anything can start a recording or a transcription: setup
+            // runs on the main thread, so no command is handled until it ends.
+            if let Err(error) = recordings_root(app.handle()).and_then(|root| recover_interrupted(&root)) {
+                debug_log_line("recording", &format!("recovery failed: {error}"));
             }
             let emit_app = app.handle().clone();
             match Sessions::new(Arc::new(move |event| {
