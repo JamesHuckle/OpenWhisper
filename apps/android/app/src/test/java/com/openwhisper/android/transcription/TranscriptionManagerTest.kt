@@ -177,6 +177,47 @@ class TranscriptionManagerTest {
     }
 
     @Test
+    fun aStatusThatCannotBeSavedStillEndsTheJobAndDeliversItsTranscript() {
+        val client = BlockingClient("Paid for")
+        val manager = manager(newClient = { client }, background = threads())
+        val listener = CapturingListener()
+        manager.addListener(listener)
+        val recording = imported("full-disk.mp3")
+        val folder = File(root, recording.id)
+
+        val job = manager.submit(recording)
+        assertTrue(client.entered.await(5, TimeUnit.SECONDS))
+        // Storage fills while the upload runs: the final status write fails.
+        assertTrue(folder.setWritable(false))
+        try {
+            client.release.countDown()
+            assertTrue(listener.finished.await(5, TimeUnit.SECONDS))
+        } finally {
+            folder.setWritable(true)
+        }
+
+        assertEquals(listOf("Paid for"), listener.transcripts)
+        assertFalse(manager.isRunning(job.recordingId))
+    }
+
+    @Test
+    fun aRecordingWhoseStatusCannotBeSavedIsNotLeftRunning() {
+        val manager = manager(newClient = { BlockingClient("unused") }, background = QueuedRunner())
+        val recording = imported("read-only.mp3")
+        val folder = File(root, recording.id)
+
+        assertTrue(folder.setWritable(false))
+        val submitted = try {
+            runCatching { manager.submit(recording) }
+        } finally {
+            folder.setWritable(true)
+        }
+
+        assertTrue(submitted.isFailure)
+        assertFalse(manager.isRunning(recording.id))
+    }
+
+    @Test
     fun aJobCancelledBeforeItRunsIsNeverSent() {
         val client = BlockingClient("unused")
         val uploads = QueuedRunner()

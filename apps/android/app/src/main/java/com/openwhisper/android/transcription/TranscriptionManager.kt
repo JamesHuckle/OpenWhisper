@@ -78,7 +78,13 @@ class TranscriptionManager(
             TranscriptionJob(recordingId, audio, newClient, callbacks).also { job ->
                 job.showResultInApp = showResultInApp
                 jobs[recordingId] = job
-                store.finish(recordingId, "transcribing")
+                try {
+                    store.finish(recordingId, "transcribing")
+                } catch (error: Exception) {
+                    // Never run, so never left registered.
+                    jobs.remove(recordingId, job)
+                    throw error
+                }
             }
         }
         callbacks.dispatch { listeners.forEach { it.onStarted(job) } }
@@ -127,22 +133,26 @@ class TranscriptionManager(
             transcribed
         }
         synchronized(lock) {
-            result.fold(
-                onSuccess = { transcript ->
-                    store.finish(job.recordingId, "complete", transcript = transcript)
-                },
-                onFailure = { error ->
-                    if (job.isCancelled) {
-                        store.finish(job.recordingId, "cancelled")
-                    } else {
-                        store.finish(
-                            job.recordingId,
-                            "failed",
-                            error = error.message?.takeIf(String::isNotBlank) ?: FAILED_MESSAGE,
-                        )
-                    }
-                },
-            )
+            // A status that cannot be saved (storage full, say) still ends
+            // the job and delivers its result: a transcript is paid for.
+            runCatching {
+                result.fold(
+                    onSuccess = { transcript ->
+                        store.finish(job.recordingId, "complete", transcript = transcript)
+                    },
+                    onFailure = { error ->
+                        if (job.isCancelled) {
+                            store.finish(job.recordingId, "cancelled")
+                        } else {
+                            store.finish(
+                                job.recordingId,
+                                "failed",
+                                error = error.message?.takeIf(String::isNotBlank) ?: FAILED_MESSAGE,
+                            )
+                        }
+                    },
+                )
+            }
             jobs.remove(job.recordingId, job)
         }
         callbacks.dispatch {
