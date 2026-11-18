@@ -365,6 +365,12 @@ export function createDictationController(deps: DictationDeps) {
       // Cancel answers at once, so a cancelled session's last request can
       // still fail here; the cancel already tidied up.
       if (currentSessionId !== sessionId) return;
+      // The app keeps the session, and a Live session its connection, until
+      // it is stopped.
+      await invoke("worker_stop_session", { sessionId }).catch((error) => {
+        log(`stop session failed=${errorMessage(error)}`);
+      });
+      if (currentSessionId !== sessionId) return;
       await handleTranscriptionFailure(err);
       cleanup();
       setState("idle");

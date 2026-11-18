@@ -367,6 +367,9 @@ describe("dictation controller", () => {
 
     expect(failures).toEqual([{ message: "Disk full", recordingSaved: true }]);
     expect(app.commands()).not.toContain("recording_transcribe");
+    expect(app.named("worker_stop_session").map((call) => call.args)).toEqual([
+      { sessionId: "s-1" },
+    ]);
     expect(app.named("recording_finish").map((call) => call.args)).toEqual([
       { recordingId: "rec-1", status: "failed", transcript: "", error: "Disk full" },
     ]);
@@ -526,5 +529,22 @@ describe("dictation controller", () => {
       { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
     ]);
     expect(app.commands()).not.toContain("recording_transcribe");
+  });
+
+  it("stops the Live session when its audio could not be sent", async () => {
+    const { app, mic, dictation, failures } = setup(LIVE_TRANSCRIPTION_MODEL);
+    app.fail("worker_append_audio_chunk", new Error("Connection lost"));
+    await startRecording(dictation);
+    mic.hear(BATCH);
+
+    await dictation.toggleRecording();
+    await settle();
+
+    expect(failures).toEqual([{ message: "Connection lost", recordingSaved: true }]);
+    expect(app.commands()).not.toContain("worker_finalize_session_audio");
+    expect(app.named("worker_stop_session").map((call) => call.args)).toEqual([
+      { sessionId: "s-1" },
+    ]);
+    expect(dictation.state).toBe("idle");
   });
 });
