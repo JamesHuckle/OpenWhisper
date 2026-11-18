@@ -665,16 +665,20 @@ async fn worker_ping(state: State<'_, Arc<AppState>>) -> Result<serde_json::Valu
 async fn worker_start_session(
     state: State<'_, Arc<AppState>>,
     profile_id: String,
+    standard_only: Option<bool>,
 ) -> Result<SessionStartResponse, String> {
     // The session keeps the settings saved at this moment, so a saved change
     // applies to the next dictation.
-    let settings = {
+    let mut settings = {
         let s = state
             .settings
             .lock()
             .map_err(|_| "Failed to lock settings".to_string())?;
         session_settings(&s, &profile_id)
     };
+    // Saved audio, and a Live dictation whose connection failed, are
+    // transcribed from the file with Standard; no Live connection is opened.
+    settings.standard_only = standard_only.unwrap_or(false);
     let session_id = transcription(&state)?.start(settings).await?;
     Ok(SessionStartResponse { session_id })
 }

@@ -4,7 +4,9 @@
 //! A Standard session is transcribed from the saved recording on disk when
 //! the user stops (src/transcriber.rs). A Live session opens a Realtime
 //! websocket at once and streams the audio while the user speaks
-//! (src/realtime.rs). Either is tidied before its final event. Progress,
+//! (src/realtime.rs). A Live session finalized with its saved recording
+//! instead (its connection failed) is transcribed from that file with the
+//! Standard model. Either is tidied before its final event. Progress,
 //! live text, warnings and the result reach the window as
 //! `worker-session-event` payloads: `{ session_id, event, done }`.
 //!
@@ -18,7 +20,10 @@ use crate::audio_rules::{
 };
 use crate::debug_log::debug_log_line;
 use crate::flac_upload::UploadPart;
-use crate::models::{live_transcription_model, refine_model, session_transcription_model};
+use crate::models::{
+    default_transcription_model, live_transcription_model, refine_model,
+    session_transcription_model,
+};
 use crate::openai_api::{HttpApi, DEFAULT_BASE_URL};
 use crate::realtime::{DeltaHandler, RealtimeStream, FINAL_TIMEOUT};
 use crate::transcriber::{
@@ -58,10 +63,14 @@ pub struct SessionSettings {
     pub prompt: String,
     pub refine_enabled: bool,
     pub refine_prompt: String,
+    /// Opens no Live connection: a Live dictation whose connection failed
+    /// keeps recording, and is transcribed from its saved recording with
+    /// Standard transcription when it stops.
+    pub standard_only: bool,
 }
 
-/// The saved recording a Standard session is transcribed from. Nothing here
-/// is changed or removed.
+/// The saved recording a session is transcribed from, always with Standard
+/// transcription. Nothing here is changed or removed.
 pub struct SavedAudio {
     pub audio_path: PathBuf,
     pub mime_type: String,
@@ -197,7 +206,7 @@ impl Sessions {
             "status": "ok",
             "model": session_transcription_model(&env_or(
                 "OPENWHISPER_MODEL",
-                &crate::models::default_transcription_model(),
+                &default_transcription_model(),
             ))
             .unwrap_or_default(),
             "polish_model": self.polish.model,
@@ -211,10 +220,10 @@ impl Sessions {
             .ok_or_else(unknown_session)
     }
 
-    fn transcriber(&self, session: &Session) -> Transcriber<HttpApi> {
+    fn transcriber_for(&self, session: &Session, model: &str) -> Transcriber<HttpApi> {
         Transcriber::new(
             HttpApi::new(self.client.clone(), &self.base_url, &session.api_key),
-            &session.model,
+            model,
             self.polish.clone(),
         )
     }
@@ -263,14 +272,15 @@ impl Sessions {
     /// connects at once, so the first words are heard.
     pub async fn start(&self, settings: SessionSettings) -> Result<String, String> {
         let requested = if settings.transcription_model.trim().is_empty() {
-            env_or(
-                "OPENWHISPER_MODEL",
-                &crate::models::default_transcription_model(),
-            )
+            env_or("OPENWHISPER_MODEL", &default_transcription_model())
         } else {
             settings.transcription_model.clone()
         };
-        let model = session_transcription_model(&requested).map_err(|error| bad_request(&error))?;
+        let mut model =
+            session_transcription_model(&requested).map_err(|error| bad_request(&error))?;
+        if settings.standard_only && model == live_transcription_model() {
+            model = default_transcription_model();
+        }
         let api_key = env_or("OPENAI_API_KEY", "");
         let api_key = match settings.openai_api_key.trim() {
             "" => api_key,
@@ -280,9 +290,10 @@ impl Sessions {
         debug_log_line(
             "transcriber",
             &format!(
-                "start_session profile_id={:?} model={model} transcription_prompt_chars={} \
-                 refine_enabled={} refine_prompt_chars={}",
+                "start_session profile_id={:?} model={model} standard_only={} \
+                 transcription_prompt_chars={} refine_enabled={} refine_prompt_chars={}",
                 settings.profile_id,
+                settings.standard_only,
                 settings.prompt.chars().count(),
                 settings.refine_enabled,
                 settings.refine_prompt.chars().count()
@@ -451,17 +462,13 @@ impl Sessions {
     async fn run_finalize(&self, session: &Session, audio: FinalizeAudio) -> Value {
         let progress = session.sending.lock().await;
         let saved = match audio {
-            FinalizeAudio::Saved(_) if session.live => {
-                // Live transcription hears audio as it is appended; it cannot
-                // read a saved file.
+            FinalizeAudio::Saved(saved) => {
+                // A Live session given its saved recording (its connection
+                // failed) is done with the connection; the file is read below
+                // with Standard transcription.
                 Self::close_stream(session);
-                self.emit(
-                    session,
-                    json!({ "type": "error", "text": "Choose Standard transcription for saved audio files" }),
-                );
-                return json!({ "final_text": "" });
+                Some(saved)
             }
-            FinalizeAudio::Saved(saved) => Some(saved),
             FinalizeAudio::Live { mime_type } => {
                 let (audio_bytes, peak) = {
                     let state = lock(&session.state);
@@ -494,7 +501,14 @@ impl Sessions {
             }
         }
 
-        let transcriber = self.transcriber(session);
+        // Live transcription hears audio only as it is appended, so a saved
+        // file is always transcribed with the Standard model.
+        let model = if saved.is_some() && session.live {
+            default_transcription_model()
+        } else {
+            session.model.clone()
+        };
+        let transcriber = self.transcriber_for(session, &model);
         let transcribed = match saved {
             Some(saved) => {
                 let on_progress = |current: usize, total: usize| {
@@ -725,6 +739,7 @@ mod tests {
                     prompt: PROMPT.into(),
                     refine_enabled,
                     refine_prompt: refine_prompt.into(),
+                    standard_only: false,
                 })
                 .await
                 .unwrap()
@@ -1307,21 +1322,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_live_session_refuses_a_saved_file() {
-        let server = RealtimeServer::start(vec![Script::default()]).await;
-        let h = harness(&server.base_url);
+    async fn a_live_session_given_its_saved_file_is_transcribed_with_standard() {
+        // The Live connection opens on the Realtime stand-in; the saved file
+        // then goes to the HTTP stand-in.
+        let realtime = RealtimeServer::start(vec![Script::default()]).await;
+        let server = TestServer::start(vec![Reply::transcript(DICTATED)]).await;
+        let mut h = harness(&realtime.base_url);
         let id = h.start("gpt-live-transcribe", false, "").await;
+        Arc::get_mut(&mut h.sessions).unwrap().base_url = server.base_url.clone();
+        let path = h.wav(1.0, 6_000);
+
+        let reply = h.finalize_saved(&id, path).await;
+
+        assert_eq!(reply["final_text"], DICTATED);
+        assert_eq!(h.last(), ("final".into(), DICTATED.into(), true));
+        let received = server.received();
+        assert_eq!(received.len(), 1);
+        assert_eq!(
+            received[0].field("model").as_deref(),
+            Some("gpt-transcribe")
+        );
+        assert_eq!(realtime.connections.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_standard_only_live_session_opens_no_connection() {
+        // A Live connection to the HTTP stand-in would fail the start.
+        let server = TestServer::start(vec![Reply::transcript(DICTATED)]).await;
+        let h = harness(&server.base_url);
+        let id = h
+            .sessions
+            .start(SessionSettings {
+                openai_api_key: "sk-test".into(),
+                transcription_model: "gpt-live-transcribe".into(),
+                standard_only: true,
+                ..SessionSettings::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            h.sessions.append(&id, &[1, 2]).await.unwrap_err(),
+            "bad_request: Only Live sessions take audio chunks"
+        );
         let path = h.wav(1.0, 6_000);
 
         h.finalize_saved(&id, path).await;
 
+        assert_eq!(h.last(), ("final".into(), DICTATED.into(), true));
         assert_eq!(
-            h.last(),
-            (
-                "error".into(),
-                "Choose Standard transcription for saved audio files".into(),
-                true
-            )
+            server.received()[0].field("model").as_deref(),
+            Some("gpt-transcribe")
         );
     }
 

@@ -107,6 +107,7 @@ pub fn session_settings(settings: &AppSettings, profile_id: &str) -> SessionSett
         prompt: settings.transcription_prompt.clone(),
         refine_enabled: settings.refine_enabled,
         refine_prompt: settings.refine_prompt.clone(),
+        standard_only: false,
     }
 }
 
@@ -160,6 +161,7 @@ mod tests {
                 prompt: "Glossary: Zoon".into(),
                 refine_enabled: false,
                 refine_prompt: "Use British spelling.".into(),
+                standard_only: false,
             }
         );
         let without_key = session_settings(&AppSettings::default(), "default");
