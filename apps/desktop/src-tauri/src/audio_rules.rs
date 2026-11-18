@@ -81,10 +81,10 @@ pub fn pcm_is_silent(source: &mut impl Read) -> io::Result<bool> {
     }
 }
 
-/// Lower case letters and digits only, one space between words.
+/// Lower case letters and digits of any script only, one space between words.
 fn normalize_words(text: &str) -> String {
     text.to_lowercase()
-        .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
@@ -99,7 +99,8 @@ pub fn echoes_prompt(text: &str, prompt: &str) -> bool {
         return false;
     }
     hints.contains(&spoken)
-        && spoken.len() as f64 >= hints.len() as f64 * rules().prompt_echo_min_share
+        && spoken.chars().count() as f64
+            >= hints.chars().count() as f64 * rules().prompt_echo_min_share
 }
 
 /// The text a long recording's next part is prompted with: the end of the

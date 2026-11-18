@@ -80,6 +80,20 @@
       "quoted": ["", "First part.", "First part."],
       "dropped": [],
       "transcript": "First part. Third part."
+    },
+    {
+      "about": "Words in any script count: a part that adds speech in another script to the quoted text is kept",
+      "parts": ["Hello.", "Hello 世界"],
+      "quoted": ["", "Hello."],
+      "dropped": [],
+      "transcript": "Hello. Hello 世界"
+    },
+    {
+      "about": "A part that only repeats quoted text in another script is dropped",
+      "parts": ["你好世界。", "你好世界", "Привет, мир."],
+      "quoted": ["", "你好世界。", "你好世界。"],
+      "dropped": [1],
+      "transcript": "你好世界。 Привет, мир."
     }
   ]
 }

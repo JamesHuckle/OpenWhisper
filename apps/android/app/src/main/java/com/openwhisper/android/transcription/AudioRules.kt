@@ -34,7 +34,8 @@ object AudioRules {
 
     /** How much of the text before it a long recording's next part is prompted with. */
     private const val PREVIOUS_PART_CHARS = 1_200
-    private val WORD = Regex("[a-z0-9]+")
+    // Letters and digits of any script, as the desktop app reads them.
+    private val WORD = Regex("[\\p{IsAlphabetic}\\p{N}]+")
 
     /**
      * Why 16-bit mono PCM holds no speech ("too_short" or "silent"), or null
