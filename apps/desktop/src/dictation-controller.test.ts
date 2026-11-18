@@ -548,6 +548,91 @@ describe("dictation controller", () => {
     expect(dictation.state).toBe("idle");
   });
 
+  it("leaves a recording started during an import alone when the import's copy fails", async () => {
+    const { app, mic, dictation, failures, toasts } = setup();
+    app.hold("recording_import");
+    const importing = dictation.transcribeImportedFile();
+    await settle();
+
+    await startRecording(dictation);
+    mic.hear(100);
+    app.reject("recording_import", new Error("Could not copy the file"));
+    await importing;
+    await settle();
+
+    expect(failures).toEqual([]);
+    expect(toasts).toEqual(["Could not copy the file"]);
+    expect(dictation.state).toBe("recording");
+    expect(mic.capture.isActive()).toBe(true);
+    expect(app.commands()).not.toContain("recording_finish");
+
+    await dictation.toggleRecording();
+    await settle();
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", sessionId: "s-1" },
+    ]);
+  });
+
+  it("still shows a failed import's copy as a failure when nothing else runs", async () => {
+    const { app, dictation, failures, toasts } = setup();
+    app.fail("recording_import", new Error("Could not copy the file"));
+
+    await dictation.transcribeImportedFile();
+
+    expect(failures).toEqual([{ message: "Could not copy the file", recordingSaved: false }]);
+    expect(toasts).toEqual([]);
+    expect(dictation.state).toBe("idle");
+  });
+
+  it("leaves the next recording alone when a cancelled retry's session fails late", async () => {
+    const { app, mic, dictation, failures } = setup();
+    app.hold("worker_start_session");
+    const retry = dictation.retranscribeRecording("rec-9");
+    await settle();
+    expect(dictation.state).toBe("transcribing");
+    await dictation.cancelTranscription();
+
+    app.answers.worker_start_session = { session_id: "s-2" };
+    const recording = dictation.toggleRecording();
+    await settle();
+    expect(dictation.state).toBe("recording");
+    // The cancelled retry's session request fails only now.
+    app.reject("worker_start_session", new Error("Could not connect"));
+    await retry;
+    await settle();
+
+    expect(failures).toEqual([]);
+    expect(dictation.state).toBe("recording");
+    expect(mic.capture.isActive()).toBe(true);
+    expect(dictation.lastFailedRecordingId).toBeNull();
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-9", status: "transcribing", transcript: "", error: "" },
+      { recordingId: "rec-9", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
+    app.release("worker_start_session");
+    await recording;
+    await dictation.toggleRecording();
+    await settle();
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", sessionId: "s-2" },
+    ]);
+  });
+
+  it("reports a retry whose session fails while it is still current", async () => {
+    const { app, dictation, failures } = setup();
+    app.fail("worker_start_session", new Error("Could not connect"));
+
+    await dictation.retranscribeRecording("rec-9");
+
+    expect(failures).toEqual([{ message: "Could not connect", recordingSaved: true }]);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-9", status: "transcribing", transcript: "", error: "" },
+      { recordingId: "rec-9", status: "failed", transcript: "", error: "Could not connect" },
+    ]);
+    expect(dictation.lastFailedRecordingId).toBe("rec-9");
+    expect(dictation.state).toBe("idle");
+  });
+
   it("starts one transcription when a saved recording's retry is clicked twice", async () => {
     const { app, dictation, toasts } = setup();
     app.hold("recording_finish");

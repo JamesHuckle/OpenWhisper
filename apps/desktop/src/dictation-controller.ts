@@ -86,6 +86,11 @@ export function createDictationController(deps: DictationDeps) {
   // Advanced by every cancel, so a session that was still starting when the
   // user cancelled is stopped instead of transcribed.
   let cancelCount = 0;
+  // Advanced as each dictation, import or retry starts and by every cancel.
+  // Each one keeps its own number, so a late failure from one that a cancel or
+  // a newer one replaced is only logged; it never stops, fails or resets the
+  // recording that is current now.
+  let operationId = 0;
   let sessionEventTail: Promise<void> = Promise.resolve();
   let finalTranscript = "";
   let liveTranscript = "";
@@ -196,6 +201,7 @@ export function createDictationController(deps: DictationDeps) {
     const startupStartedAt = performance.now();
     log(`startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`);
     if (state !== "idle" || storedAudioStarting) return;
+    const op = ++operationId;
     const cancelsBefore = cancelCount;
     // Show the pill before anything is awaited, so it appears as the shortcut
     // is pressed. A missing key, when already known, shows only its toast.
@@ -306,7 +312,7 @@ export function createDictationController(deps: DictationDeps) {
       log(`startRecording error=${errorMessage(err)}`);
       // A cancel already tidied this recording up, and the microphone and
       // backup may now be a newer recording's.
-      if (cancelCount !== cancelsBefore) return;
+      if (cancelCount !== cancelsBefore || op !== operationId) return;
       if (capture.isActive()) await capture.stop();
       flushAudioBatch();
       await backupTail;
@@ -382,6 +388,7 @@ export function createDictationController(deps: DictationDeps) {
 
   async function cancelTranscription() {
     cancelCount += 1;
+    operationId += 1;
     if (!currentRecordingId && pendingAudioParts.length > 0) {
       // The backup is still opening; it saves this audio once it opens.
       audioCancelledBeforeBackup.set(cancelCount, pendingAudioParts);
@@ -418,7 +425,9 @@ export function createDictationController(deps: DictationDeps) {
       deps.showToast("Finish the current recording first");
       return;
     }
-    let reserved = false;
+    // Set once the import reserves the controller; until then it owns none of
+    // the current recording's state.
+    let op: number | null = null;
     try {
       const settings = await deps.settings();
       if (!settings.hasOpenaiApiKey) {
@@ -435,13 +444,20 @@ export function createDictationController(deps: DictationDeps) {
         deps.showToast("Finish the current recording first");
         return;
       }
-      storedAudioStarting = reserved = true;
-      await transcribeStoredAudio(stored.id, "file-import");
+      storedAudioStarting = true;
+      op = ++operationId;
+      await transcribeStoredAudio(stored.id, "file-import", op);
     } catch (error) {
-      if (reserved) storedAudioStarting = false;
-      await handleTranscriptionFailure(error);
-      cleanup();
-      setState("idle");
+      if (op === null) {
+        // The picker or the copy failed before the import started; a
+        // dictation may have started meanwhile, and stays untouched.
+        const message = errorMessage(error);
+        log(`import error=${message}`);
+        if (currentState() === "idle" && !storedAudioStarting) deps.showFailure(message, false);
+        else deps.showToast(message);
+        return;
+      }
+      await failStoredAudio(op, error);
     }
   }
 
@@ -451,6 +467,7 @@ export function createDictationController(deps: DictationDeps) {
       return;
     }
     storedAudioStarting = true;
+    const op = ++operationId;
     try {
       const settings = await deps.settings();
       if (!settings.hasOpenaiApiKey) {
@@ -459,16 +476,27 @@ export function createDictationController(deps: DictationDeps) {
       if (isLiveTranscription(settings.transcriptionModel)) {
         throw new Error("Choose Standard transcription for saved audio files");
       }
-      await transcribeStoredAudio(recordingId, "recording-retry");
+      await transcribeStoredAudio(recordingId, "recording-retry", op);
     } catch (error) {
-      storedAudioStarting = false;
-      await handleTranscriptionFailure(error);
-      cleanup();
-      setState("idle");
+      await failStoredAudio(op, error);
     }
   }
 
-  async function transcribeStoredAudio(recordingId: string, profileId: string) {
+  // Reports a failed import or retry, unless a cancel replaced it; then the
+  // failure is expected, and the controller may hold a newer recording.
+  async function failStoredAudio(op: number, error: unknown) {
+    if (op !== operationId) {
+      log(`saved audio error after cancel=${errorMessage(error)}`);
+      return;
+    }
+    storedAudioStarting = false;
+    await handleTranscriptionFailure(error);
+    if (op !== operationId) return;
+    cleanup();
+    setState("idle");
+  }
+
+  async function transcribeStoredAudio(recordingId: string, profileId: string, op: number) {
     deps.clearNotice();
     currentRecordingId = recordingId;
     lastFailedRecordingId = null;
@@ -487,12 +515,11 @@ export function createDictationController(deps: DictationDeps) {
     storedAudioStarting = false;
     deps.closeMenu();
 
-    const cancelsBefore = cancelCount;
     const session = (await invoke("worker_start_session", {
       profileId,
     })) as { session_id: string };
     const sessionId = session.session_id;
-    if (cancelCount !== cancelsBefore) {
+    if (op !== operationId) {
       // Cancelled while the session was starting; the cancel already tidied up.
       await invoke("worker_stop_session", { sessionId }).catch((error) => {
         log(`stop session failed=${errorMessage(error)}`);
