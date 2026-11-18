@@ -199,6 +199,8 @@ export function createDictationController(deps: DictationDeps) {
 
     try {
       const settings = await deps.settings();
+      // Cancelled meanwhile: the cancel already tidied up.
+      if (cancelCount !== cancelsBefore) return;
       if (!settings.hasOpenaiApiKey) {
         deps.showToast("Set your OpenAI API key first (click arrow)");
         setState("idle");
@@ -293,6 +295,9 @@ export function createDictationController(deps: DictationDeps) {
     } catch (err) {
       audioCancelledBeforeBackup.delete(cancelsBefore + 1);
       log(`startRecording error=${errorMessage(err)}`);
+      // A cancel already tidied this recording up, and the microphone and
+      // backup may now be a newer recording's.
+      if (cancelCount !== cancelsBefore) return;
       if (capture.isActive()) await capture.stop();
       flushAudioBatch();
       await backupTail;

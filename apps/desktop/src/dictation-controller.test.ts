@@ -48,6 +48,12 @@ function fakeInvoke() {
     answers,
     hold: (command: string) => holding.add(command),
     fail: (command: string, error: unknown) => failing.set(command, error),
+    /** Fails the oldest held call of a command. */
+    reject(command: string, error: unknown) {
+      const waiting = held.get(command)?.shift();
+      if (!waiting) throw new Error(`${command} is not waiting`);
+      waiting.reject(error);
+    },
     /** Answers the oldest held call of a command. */
     release(command: string, value?: unknown) {
       const waiting = held.get(command)?.shift();
@@ -422,5 +428,38 @@ describe("dictation controller", () => {
     await settle();
 
     expect(app.named("type_to_target").map((call) => call.args)).toEqual([{ text: "Old" }]);
+  });
+
+  it("leaves the next recording alone when a cancelled startup fails late", async () => {
+    const { app, mic, dictation, failures } = setup();
+    app.hold("worker_start_session");
+    void dictation.toggleRecording();
+    await settle();
+    await dictation.toggleRecording();
+    await dictation.cancelTranscription();
+
+    app.answers.recording_begin = { id: "rec-2" };
+    app.answers.worker_start_session = { session_id: "s-2" };
+    // The hold shortcut, as the toggle still counts the first startup as running.
+    const second = dictation.pressToTalkStart();
+    await settle();
+    expect(dictation.state).toBe("recording");
+    // The cancelled recording's session request fails only now.
+    app.reject("worker_start_session", new Error("Could not connect"));
+    await settle();
+
+    expect(failures).toEqual([]);
+    expect(dictation.state).toBe("recording");
+    expect(mic.capture.isActive()).toBe(true);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
+    app.release("worker_start_session");
+    await second;
+    await dictation.pressToTalkStop();
+    await settle();
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-2", sessionId: "s-2" },
+    ]);
   });
 });
