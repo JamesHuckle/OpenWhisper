@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -294,13 +294,81 @@ describe("update feeds", () => {
   });
 });
 
+// The workflow and the PowerShell build scripts have nothing to call, so
+// these tests read their text.
+const workflow = readFileSync(join(repositoryRoot, ".github/workflows/release.yml"), "utf8");
+const job = (name) => {
+  const match = workflow.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [a-z-]+:\\n|$)`));
+  assert.ok(match, `job ${name}`);
+  return match[1];
+};
+const readRepo = (path) => readFileSync(join(repositoryRoot, path), "utf8");
+
+describe("release workflow", () => {
+  it("releases every main push only after all tests, through a checked draft", () => {
+    assert.match(workflow, /on:\n  push:\n    branches: \[main\]/);
+    for (const name of ["build-windows", "build-android"]) {
+      for (const line of [
+        "needs: [plan, test-web, test-desktop, test-android]",
+        "if: needs.plan.outputs.release == 'true'",
+        "node scripts/release.mjs set-version",
+      ]) {
+        assert.ok(job(name).includes(line), `${name}: ${line}`);
+      }
+    }
+    assert.match(job("publish"), /needs: \[plan, build-windows, build-android\][\s\S]*node scripts\/release\.mjs publish/);
+    // publish() runs gh itself; the draft is checked before it is made latest.
+    const steps = readRepo("scripts/release.mjs");
+    const draft = steps.indexOf('"--draft", "--target"');
+    const check = steps.indexOf("checkFeeds({", draft);
+    assert.ok(draft > -1 && check > draft && steps.indexOf('"--draft=false", "--latest"') > check);
+  });
+
+  it("runs the tests of every desktop Rust file that has them", () => {
+    // core-tests builds the Rust files without Tauri; a file it leaves out
+    // has tests that never run, and lib.rs cannot be built there at all.
+    const sourceDir = join(repositoryRoot, "apps/desktop/src-tauri/src");
+    const coreTests = readRepo("apps/desktop/src-tauri/core-tests/lib.rs");
+    const tested = readdirSync(sourceDir)
+      .filter((name) => name.endsWith(".rs"))
+      .filter((name) => readFileSync(join(sourceDir, name), "utf8").includes("#[cfg(test)]"));
+    assert.ok(tested.includes("transcription_sessions.rs"));
+    assert.ok(!tested.includes("lib.rs"));
+    for (const name of tested) {
+      assert.ok(coreTests.includes(`#[path = "../src/${name}"]`), name);
+    }
+    assert.match(job("test-desktop"), /working-directory: apps\/desktop\/src-tauri\/core-tests\s+run: cargo test --locked/);
+  });
+});
+
+describe("build scripts", () => {
+  it("signs Windows builds without waiting for a key prompt", () => {
+    // Fixed in 8ed08aa: an interactive password prompt hung unattended builds.
+    const desktop = JSON.parse(readRepo("apps/desktop/package.json"));
+    assert.match(desktop.scripts["tauri:build:signed"], /--ci\b/);
+    assert.match(readRepo("scripts/build-windows-installer.ps1"), /npm run tauri:build:signed/);
+  });
+
+  it("refreshes the stable local installer after every Windows build", () => {
+    // Fixed in 54acd04: only the release scripts refreshed it, so local builds left an old one.
+    const build = readRepo("scripts/build-windows-installer.ps1");
+    assert.ok(build.includes("Copy-Item -LiteralPath $VersionedInstaller -Destination $StableInstaller -Force"));
+    assert.ok(build.includes('$OutDir = Join-Path $OriginalRepoRoot "artifacts/windows-installer"'));
+  });
+
+  it("never stops processes the Windows build did not start", () => {
+    // Fixed in da44f50: the build stopped Node processes it had not started.
+    assert.ok(!readRepo("scripts/build-windows-installer.ps1").includes("Stop-Process"));
+  });
+
+  it("keeps local Rust builds out of the folder Tauri watches", () => {
+    // A target folder inside src-tauri restarts tauri dev on every build.
+    assert.match(readRepo(".gitignore"), /^target\*\/\s*$/m);
+    assert.ok(readRepo("scripts/run-local.ps1").includes('"target\\desktop-dev"'));
+  });
+});
+
 describe("build caches", () => {
-  const workflow = readFileSync(join(repositoryRoot, ".github/workflows/release.yml"), "utf8");
-  const job = (name) => {
-    const match = workflow.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [a-z-]+:\\n|$)`));
-    assert.ok(match, `job ${name}`);
-    return match[1];
-  };
 
   it("builds the Windows installer in the Rust folder the cache keeps", () => {
     const windows = job("build-windows");
