@@ -385,4 +385,24 @@ describe("dictation controller", () => {
     await settle();
     expect(app.named("recording_transcribe")).toHaveLength(1);
   });
+
+  it("never pastes a transcript that arrives while a cancel stops its session", async () => {
+    const { app, dictation } = setup();
+    await startRecording(dictation);
+    await dictation.toggleRecording();
+    app.hold("worker_stop_session");
+
+    const cancelling = dictation.cancelTranscription();
+    await dictation.receiveSessionEvent(sessionEvent({ type: "final", text: "Too late" }, true));
+    app.release("worker_stop_session");
+    await cancelling;
+    await settle();
+
+    expect(app.commands()).not.toContain("insert_final_text");
+    expect(app.commands()).not.toContain("copy_to_clipboard");
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
+    expect(dictation.state).toBe("idle");
+  });
 });

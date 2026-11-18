@@ -356,6 +356,9 @@ export function createDictationController(deps: DictationDeps) {
       audioCancelledBeforeBackup.set(cancelCount, pendingAudioParts);
     }
     const sessionId = currentSessionId;
+    // The session stops being this recording's at once, so a result that
+    // arrives while it stops is not pasted or copied.
+    currentSessionId = null;
     if (sessionId) {
       await invoke("worker_stop_session", { sessionId }).catch((error) => {
         log(`stop session failed=${errorMessage(error)}`);
