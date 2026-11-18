@@ -547,4 +547,27 @@ describe("dictation controller", () => {
     ]);
     expect(dictation.state).toBe("idle");
   });
+
+  it("starts one transcription when a saved recording's retry is clicked twice", async () => {
+    const { app, dictation, toasts } = setup();
+    app.hold("recording_finish");
+
+    const first = dictation.retranscribeRecording("rec-9");
+    await settle();
+    await dictation.retranscribeRecording("rec-8");
+    await dictation.toggleRecording();
+    app.release("recording_finish");
+    await first;
+    await settle();
+
+    expect(toasts).toContain("Finish the current recording first");
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-9", status: "transcribing", transcript: "", error: "" },
+    ]);
+    expect(app.named("worker_start_session")).toHaveLength(1);
+    expect(app.commands()).not.toContain("recording_begin");
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-9", sessionId: "s-1" },
+    ]);
+  });
 });

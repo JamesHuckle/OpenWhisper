@@ -113,6 +113,9 @@ export function createDictationController(deps: DictationDeps) {
   let pressToTalkStarting = false;
   let toggleRecordingStarting = false;
   let toggleStopRequestedDuringStart = false;
+  // Set from when an import or retry is sure to run until the pill shows it
+  // transcribing, so no other transcription or dictation starts meanwhile.
+  let storedAudioStarting = false;
   const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
     sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer),
   );
@@ -192,7 +195,7 @@ export function createDictationController(deps: DictationDeps) {
   async function startRecording() {
     const startupStartedAt = performance.now();
     log(`startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`);
-    if (state !== "idle") return;
+    if (state !== "idle" || storedAudioStarting) return;
     const cancelsBefore = cancelCount;
     // Show the pill before anything is awaited, so it appears as the shortcut
     // is pressed. A missing key, when already known, shows only its toast.
@@ -411,10 +414,11 @@ export function createDictationController(deps: DictationDeps) {
   // Saved audio: imported files and retries
   // -------------------------------------------------------------------------
   async function transcribeImportedFile() {
-    if (state !== "idle") {
+    if (state !== "idle" || storedAudioStarting) {
       deps.showToast("Finish the current recording first");
       return;
     }
+    let reserved = false;
     try {
       const settings = await deps.settings();
       if (!settings.hasOpenaiApiKey) {
@@ -427,12 +431,14 @@ export function createDictationController(deps: DictationDeps) {
       // from disk; the audio never passes through this window.
       const stored = (await invoke("recording_import")) as { id: string } | null;
       if (!stored) return;
-      if (currentState() !== "idle") {
+      if (currentState() !== "idle" || storedAudioStarting) {
         deps.showToast("Finish the current recording first");
         return;
       }
+      storedAudioStarting = reserved = true;
       await transcribeStoredAudio(stored.id, "file-import");
     } catch (error) {
+      if (reserved) storedAudioStarting = false;
       await handleTranscriptionFailure(error);
       cleanup();
       setState("idle");
@@ -440,10 +446,11 @@ export function createDictationController(deps: DictationDeps) {
   }
 
   async function retranscribeRecording(recordingId: string) {
-    if (state !== "idle") {
+    if (state !== "idle" || storedAudioStarting) {
       deps.showToast("Finish the current recording first");
       return;
     }
+    storedAudioStarting = true;
     try {
       const settings = await deps.settings();
       if (!settings.hasOpenaiApiKey) {
@@ -454,6 +461,7 @@ export function createDictationController(deps: DictationDeps) {
       }
       await transcribeStoredAudio(recordingId, "recording-retry");
     } catch (error) {
+      storedAudioStarting = false;
       await handleTranscriptionFailure(error);
       cleanup();
       setState("idle");
@@ -476,6 +484,7 @@ export function createDictationController(deps: DictationDeps) {
       error: "",
     });
     setState("transcribing");
+    storedAudioStarting = false;
     deps.closeMenu();
 
     const cancelsBefore = cancelCount;
