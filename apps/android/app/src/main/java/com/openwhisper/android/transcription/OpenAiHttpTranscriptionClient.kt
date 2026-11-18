@@ -2,7 +2,9 @@ package com.openwhisper.android.transcription
 
 import com.openwhisper.android.audio.FlacFileEncoder
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -32,6 +34,11 @@ class OpenAiHttpTranscriptionClient(
      * [transcribe] starts: then nothing is encoded or uploaded.
      */
     private val isCancelled: () -> Boolean = { false },
+    /**
+     * The waits before the second and third tries of a request that failed
+     * for a passing reason (see [isTemporary]). Tests use shorter ones.
+     */
+    private val retryDelaysMillis: List<Long> = RETRY_DELAYS_MILLIS,
 ) : TranscriptionClient {
     private val generation = AtomicLong(0)
     private val activeConnection = AtomicReference<HttpURLConnection?>(null)
@@ -162,7 +169,37 @@ class OpenAiHttpTranscriptionClient(
             .also { if (flac != null) flacRefused.set(true) }
     }
 
+    /**
+     * Sends one upload, trying it again after 1 s and then 3 s when the
+     * connection drops or the service answers 429, 500, 502, 503 or 504. A
+     * rate limit's Retry-After, up to 10 s, sets the wait instead. A cancel
+     * ends the wait at once.
+     */
     private fun transcribeRequest(
+        key: String,
+        audio: UploadAudio,
+        prompt: String,
+        started: Long,
+    ): String {
+        var tries = 0
+        while (true) {
+            try {
+                return sendOnce(key, audio, prompt, started)
+            } catch (error: TranscriptionException) {
+                val delay = retryDelaysMillis.getOrNull(tries)
+                    ?.takeIf { isTemporary(error) && !cancelledSince(started) }
+                    ?: throw error
+                tries += 1
+                val asked = (error as? TranscriptionHttpException)?.retryAfterSeconds
+                waitUnlessCancelled(
+                    asked?.let { minOf(it * 1_000, MAX_RETRY_AFTER_MILLIS) } ?: delay,
+                    started,
+                )
+            }
+        }
+    }
+
+    private fun sendOnce(
         key: String,
         audio: UploadAudio,
         prompt: String,
@@ -182,7 +219,7 @@ class OpenAiHttpTranscriptionClient(
         return try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 30_000
-            connection.readTimeout = 30 * 60 * 1_000
+            connection.readTimeout = readTimeoutMillis(request.contentLength)
             connection.doOutput = true
             request.headers.forEach(connection::setRequestProperty)
             connection.setFixedLengthStreamingMode(request.contentLength)
@@ -193,7 +230,10 @@ class OpenAiHttpTranscriptionClient(
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val response = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            OpenAiResponseParser.parse(status, response)
+            // Only whole seconds: an HTTP date is left to the usual wait.
+            val retryAfter = connection.getHeaderField("Retry-After")?.trim()?.toLongOrNull()
+                ?.takeIf { status == 429 && it >= 0 }
+            OpenAiResponseParser.parse(status, response, retryAfter)
         } catch (error: TranscriptionException) {
             throw error
         } catch (error: Exception) {
@@ -210,6 +250,17 @@ class OpenAiHttpTranscriptionClient(
         }
     }
 
+    /** Sleeps for [millis], in short steps so a cancel ends it at once. */
+    private fun waitUnlessCancelled(millis: Long, started: Long) {
+        val until = System.nanoTime() + millis * 1_000_000
+        while (true) {
+            throwIfCancelled(started)
+            val left = (until - System.nanoTime()) / 1_000_000
+            if (left <= 0) return
+            Thread.sleep(minOf(left, 50))
+        }
+    }
+
     private fun cancelledSince(started: Long): Boolean =
         generation.get() != started || isCancelled()
 
@@ -220,6 +271,28 @@ class OpenAiHttpTranscriptionClient(
     companion object {
         const val CANCELLED_MESSAGE = "Transcription cancelled"
         private const val FLAC = OpenAiRequestFactory.FLAC_MIME_TYPE
+        val RETRY_DELAYS_MILLIS = listOf(1_000L, 3_000L)
+        private const val MAX_RETRY_AFTER_MILLIS = 10_000L
+
+        /**
+         * The wait for the service's answer once an upload is sent: two
+         * minutes, plus a second for every 50 kB uploaded, as the service
+         * hears the whole part before it answers. Never more than 30 minutes.
+         */
+        internal fun readTimeoutMillis(uploadBytes: Long): Int =
+            minOf(120_000L + uploadBytes / 50, 30 * 60 * 1_000L).toInt()
+
+        /**
+         * A failure that may pass within seconds: the connection dropped, a
+         * rate limit or a server error. A stalled answer (a timeout), a spent
+         * quota and every other error do not pass.
+         */
+        internal fun isTemporary(error: TranscriptionException): Boolean = when (error) {
+            is TranscriptionHttpException ->
+                error.statusCode in setOf(500, 502, 503, 504) ||
+                    (error.statusCode == 429 && error.code != "insufficient_quota")
+            else -> error.cause is IOException && error.cause !is SocketTimeoutException
+        }
     }
 }
 

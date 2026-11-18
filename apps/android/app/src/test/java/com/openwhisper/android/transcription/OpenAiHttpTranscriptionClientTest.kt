@@ -22,6 +22,13 @@ class OpenAiHttpTranscriptionClientTest {
     private companion object {
         /** The PCM in one upload: a long recording's part. */
         val PART = AudioRules.MAX_PCM_BYTES_PER_UPLOAD
+
+        /** A part that fails all three tries with a server error. */
+        val FAILED_PART = Array(3) { "Server error" }
+        val FAILED_STATUSES = List(3) { 500 }
+
+        /** A status that makes the fake connection drop instead of answering. */
+        const val DROPPED = -1
     }
 
     @Test
@@ -148,9 +155,12 @@ class OpenAiHttpTranscriptionClientTest {
     @Test
     fun aRetryAfterAFailedLastPartSendsOnlyThatPart() {
         val audio = twoPartAudio()
-        val failing = FakeService("Hello from the first part.", "Server error", statuses = listOf(200, 500))
+        val failing = FakeService(
+            "Hello from the first part.", *FAILED_PART,
+            statuses = listOf(200) + FAILED_STATUSES,
+        )
         assertThrows(TranscriptionHttpException::class.java) { failing.client.transcribe(audio) }
-        assertEquals(2, failing.uploads.size)
+        assertEquals(4, failing.uploads.size)
 
         val retry = FakeService("And the second.")
         assertEquals("Hello from the first part. And the second.", retry.client.transcribe(audio))
@@ -163,7 +173,7 @@ class OpenAiHttpTranscriptionClientTest {
     @Test
     fun anEmptyPartThatFinishedIsNotSentAgain() {
         val audio = twoPartAudio()
-        val failing = FakeService("", "Server error", statuses = listOf(200, 500))
+        val failing = FakeService("", *FAILED_PART, statuses = listOf(200) + FAILED_STATUSES)
         assertThrows(TranscriptionHttpException::class.java) { failing.client.transcribe(audio) }
 
         val retry = FakeService("The second part.")
@@ -190,9 +200,9 @@ class OpenAiHttpTranscriptionClientTest {
     @Test
     fun aSilentPartBetweenSpeechIsSkippedAndRetriesSkipIt() {
         val audio = pcmAudio(speech(PART) + ByteArray(PART) + speech(16_000 * 2), saveParts = true)
-        val failing = FakeService("First part.", "Server error", statuses = listOf(200, 500))
+        val failing = FakeService("First part.", *FAILED_PART, statuses = listOf(200) + FAILED_STATUSES)
         assertThrows(TranscriptionHttpException::class.java) { failing.client.transcribe(audio) }
-        assertEquals(2, failing.uploads.size)
+        assertEquals(4, failing.uploads.size)
 
         val retry = FakeService("Third part.")
         assertEquals("First part. Third part.", retry.client.transcribe(audio))
@@ -230,7 +240,7 @@ class OpenAiHttpTranscriptionClientTest {
     @Test
     fun aChangedRecordingStartsItsPartsAfresh() {
         val audio = twoPartAudio()
-        val failing = FakeService("One.", "Server error", statuses = listOf(200, 500))
+        val failing = FakeService("One.", *FAILED_PART, statuses = listOf(200) + FAILED_STATUSES)
         assertThrows(TranscriptionHttpException::class.java) { failing.client.transcribe(audio) }
         assertTrue(audio.file.setLastModified(audio.file.lastModified() + 10_000))
 
@@ -300,6 +310,87 @@ class OpenAiHttpTranscriptionClientTest {
         assertEquals(401, error.statusCode)
         assertEquals("Incorrect API key", error.message)
         assertEquals(1, service.uploads.size)
+    }
+
+    @Test
+    fun aServerErrorOrADroppedConnectionIsTriedAgain() {
+        for (status in listOf(429, 500, 502, 503, 504, DROPPED)) {
+            val service = FakeService("Busy", "Hello.", statuses = listOf(status))
+
+            assertEquals("Hello.", service.client.transcribe(pcmAudio()))
+            assertEquals("$status", 2, service.uploads.size)
+        }
+    }
+
+    @Test
+    fun aFailingRequestIsTriedThreeTimesAtMost() {
+        val service = FakeService("Busy", "Busy", "Busy", "Unused.", statuses = List(3) { 503 })
+
+        val error = assertThrows(TranscriptionHttpException::class.java) {
+            service.client.transcribe(pcmAudio())
+        }
+
+        assertEquals(503, error.statusCode)
+        assertEquals(3, service.uploads.size)
+    }
+
+    @Test
+    fun errorsThatWillNotPassAreSentOnce() {
+        val service = FakeService("Out of credit", "Unused.", statuses = listOf(429), code = "insufficient_quota")
+
+        val error = assertThrows(TranscriptionHttpException::class.java) {
+            service.client.transcribe(pcmAudio())
+        }
+
+        assertEquals(429, error.statusCode)
+        assertEquals(1, service.uploads.size)
+        assertFalse(
+            OpenAiHttpTranscriptionClient.isTemporary(
+                TranscriptionException("Could not reach", java.net.SocketTimeoutException("Read timed out")),
+            ),
+        )
+    }
+
+    @Test
+    fun aRateLimitWaitsAsLongAsItAsks() {
+        val service = FakeService("Slow down", "Hello.", statuses = listOf(429), retryAfter = "1")
+        val started = System.nanoTime()
+
+        assertEquals("Hello.", service.client.transcribe(pcmAudio()))
+
+        assertEquals(2, service.uploads.size)
+        assertTrue(System.nanoTime() - started >= 1_000_000_000L)
+    }
+
+    @Test
+    fun aCancelDuringTheWaitSendsNothingMore() {
+        val service = FakeService("Busy", "Unused.", statuses = listOf(503), retryDelaysMillis = listOf(10_000L))
+        var error: Throwable? = null
+        val upload = thread {
+            error = runCatching { service.client.transcribe(pcmAudio()) }.exceptionOrNull()
+        }
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (service.uploads.isEmpty() && System.nanoTime() < deadline) Thread.sleep(5)
+        Thread.sleep(100)
+
+        service.client.cancel()
+        upload.join(2_000)
+
+        assertFalse(upload.isAlive)
+        assertEquals(OpenAiHttpTranscriptionClient.CANCELLED_MESSAGE, error?.message)
+        assertEquals(1, service.uploads.size)
+    }
+
+    @Test
+    fun theWaitForAnAnswerGrowsWithTheUpload() {
+        // A five-second dictation as WAV: about two minutes.
+        assertEquals(123_200, OpenAiHttpTranscriptionClient.readTimeoutMillis(160_000))
+        // A full-size part: about ten minutes; never more than thirty.
+        assertEquals(
+            120_000 + AudioRules.MAX_UPLOAD_BYTES.toInt() / 50,
+            OpenAiHttpTranscriptionClient.readTimeoutMillis(AudioRules.MAX_UPLOAD_BYTES.toLong()),
+        )
+        assertEquals(30 * 60 * 1_000, OpenAiHttpTranscriptionClient.readTimeoutMillis(Long.MAX_VALUE / 2))
     }
 
     @Test
@@ -416,6 +507,9 @@ class OpenAiHttpTranscriptionClientTest {
         encodeFlac: (File, Long, Int, Int, () -> Boolean) -> ByteArray =
             { _, _, _, _, _ -> error("No FLAC encoder in unit tests") },
         private val onWrite: (Int) -> Unit = {},
+        private val code: String? = null,
+        private val retryAfter: String? = null,
+        retryDelaysMillis: List<Long> = listOf(0L, 0L),
     ) {
         private val texts = ArrayDeque(responses.toList())
         private val statuses = ArrayDeque(statuses)
@@ -430,9 +524,12 @@ class OpenAiHttpTranscriptionClientTest {
                     uploads,
                     this.statuses.removeFirstOrNull() ?: 200,
                     onWrite,
+                    code,
+                    retryAfter,
                 ).also(connections::add)
             },
             encodeFlac = encodeFlac,
+            retryDelaysMillis = retryDelaysMillis,
         )
     }
 
@@ -442,6 +539,8 @@ class OpenAiHttpTranscriptionClientTest {
         private val uploads: MutableList<ByteArray>,
         private val status: Int = 200,
         private val onWrite: (Int) -> Unit = {},
+        private val code: String? = null,
+        private val retryAfter: String? = null,
     ) : HttpURLConnection(url) {
         /** The largest single write into the request, to show nothing is sent whole. */
         var largestWrite = 0
@@ -463,11 +562,15 @@ class OpenAiHttpTranscriptionClientTest {
         override fun disconnect() = Unit
         override fun usingProxy() = false
         override fun getOutputStream(): OutputStream = body
-        override fun getResponseCode() = status
+        override fun getResponseCode(): Int =
+            if (status < 0) throw java.io.IOException("Connection reset") else status
+        override fun getHeaderField(name: String): String? =
+            retryAfter.takeIf { name.equals("Retry-After", ignoreCase = true) }
         override fun getInputStream(): InputStream =
             "{\"text\":\"$text\"}".byteInputStream()
         override fun getErrorStream(): InputStream =
-            "{\"error\":{\"message\":\"$text\"}}".byteInputStream()
+            "{\"error\":{\"message\":\"$text\",\"code\":${code?.let { "\"$it\"" } ?: "null"}}}"
+                .byteInputStream()
     }
 
     private class BlockingConnection(

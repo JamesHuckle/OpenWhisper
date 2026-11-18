@@ -59,7 +59,12 @@ during dictation still cancel insertion.
   WAV header when it goes as WAV), so a long recording is never held in
   memory; an imported compressed file goes as it is, under its own name and
   type. A part that never reaches the silence level is not uploaded; it is
-  saved as finished and empty, so a retry skips it too. This request
+  saved as finished and empty, so a retry skips it too. A request that
+  fails because the connection dropped or the service answered 429, 500,
+  502, 503 or 504 is sent again after 1 s and then 3 s (a rate limit's
+  Retry-After, up to 10 s, sets the wait), and a cancel ends the wait. The
+  wait for an answer once the upload is sent is two minutes plus a second
+  per 50 kB uploaded. This request
   shape and model are supported by the current
   [OpenAI transcription API reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
 - `TranscriptionManager`, held by `OpenWhisperApplication`, runs every

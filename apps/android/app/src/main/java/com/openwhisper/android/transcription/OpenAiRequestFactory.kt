@@ -84,9 +84,17 @@ class UploadAudio private constructor(
 open class TranscriptionException(message: String, cause: Throwable? = null) :
     Exception(message, cause)
 
-/** The service answered with an error status, such as 400 for audio it cannot read. */
-class TranscriptionHttpException(val statusCode: Int, message: String) :
-    TranscriptionException(message)
+/**
+ * The service answered with an error status, such as 400 for audio it cannot
+ * read, with the API's error code and, for a rate limit, how many seconds it
+ * asked us to wait.
+ */
+class TranscriptionHttpException(
+    val statusCode: Int,
+    message: String,
+    val code: String? = null,
+    val retryAfterSeconds: Long? = null,
+) : TranscriptionException(message)
 
 data class TranscriptionAudio(
     val file: File,
@@ -163,12 +171,14 @@ class OpenAiRequestFactory(
 }
 
 object OpenAiResponseParser {
-    fun parse(statusCode: Int, body: String): String {
+    fun parse(statusCode: Int, body: String, retryAfterSeconds: Long? = null): String {
         if (statusCode !in 200..299) {
-            val message = runCatching {
-                JSONObject(body).getJSONObject("error").getString("message")
-            }.getOrDefault("Transcription request failed with HTTP $statusCode")
-            throw TranscriptionHttpException(statusCode, message)
+            val error = runCatching { JSONObject(body).getJSONObject("error") }.getOrNull()
+            val message = error?.optString("message")?.takeIf(String::isNotEmpty)
+                ?: "Transcription request failed with HTTP $statusCode"
+            val code = error?.takeUnless { it.isNull("code") }?.optString("code")
+                ?.takeIf(String::isNotEmpty)
+            throw TranscriptionHttpException(statusCode, message, code, retryAfterSeconds)
         }
 
         // An empty text is a valid answer: a silent part of a long recording.
