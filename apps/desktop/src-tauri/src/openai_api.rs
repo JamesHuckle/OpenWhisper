@@ -246,7 +246,18 @@ impl OpenAiApi for HttpApi {
             .json()
             .await
             .map_err(request_error)?;
-        Ok(responses_text(&answer))
+        // An answer cut short (its output limit, a content filter) or one
+        // that failed holds only part of the text, if any.
+        match answer["status"].as_str() {
+            None | Some("completed") => Ok(responses_text(&answer)),
+            Some(status) => Err(ApiError::Unexpected(format!(
+                "the response was {status}{}",
+                answer["incomplete_details"]["reason"]
+                    .as_str()
+                    .map(|reason| format!(" ({reason})"))
+                    .unwrap_or_default()
+            ))),
+        }
     }
 }
 
@@ -311,7 +322,11 @@ async fn read_transcript(mut response: Response) -> Result<String, ApiError> {
             }
         }
     }
-    Ok(transcript_event(&String::from_utf8_lossy(&pending))?.unwrap_or_default())
+    // Only `transcript.text.done` carries the whole transcript; a stream that
+    // ends without it was cut off.
+    transcript_event(&String::from_utf8_lossy(&pending))?.ok_or_else(|| {
+        ApiError::Unexpected("the transcription stream ended before its transcript".into())
+    })
 }
 
 /// The finished transcript, if this event line carries it.
@@ -705,6 +720,63 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Error code: 400 - Unsupported value: 'minimal'"
+        );
+    }
+
+    fn event_stream(events: &[Value]) -> Reply {
+        Reply {
+            status: 200,
+            content_type: "text/event-stream",
+            body: events
+                .iter()
+                .map(|event| format!("data: {event}\n\n"))
+                .collect(),
+            delay: std::time::Duration::ZERO,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_ends_without_its_transcript_is_an_error() {
+        let server = TestServer::start(vec![
+            event_stream(&[json!({"type": "transcript.text.delta", "delta": "Hello"})]),
+            event_stream(&[json!({"type": "transcript.text.done", "text": ""})]),
+        ])
+        .await;
+        let api = api(&server, "sk-test");
+
+        let cut_off = api
+            .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
+            .await;
+        let empty = api
+            .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
+            .await;
+
+        assert!(matches!(cut_off, Err(ApiError::Unexpected(_))));
+        assert_eq!(empty, Ok(String::new()));
+    }
+
+    #[tokio::test]
+    async fn an_incomplete_tidy_answer_is_an_error_not_part_of_the_text() {
+        let server = TestServer::start(vec![Reply::json(
+            200,
+            json!({
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "Half of"}]},
+                ]
+            }),
+        )])
+        .await;
+
+        let error = api(&server, "sk-test")
+            .respond("gpt-5-nano", "Rules", "half of the text", "minimal")
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            ApiError::Unexpected("the response was incomplete (max_output_tokens)".into())
         );
     }
 
