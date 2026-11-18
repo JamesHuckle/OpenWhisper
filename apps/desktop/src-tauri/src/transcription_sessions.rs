@@ -42,6 +42,10 @@ pub const LIVE_ROTATE_BYTES: u64 = 24_000 * 2 * 25 * 60;
 /// Shorter prompt fragments are too common to remove from an error message
 /// without mangling it.
 const MIN_REDACT_CHARS: usize = 4;
+/// How long one Live audio chunk may take to send. A connection whose peer
+/// stops reading is closed after this, so later chunks and the stop fail
+/// instead of waiting for ever.
+const APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The settings a dictation uses, read when it starts.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -368,10 +372,19 @@ impl Sessions {
             .stream
             .clone()
             .ok_or_else(unknown_session)?;
-        stream
-            .append(chunk)
-            .await
-            .map_err(|error| format!("internal_error: {error}"))?;
+        match until_cancelled(
+            &session.cancel,
+            tokio::time::timeout(APPEND_TIMEOUT, stream.append(chunk)),
+        )
+        .await
+        {
+            None => return Err(unknown_session()),
+            Some(Err(_)) => {
+                stream.close();
+                return Err("internal_error: Realtime audio send timed out".into());
+            }
+            Some(Ok(sent)) => sent.map_err(|error| format!("internal_error: {error}"))?,
+        }
         progress.stream_bytes += chunk.len() as u64;
         Ok(json!({ "buffered_bytes": audio_bytes }))
     }
