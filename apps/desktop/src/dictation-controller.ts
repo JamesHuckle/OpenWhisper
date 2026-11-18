@@ -101,6 +101,9 @@ export function createDictationController(deps: DictationDeps) {
   let backupError: unknown = null;
   let pendingAudioParts: Uint8Array[] = [];
   let pendingAudioBytes = 0;
+  // Set while a stop waits for the microphone's last samples; whatever
+  // finishes the recording waits for them too, so they are saved and sent.
+  let captureStopping: Promise<void> | null = null;
   // Audio captured before the backup file opened, kept by the number of the
   // cancel that stopped its recording, so the backup still saves it once it opens.
   const audioCancelledBeforeBackup = new Map<number, Uint8Array[]>();
@@ -288,6 +291,9 @@ export function createDictationController(deps: DictationDeps) {
       log(`session ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
       if (currentState() === "transcribing") {
+        // A stop still waiting for the microphone finalizes once it has its
+        // last samples.
+        if (captureStopping) return;
         await finalizeRecording();
         return;
       }
@@ -312,12 +318,23 @@ export function createDictationController(deps: DictationDeps) {
     if (state !== "recording") return;
     setState("transcribing");
     deps.stopMeter(true);
+    const cancelsBefore = cancelCount;
 
-    if (capture.isActive()) {
-      await capture.stop();
-      flushAudioBatch();
+    const stopping = (async () => {
+      if (capture.isActive()) {
+        await capture.stop();
+        flushAudioBatch();
+      }
+    })();
+    captureStopping = stopping;
+    try {
+      await stopping;
+    } finally {
+      if (captureStopping === stopping) captureStopping = null;
     }
 
+    // A cancel meanwhile already tidied up; the session may now be a newer one.
+    if (cancelCount !== cancelsBefore) return;
     if (currentSessionId) await finalizeRecording();
   }
 
@@ -360,6 +377,12 @@ export function createDictationController(deps: DictationDeps) {
       // The backup is still opening; it saves this audio once it opens.
       audioCancelledBeforeBackup.set(cancelCount, pendingAudioParts);
     }
+    // Audio still waiting for a full batch is saved with the recording, and
+    // so are the microphone's last samples when a stop is waiting for them.
+    // None of it goes to the stopping session.
+    streamAudioToWorker = false;
+    flushAudioBatch();
+    const stopping = captureStopping;
     const sessionId = currentSessionId;
     // The session stops being this recording's at once, so a result that
     // arrives while it stops is not pasted or copied.
@@ -369,6 +392,7 @@ export function createDictationController(deps: DictationDeps) {
         log(`stop session failed=${errorMessage(error)}`);
       });
     }
+    if (stopping) await stopping.catch(() => undefined);
     // Capture has stopped; let its last pieces reach the backup before closing it.
     await backupTail;
     await finishCurrentRecording("cancelled", "", "Cancelled by user");

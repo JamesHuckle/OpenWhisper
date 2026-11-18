@@ -68,6 +68,8 @@ function fakeInvoke() {
 function fakeCapture() {
   let onAudio: ((chunk: ArrayBuffer) => void) | null = null;
   let active = false;
+  let stopHeld: Promise<void> | null = null;
+  let finishStop = () => undefined as void;
   const capture: AudioCapture = {
     start: async (send) => {
       onAudio = send;
@@ -75,6 +77,7 @@ function fakeCapture() {
     },
     isActive: () => active,
     stop: async () => {
+      if (stopHeld) await stopHeld;
       active = false;
     },
     discard: () => {
@@ -83,6 +86,16 @@ function fakeCapture() {
   };
   return {
     capture,
+    /** Keeps stop waiting, as the worklet does for its last samples, until finishStop. */
+    holdStop() {
+      stopHeld = new Promise((resolve) => {
+        finishStop = () => {
+          stopHeld = null;
+          resolve();
+        };
+      });
+    },
+    finishStop: () => finishStop(),
     /** Sends captured PCM bytes, all set to value. */
     hear(bytes: number, value = 1) {
       if (!onAudio) throw new Error("capture has not started");
@@ -461,5 +474,57 @@ describe("dictation controller", () => {
     expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
       { recordingId: "rec-2", sessionId: "s-2" },
     ]);
+  });
+
+  it("finalizes once, after the last samples are saved, when the session opens during a stop", async () => {
+    const { app, mic, dictation } = setup();
+    app.hold("worker_start_session");
+    void dictation.toggleRecording();
+    await settle();
+    expect(dictation.state).toBe("recording");
+
+    mic.holdStop();
+    const stopping = dictation.stopRecording();
+    app.release("worker_start_session");
+    await settle();
+    mic.hear(100, 9);
+    mic.finishStop();
+    await stopping;
+    await settle();
+
+    const commands = app.commands();
+    expect(app.named("recording_transcribe")).toHaveLength(1);
+    expect(commands.lastIndexOf("recording_append_chunk")).toBeLessThan(
+      commands.indexOf("recording_transcribe"),
+    );
+    expect(Array.from(app.named("recording_append_chunk").at(-1)!.args as Uint8Array)).toEqual(
+      Array(100).fill(9),
+    );
+  });
+
+  it("saves the microphone's last samples when cancelled while a stop waits for them", async () => {
+    const { app, mic, dictation } = setup();
+    await startRecording(dictation);
+    mic.hear(100, 3);
+
+    mic.holdStop();
+    const stopping = dictation.stopRecording();
+    await settle();
+    const cancelling = dictation.cancelTranscription();
+    mic.hear(50, 4);
+    mic.finishStop();
+    await Promise.all([stopping, cancelling]);
+    await settle();
+
+    const saved = app.named("recording_append_chunk").map((call) => Array.from(call.args as Uint8Array));
+    expect(saved.flat()).toEqual([...Array(100).fill(3), ...Array(50).fill(4)]);
+    const commands = app.commands();
+    expect(commands.lastIndexOf("recording_append_chunk")).toBeLessThan(
+      commands.indexOf("recording_finish"),
+    );
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
+    expect(app.commands()).not.toContain("recording_transcribe");
   });
 });
