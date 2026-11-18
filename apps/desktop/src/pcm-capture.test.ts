@@ -119,18 +119,14 @@ describe("PCM capture worklet", () => {
     );
   });
 
-  it("is opened by the page at the upload rate instead of converting the rate itself", () => {
-    // The browser's filtered resampler then removes sounds above 12 kHz. A
-    // 15 kHz tone checked in headless Chrome: the old keep-every-second-sample
-    // code passed it through at full level as a 9 kHz whistle.
+  it("is opened by the page at the upload rate, with no speaker", () => {
+    // Bugs: converting the rate here passed a 15 kHz tone through as a 9 kHz
+    // whistle (checked in headless Chrome), and opening the default speaker
+    // woke Bluetooth headphones and held up every recording. The page's one
+    // context now runs at the upload rate with a "none" sink.
     const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
 
-    expect(main).toContain("new AudioContext(CAPTURE_CONTEXT_OPTIONS)");
+    expect(main.match(/new AudioContext\([^)]*\)/g)).toEqual(["new AudioContext(CAPTURE_CONTEXT_OPTIONS)"]);
     expect(main).toContain("sampleRate: PCM_SAMPLE_RATE,\n  sinkId: { type: \"none\" },");
-    expect(main).toContain("new AudioWorkletNode(context, PCM_WORKLET_NAME");
-    expect(main).toContain('from "./pcm-capture.worklet?worker&url"');
-    expect(main).not.toContain("createScriptProcessor");
-    expect(main).not.toContain("resampleToPcm16");
-    expect(main).not.toContain("audio/pcm;rate=");
   });
 });
