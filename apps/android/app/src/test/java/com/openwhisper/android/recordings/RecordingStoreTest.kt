@@ -117,7 +117,7 @@ class RecordingStoreTest {
     }
 
     @Test
-    fun recordingCheckpointsReadOnlyTheActiveRecording() {
+    fun recordingCheckpointsNeverReadOrRewriteAnyDetails() {
         withRoot { root ->
             val reads = mutableListOf<String>()
             val store = RecordingStore.forDirectory(root) { id -> synchronized(reads) { reads += id } }
@@ -134,18 +134,51 @@ class RecordingStoreTest {
             }
             val writer = store.beginPcm("Live recording", 16_000)
             val active = store.list().first { it.status == "recording" }
+            val details = File(root, "${active.id}/metadata.json")
+            val savedDetails = details.readText()
+            assertTrue(details.setLastModified(1_000_000))
 
             reads.clear()
             val oneSecond = ByteArray(32_000)
-            writer.write(oneSecond, oneSecond.size)
-            store.updateCapturedBytes(active.id, 64_000)
+            repeat(5) { writer.write(oneSecond, oneSecond.size) }
 
-            assertEquals(listOf(active.id, active.id), reads)
-            assertEquals(active.copy(bytes = 44L + 64_000), store.get(active.id))
+            assertEquals(emptyList<String>(), reads)
+            assertEquals(1_000_000L, details.lastModified())
+            assertEquals(savedDetails, details.readText())
+            assertEquals(active.copy(bytes = 44L + 5 * 32_000), store.get(active.id))
             saved.forEachIndexed { index, id ->
                 assertEquals("$index $longText", store.get(id)?.transcript)
             }
             writer.finish("saved")
+            assertEquals(44L + 5 * 32_000, store.get(active.id)?.bytes)
+        }
+    }
+
+    @Test
+    fun theShownSizeOfALiveRecordingGrowsAndOneLeftOpenStaysReadable() {
+        withStore { store ->
+            val writer = store.beginPcm("Left open", 16_000)
+            val id = store.list().single().id
+            assertEquals(44L, store.get(id)?.bytes)
+
+            val oneSecond = ByteArray(32_000) { (it % 101).toByte() }
+            writer.write(oneSecond, oneSecond.size)
+            assertEquals(44L + 32_000, store.list().single().bytes)
+            writer.write(oneSecond, oneSecond.size)
+            assertEquals(44L + 64_000, store.list().single().bytes)
+
+            // Half a second more, then the app dies before the next checkpoint
+            // or finish: the size shown is what reached the file, and the
+            // header still describes the last checkpoint, so it plays.
+            writer.write(oneSecond, 16_000)
+            val left = store.get(id)!!
+            assertEquals("recording", left.status)
+            assertEquals(44L + 80_000, left.bytes)
+            val wav = store.file(left).readBytes()
+            assertEquals("RIFF", wav.copyOfRange(0, 4).decodeToString())
+            assertEquals(64_000, littleEndianInt(wav, 40))
+            assertArrayEquals(oneSecond, wav.copyOfRange(44, 44 + 32_000))
+            writer.finish("cancelled")
         }
     }
 
@@ -254,6 +287,9 @@ class RecordingStoreTest {
             assertTrue(last.transcript.startsWith("0-199 ") || last.transcript.startsWith("1-199 "))
         }
     }
+
+    private fun littleEndianInt(bytes: ByteArray, offset: Int): Int =
+        (0 until 4).sumOf { (bytes[offset + it].toInt() and 0xFF) shl (8 * it) }
 
     private fun withStore(block: (RecordingStore) -> Unit) {
         withRoot { root -> block(RecordingStore.forDirectory(root)) }

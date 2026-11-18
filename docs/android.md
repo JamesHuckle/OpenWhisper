@@ -46,7 +46,11 @@ during dictation still cancel insertion.
   password state, and sensitivity. Commit is refused if focus or content
   changed during dictation.
 - `AndroidAudioRecorder` captures mono 16 kHz PCM and `WavEncoder` writes every
-  WAV header: the saved recording's and each WAV upload's.
+  WAV header: the saved recording's and each WAV upload's. While recording,
+  the WAV header is brought up to date and forced to disk about once a
+  second; the recording's `metadata.json` is written only when it starts
+  and closes, and meanwhile `RecordingStore` reads its size from the WAV
+  file, as the desktop does.
 - `FlacFileEncoder` turns each upload part into lossless FLAC with the phone's
   own `MediaCodec` encoder, about half the bytes of WAV for speech, reading
   the part from the saved file in blocks. If the

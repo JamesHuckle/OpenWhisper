@@ -39,6 +39,11 @@ data class PcmRecording(
  * While a long recording is transcribed in parts, each finished part is saved
  * in its [partsFile], so a retry sends only the parts that did not finish. The
  * file goes when the transcription completes or the recording is pruned.
+ *
+ * While a recording is still being captured its details are written only when
+ * it begins and when it finishes, never in between: the size shown for it is
+ * read from its audio file instead, so the microphone never waits on this
+ * store's lock.
  */
 class RecordingStore private constructor(
     private val root: File,
@@ -64,7 +69,7 @@ class RecordingStore private constructor(
                 source = "microphone",
                 mimeType = "audio/wav",
                 fileName = file.name,
-                status = "recording",
+                status = RECORDING,
                 bytes = WavEncoder.HEADER_BYTES.toLong(),
                 transcript = "",
                 error = "",
@@ -135,10 +140,7 @@ class RecordingStore private constructor(
             .toList()
     }
 
-    /**
-     * One recording's details, read from its own folder only. The audio thread
-     * calls this once a second while recording, so it never reads the others.
-     */
+    /** One recording's details, read from its own folder only. */
     fun get(id: String): StoredRecording? = synchronized(lock) {
         if (!isSafeId(id)) return null
         readMetadata(File(root, id))?.takeIf { it.id == id }
@@ -149,20 +151,20 @@ class RecordingStore private constructor(
     /** Where the finished parts of this recording's transcription are saved. */
     fun partsFile(id: String): File = File(File(root, id), PARTS_FILE)
 
-    internal fun updateCapturedBytes(id: String, bytes: Long) {
-        synchronized(lock) {
-            val current = get(id) ?: return
-            writeMetadata(current.copy(bytes = bytes + WavEncoder.HEADER_BYTES))
-        }
-    }
-
     private fun metadataFile(directory: File) = AtomicFile(File(directory, METADATA_FILE))
 
     private fun readMetadata(directory: File): StoredRecording? {
         onMetadataRead(directory.name)
-        return runCatching {
+        val recording = runCatching {
             parseMetadata(metadataFile(directory).readFully().decodeToString())
-        }.getOrNull()
+        }.getOrNull() ?: return null
+        // A recording still being captured (or left so by a crash) has the
+        // size of its audio file so far; its details are not kept up to date.
+        return if (recording.status == RECORDING) {
+            recording.copy(bytes = File(directory, recording.fileName).length())
+        } else {
+            recording
+        }
     }
 
     /** A recording id names one folder directly inside [root], nothing else. */
@@ -219,6 +221,7 @@ class RecordingStore private constructor(
 
     companion object {
         const val RETAIN_COUNT = 10
+        private const val RECORDING = "recording"
         private const val METADATA_FILE = "metadata.json"
         private const val PARTS_FILE = "parts.json"
         private val SUPPORTED_EXTENSIONS =
@@ -270,13 +273,16 @@ class PcmRecordingWriter internal constructor(
         return PcmRecording(id, file, sampleRate, pcmBytes)
     }
 
+    /**
+     * Makes the file playable up to here and forces it to disk. It touches
+     * only the audio file, never the store, so it takes no shared lock.
+     */
     private fun checkpoint() {
         val end = WavEncoder.HEADER_BYTES + pcmBytes
         wav.seek(0)
         wav.write(WavEncoder.header(pcmBytes, sampleRate))
         wav.seek(end)
         wav.fd.sync()
-        store.updateCapturedBytes(id, pcmBytes)
         bytesSinceCheckpoint = 0
     }
 }
