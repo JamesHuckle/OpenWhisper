@@ -191,10 +191,11 @@ class RecordingStoreTest {
             val importing = Thread {
                 imported = screen.import("slow.wav", "audio/wav", "wav", slowInput)
             }.apply { start() }
-            assertTrue(reading.await(5, TimeUnit.SECONDS))
 
             val listed = Executors.newSingleThreadExecutor()
+            // Inside the try, so a failed wait still releases the importer.
             try {
+                assertTrue(reading.await(5, TimeUnit.SECONDS))
                 val recording = listed.submit<PcmRecording> {
                     service.beginPcm("Dictation", 16_000).finish("saved")
                 }
