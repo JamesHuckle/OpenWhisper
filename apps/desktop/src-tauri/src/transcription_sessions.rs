@@ -1071,7 +1071,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_session_is_forgotten() {
-        let server = TestServer::start(vec![Reply::error(500, "boom", "server_error", None)]).await;
+        // A server error is tried three times before the dictation fails.
+        let boom = Reply::error(500, "boom", "server_error", None);
+        let server = TestServer::start(vec![boom.clone(), boom.clone(), boom]).await;
         let h = harness(&server.base_url);
         let id = h.start("gpt-transcribe", true, "").await;
         let path = h.wav(1.0, 6_000);

@@ -41,8 +41,10 @@ WhisperFlow is split into two runtime layers, in one process:
      nothing runs beside it. `transcription_sessions.rs` holds each
      dictation's session, `transcriber.rs` sends a saved recording (in
      parts when it is long) and tidies the text, `openai_api.rs` makes the
-     two HTTP calls (reqwest with rustls) and `realtime.rs` is the Live
-     websocket. The shared rules are in `audio_rules.rs` and
+     two HTTP calls (reqwest with rustls; each is tried again after 1 s and
+     3 s when the connection drops or the service answers 429, 500, 502, 503
+     or 504, and a transcription's time limit grows with its upload) and
+     `realtime.rs` is the Live websocket. The shared rules are in `audio_rules.rs` and
      `saved_parts.rs`. All of them need no Tauri, so `core-tests` runs their
      tests against local stand-ins for OpenAI.
 

@@ -2,6 +2,11 @@
 //! (`/v1/audio/transcriptions`, streamed) and tidy a transcript
 //! (`/v1/responses`). The Live websocket is in src/realtime.rs.
 //!
+//! A request that fails for a passing reason (the connection dropped, a rate
+//! limit, a 500/502/503/504) is tried twice more, after 1 s and then 3 s; any
+//! other failure is reported at once. A cancelled dictation drops the call,
+//! which ends any wait.
+//!
 //! Errors keep the API's message for the user, but `describe` (used in logs
 //! and warnings) gives only the error type, HTTP status and error code: an
 //! API message can quote the request, which holds the user's dictated words
@@ -9,6 +14,7 @@
 //!
 //! This file needs no Tauri, so its tests run in `core-tests`.
 
+use crate::debug_log::debug_log_line;
 use reqwest::{multipart, Client, Response};
 use serde_json::{json, Value};
 use std::fmt;
@@ -17,15 +23,34 @@ use std::time::Duration;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
-/// Long recordings can legitimately take many minutes to upload and
-/// transcribe, so a request may wait this long between pieces of its answer.
-const READ_TIMEOUT: Duration = Duration::from_secs(1800);
+/// The longest wait for the next piece of a streamed transcript once its
+/// answer has started. It is not a client-wide read timeout, because reqwest
+/// counts that from the start of the upload, and a long part on a slow
+/// connection can take minutes to send.
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// The whole of one transcription request: ten minutes to upload a part and
-/// thirty to hear back, as before.
-const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(40 * 60);
+/// The whole of one transcription request is a minute plus a second for every
+/// 50 kB uploaded (about 400 kbit/s), so a stalled short dictation fails
+/// within about a minute while a full-size part has nine; never more than this.
+const MAX_TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(40 * 60);
+const TRANSCRIBE_BASE_TIMEOUT: Duration = Duration::from_secs(60);
+const UPLOAD_BYTES_PER_SECOND: u64 = 50_000;
 /// The whole of one tidy request.
-const POLISH_TIMEOUT: Duration = Duration::from_secs(420);
+const POLISH_TIMEOUT: Duration = Duration::from_secs(90);
+/// The waits before the second and third tries. Tests use short ones.
+const RETRY_DELAYS: [Duration; 2] = if cfg!(test) {
+    [Duration::from_millis(200), Duration::from_millis(400)]
+} else {
+    [Duration::from_secs(1), Duration::from_secs(3)]
+};
+/// The longest a rate limit's `Retry-After` may make a dictation wait.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(10);
+
+/// The time limit of one transcription request uploading `upload_bytes`.
+fn transcribe_timeout(upload_bytes: usize) -> Duration {
+    let upload = Duration::from_secs(upload_bytes as u64 / UPLOAD_BYTES_PER_SECOND);
+    (TRANSCRIBE_BASE_TIMEOUT + upload).min(MAX_TRANSCRIBE_TIMEOUT)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiError {
@@ -48,6 +73,19 @@ impl ApiError {
     /// HTTP 400: the service could not use what was sent.
     pub fn is_bad_request(&self) -> bool {
         matches!(self, ApiError::Status { status: 400, .. })
+    }
+
+    /// A failure that may pass within seconds: the connection dropped, a
+    /// rate limit or a server error. A spent quota does not pass.
+    pub fn is_temporary(&self) -> bool {
+        match self {
+            ApiError::Connection(_) => true,
+            ApiError::Status {
+                status: 429, code, ..
+            } => code.as_deref() != Some("insufficient_quota"),
+            ApiError::Status { status, .. } => matches!(status, 500 | 502 | 503 | 504),
+            ApiError::Timeout | ApiError::MissingKey | ApiError::Unexpected(_) => false,
+        }
     }
 
     pub fn param(&self) -> Option<&str> {
@@ -146,12 +184,12 @@ pub fn ensure_crypto_provider() {
     }
 }
 
-/// One connection pool for every dictation, so connections stay warm.
+/// One connection pool for every dictation, so connections stay warm. Each
+/// request sets its own time limit.
 pub fn new_http_client() -> Result<Client, String> {
     ensure_crypto_provider();
     Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
         .build()
         .map_err(|error| format!("Could not start the HTTP client: {error}"))
 }
@@ -182,15 +220,17 @@ impl HttpApi {
     }
 }
 
-impl OpenAiApi for HttpApi {
-    async fn transcribe(
+impl HttpApi {
+    /// One try at transcribing `audio`.
+    async fn transcribe_once(
         &self,
+        key: &str,
         audio: Vec<u8>,
         mime_type: &str,
         model: &str,
         prompt: &str,
-    ) -> Result<String, ApiError> {
-        let key = self.key()?;
+    ) -> Result<String, Failure> {
+        let timeout = transcribe_timeout(audio.len());
         let file = multipart::Part::bytes(audio)
             .file_name(format!("session_audio{}", extension_for_mime(mime_type)))
             .mime_str(mime_type)
@@ -207,12 +247,59 @@ impl OpenAiApi for HttpApi {
             .client
             .post(format!("{}/audio/transcriptions", self.base_url))
             .bearer_auth(key)
-            .timeout(TRANSCRIBE_TIMEOUT)
+            .timeout(timeout)
             .multipart(form)
             .send()
             .await
             .map_err(request_error)?;
-        read_transcript(checked(response).await?).await
+        Ok(read_transcript(checked(response).await?).await?)
+    }
+
+    /// One try at a Responses API answer to `body`.
+    async fn respond_once(&self, key: &str, body: &Value) -> Result<String, Failure> {
+        let response = self
+            .client
+            .post(format!("{}/responses", self.base_url))
+            .bearer_auth(key)
+            .timeout(POLISH_TIMEOUT)
+            .json(body)
+            .send()
+            .await
+            .map_err(request_error)?;
+        let answer: Value = checked(response)
+            .await?
+            .json()
+            .await
+            .map_err(request_error)?;
+        // An answer cut short (its output limit, a content filter) or one
+        // that failed holds only part of the text, if any.
+        match answer["status"].as_str() {
+            None | Some("completed") => Ok(responses_text(&answer)),
+            Some(status) => Err(ApiError::Unexpected(format!(
+                "the response was {status}{}",
+                answer["incomplete_details"]["reason"]
+                    .as_str()
+                    .map(|reason| format!(" ({reason})"))
+                    .unwrap_or_default()
+            ))
+            .into()),
+        }
+    }
+}
+
+impl OpenAiApi for HttpApi {
+    async fn transcribe(
+        &self,
+        audio: Vec<u8>,
+        mime_type: &str,
+        model: &str,
+        prompt: &str,
+    ) -> Result<String, ApiError> {
+        let key = self.key()?;
+        with_retries("transcribe", || {
+            self.transcribe_once(key, audio.clone(), mime_type, model, prompt)
+        })
+        .await
     }
 
     async fn respond(
@@ -232,32 +319,53 @@ impl OpenAiApi for HttpApi {
             "reasoning": { "effort": reasoning_effort },
             "text": { "verbosity": "low" },
         });
-        let response = self
-            .client
-            .post(format!("{}/responses", self.base_url))
-            .bearer_auth(key)
-            .timeout(POLISH_TIMEOUT)
-            .json(&body)
-            .send()
-            .await
-            .map_err(request_error)?;
-        let answer: Value = checked(response)
-            .await?
-            .json()
-            .await
-            .map_err(request_error)?;
-        // An answer cut short (its output limit, a content filter) or one
-        // that failed holds only part of the text, if any.
-        match answer["status"].as_str() {
-            None | Some("completed") => Ok(responses_text(&answer)),
-            Some(status) => Err(ApiError::Unexpected(format!(
-                "the response was {status}{}",
-                answer["incomplete_details"]["reason"]
-                    .as_str()
-                    .map(|reason| format!(" ({reason})"))
-                    .unwrap_or_default()
-            ))),
+        with_retries("respond", || self.respond_once(key, &body)).await
+    }
+}
+
+/// A failed try, and how long a rate limit asked us to wait before the next.
+struct Failure {
+    error: ApiError,
+    retry_after: Option<Duration>,
+}
+
+impl From<ApiError> for Failure {
+    fn from(error: ApiError) -> Self {
+        Self {
+            error,
+            retry_after: None,
         }
+    }
+}
+
+/// Runs `attempt` until it succeeds, fails for a reason that will not pass,
+/// or has been tried three times. Dropping the future ends any wait.
+async fn with_retries<T, F, Fut>(name: &str, mut attempt: F) -> Result<T, ApiError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, Failure>>,
+{
+    let mut delays = RETRY_DELAYS.into_iter();
+    loop {
+        let failure = match attempt().await {
+            Ok(answer) => return Ok(answer),
+            Err(failure) => failure,
+        };
+        let Some(delay) = delays.next().filter(|_| failure.error.is_temporary()) else {
+            return Err(failure.error);
+        };
+        let wait = failure
+            .retry_after
+            .map_or(delay, |asked| asked.min(MAX_RETRY_AFTER));
+        debug_log_line(
+            "openai",
+            &format!(
+                "retry request={name} wait_ms={} error={}",
+                wait.as_millis(),
+                failure.error.describe()
+            ),
+        );
+        tokio::time::sleep(wait).await;
     }
 }
 
@@ -270,11 +378,18 @@ fn request_error(error: reqwest::Error) -> ApiError {
 }
 
 /// The response when its status is a success, or the API's error.
-async fn checked(response: Response) -> Result<Response, ApiError> {
+async fn checked(response: Response) -> Result<Response, Failure> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
+    // Only whole seconds: an HTTP date is left to the usual wait.
+    let retry_after = (status.as_u16() == 429)
+        .then(|| response.headers().get(reqwest::header::RETRY_AFTER))
+        .flatten()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_secs);
     let body = response.text().await.unwrap_or_default();
     let error = serde_json::from_str::<Value>(&body)
         .ok()
@@ -292,11 +407,14 @@ async fn checked(response: Response) -> Result<Response, ApiError> {
             body.chars().take(300).collect()
         }
     });
-    Err(ApiError::Status {
-        status: status.as_u16(),
-        code: text("code"),
-        param: text("param"),
-        message,
+    Err(Failure {
+        error: ApiError::Status {
+            status: status.as_u16(),
+            code: text("code"),
+            param: text("param"),
+            message,
+        },
+        retry_after,
     })
 }
 
@@ -313,7 +431,12 @@ async fn read_transcript(mut response: Response) -> Result<String, ApiError> {
         return Ok(answer["text"].as_str().unwrap_or("").to_string());
     }
     let mut pending: Vec<u8> = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(request_error)? {
+    loop {
+        let chunk = tokio::time::timeout(READ_TIMEOUT, response.chunk())
+            .await
+            .map_err(|_| ApiError::Timeout)?
+            .map_err(request_error)?;
+        let Some(chunk) = chunk else { break };
         pending.extend_from_slice(&chunk);
         while let Some(end) = pending.iter().position(|&byte| byte == b'\n') {
             let line: Vec<u8> = pending.drain(..=end).collect();
@@ -455,13 +578,15 @@ pub mod test_server {
     }
 
     /// One queued answer: a status, a content type and a body, sent after
-    /// an optional delay.
+    /// an optional delay. Status 0 closes the connection without answering.
     #[derive(Clone)]
     pub struct Reply {
         pub status: u16,
         pub content_type: &'static str,
         pub body: String,
         pub delay: Duration,
+        /// The `Retry-After` header, in seconds.
+        pub retry_after: Option<u64>,
     }
 
     impl Reply {
@@ -474,6 +599,7 @@ pub mod test_server {
                 content_type: "text/event-stream",
                 body: format!("data: {delta}\n\ndata: {done}\n\n"),
                 delay: Duration::ZERO,
+                retry_after: None,
             }
         }
 
@@ -506,11 +632,22 @@ pub mod test_server {
                 content_type: "application/json",
                 body: body.to_string(),
                 delay: Duration::ZERO,
+                retry_after: None,
             }
+        }
+
+        /// The connection closes with no answer, as when a network drops.
+        pub fn hang_up() -> Self {
+            Self::json(0, serde_json::Value::Null)
         }
 
         pub fn after(mut self, delay: Duration) -> Self {
             self.delay = delay;
+            self
+        }
+
+        pub fn retry_after(mut self, seconds: u64) -> Self {
+            self.retry_after = Some(seconds);
             self
         }
     }
@@ -600,8 +737,15 @@ pub mod test_server {
             };
             let reply = reply.unwrap_or_else(|| Reply::error(500, "no reply queued", "test", None));
             tokio::time::sleep(reply.delay).await;
+            if reply.status == 0 {
+                return;
+            }
+            let retry_after = reply
+                .retry_after
+                .map(|seconds| format!("Retry-After: {seconds}\r\n"))
+                .unwrap_or_default();
             let answer = format!(
-                "HTTP/1.1 {} Test\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+                "HTTP/1.1 {} Test\r\nContent-Type: {}\r\nContent-Length: {}\r\n{retry_after}\r\n{}",
                 reply.status,
                 reply.content_type,
                 reply.body.len(),
@@ -732,6 +876,7 @@ mod tests {
                 .map(|event| format!("data: {event}\n\n"))
                 .collect(),
             delay: std::time::Duration::ZERO,
+            retry_after: None,
         }
     }
 
@@ -791,6 +936,137 @@ mod tests {
 
         assert_eq!(error, ApiError::MissingKey);
         assert!(server.received().is_empty());
+    }
+
+    fn server_error(status: u16) -> Reply {
+        Reply::error(status, "Service unavailable", "server_error", None)
+    }
+
+    #[tokio::test]
+    async fn a_server_error_is_tried_again_after_a_wait() {
+        let server =
+            TestServer::start(vec![server_error(503), Reply::transcript("Second try.")]).await;
+        let started = std::time::Instant::now();
+
+        let text = api(&server, "sk-test")
+            .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "Zoon")
+            .await
+            .unwrap();
+
+        assert_eq!(text, "Second try.");
+        let sent = server.received();
+        assert_eq!(sent.len(), 2);
+        assert!(started.elapsed() >= RETRY_DELAYS[0]);
+        // The second try sends the same audio and prompt.
+        assert_eq!(sent[0].body.len(), sent[1].body.len());
+        assert_eq!(sent[1].field("prompt").as_deref(), Some("Zoon"));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_is_tried_again() {
+        let server = TestServer::start(vec![Reply::hang_up(), Reply::response("Tidied.")]).await;
+
+        let text = api(&server, "sk-test")
+            .respond("gpt-5-nano", "Rules", "text", "minimal")
+            .await
+            .unwrap();
+
+        assert_eq!(text, "Tidied.");
+        assert_eq!(server.received().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_request_is_tried_three_times_at_most() {
+        let server = TestServer::start(vec![
+            server_error(502),
+            server_error(500),
+            server_error(504),
+            Reply::transcript("Never asked for."),
+        ])
+        .await;
+
+        let error = api(&server, "sk-test")
+            .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ApiError::Status { status: 504, .. }));
+        assert_eq!(server.received().len(), 3);
+        assert_eq!(server.unused_replies(), 1);
+    }
+
+    #[tokio::test]
+    async fn errors_that_will_not_pass_are_sent_once() {
+        for reply in [
+            Reply::error(400, "Bad audio", "invalid_value", None),
+            Reply::error(401, "Incorrect API key", "invalid_api_key", None),
+            Reply::error(403, "Forbidden", "forbidden", None),
+            Reply::error(404, "No such model", "model_not_found", None),
+            Reply::error(429, "Out of credit", "insufficient_quota", None),
+        ] {
+            let status = reply.status;
+            let server = TestServer::start(vec![reply, Reply::transcript("Unused.")]).await;
+
+            let error = api(&server, "sk-test")
+                .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
+                .await
+                .unwrap_err();
+
+            assert!(matches!(error, ApiError::Status { status: s, .. } if s == status));
+            assert_eq!(server.received().len(), 1, "{status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_waits_as_long_as_it_asks() {
+        let server = TestServer::start(vec![
+            Reply::error(429, "Slow down", "rate_limit_exceeded", None).retry_after(1),
+            Reply::response("Tidied."),
+        ])
+        .await;
+        let started = std::time::Instant::now();
+
+        let text = api(&server, "sk-test")
+            .respond("gpt-5-nano", "Rules", "text", "minimal")
+            .await
+            .unwrap();
+
+        assert_eq!(text, "Tidied.");
+        assert_eq!(server.received().len(), 2);
+        assert!(started.elapsed() >= Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_cancel_during_the_wait_sends_nothing_more() {
+        let server =
+            TestServer::start(vec![server_error(503), Reply::transcript("Too late.")]).await;
+        let api = api(&server, "sk-test");
+        let call = api.transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "");
+        tokio::pin!(call);
+
+        // Runs the call until its first try has failed and it is waiting.
+        tokio::select! {
+            _ = &mut call => panic!("the call ended during its wait"),
+            _ = async {
+                while server.received().is_empty() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                tokio::time::sleep(RETRY_DELAYS[0] / 4).await;
+            } => {}
+        }
+        drop(call);
+        tokio::time::sleep(RETRY_DELAYS[0] * 3).await;
+
+        assert_eq!(server.received().len(), 1);
+    }
+
+    #[test]
+    fn a_transcription_time_limit_grows_with_its_upload() {
+        // A five-second dictation as FLAC: about a minute.
+        assert_eq!(transcribe_timeout(160_000), Duration::from_secs(63));
+        // A full-size part: about nine and a half minutes.
+        assert_eq!(transcribe_timeout(25_165_824), Duration::from_secs(563));
+        assert_eq!(transcribe_timeout(usize::MAX), MAX_TRANSCRIBE_TIMEOUT);
     }
 
     #[test]
