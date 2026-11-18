@@ -223,7 +223,9 @@ private fun manager(client: TranscriptionClient, runner: BackgroundRunner) = Tra
         },
     ),
     newClient = { client },
-    background = runner,
+    dictationRunner = runner,
+    // A dictation never waits behind imports and retries.
+    bulkRunner = BackgroundRunner { error("A dictation ran on the bulk thread") },
     callbacks = DirectDispatcher,
 )
 

@@ -6,6 +6,7 @@ import com.openwhisper.android.transcription.NoSpeechException
 import com.openwhisper.android.transcription.TranscriptionAudio
 import com.openwhisper.android.transcription.TranscriptionJob
 import com.openwhisper.android.transcription.TranscriptionManager
+import com.openwhisper.android.transcription.TranscriptionOrigin
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -49,7 +50,7 @@ class BufferedDictationBackend(
         background.run {
             try {
                 val recording = recorder.stop()
-                val job = transcriptions.submit(recording.id) {
+                val job = transcriptions.submit(recording.id, TranscriptionOrigin.DICTATION) {
                     TranscriptionAudio(
                         file = recording.file,
                         mimeType = "audio/wav",

@@ -20,6 +20,11 @@ import java.util.concurrent.CopyOnWriteArraySet
  * each recording's status: "transcribing", then "complete", "failed" or
  * "cancelled".
  *
+ * Each job has a [TranscriptionOrigin]. Dictations run on [dictationRunner]
+ * and imports and retries on [bulkRunner], so a short keyboard dictation never
+ * waits behind a long import. A job is still found by its recording alone: an
+ * app-screen request for a dictation that is running joins that job.
+ *
  * Nothing resumes by itself. A job lost with the app's process leaves its
  * finished parts saved, and [recoverInterrupted] marks it failed, so the user
  * taps Transcribe to send only the parts that did not finish.
@@ -28,7 +33,10 @@ class TranscriptionManager(
     private val store: RecordingStore,
     /** A client for one job; it stops before any upload once the argument returns true. */
     private val newClient: (isCancelled: () -> Boolean) -> TranscriptionClient,
-    private val background: BackgroundRunner,
+    /** Runs dictation jobs, apart from imports and retries. */
+    private val dictationRunner: BackgroundRunner,
+    /** Runs imports and retries. */
+    private val bulkRunner: BackgroundRunner,
     private val callbacks: CallbackDispatcher,
 ) {
     interface Listener {
@@ -57,16 +65,21 @@ class TranscriptionManager(
      * Transcribes a saved recording, or returns its job if one is running.
      * [showResultInApp] marks the job's result for the app screen to show.
      */
-    fun submit(recording: StoredRecording, showResultInApp: Boolean = false): TranscriptionJob =
-        submit(recording.id, showResultInApp) { audioFor(recording) }
+    fun submit(
+        recording: StoredRecording,
+        origin: TranscriptionOrigin,
+        showResultInApp: Boolean = false,
+    ): TranscriptionJob = submit(recording.id, origin, showResultInApp) { audioFor(recording) }
 
     /**
      * Transcribes the recording [recordingId], or returns its job if one is
      * running. [audio] is read on the job's own thread; its finished parts are
-     * saved beside the recording.
+     * saved beside the recording. [origin] picks the job's thread; a running
+     * job keeps its own.
      */
     fun submit(
         recordingId: String,
+        origin: TranscriptionOrigin,
         showResultInApp: Boolean = false,
         audio: () -> TranscriptionAudio,
     ): TranscriptionJob {
@@ -75,7 +88,7 @@ class TranscriptionManager(
                 if (showResultInApp) running.showResultInApp = true
                 return running
             }
-            TranscriptionJob(recordingId, audio, newClient, callbacks).also { job ->
+            TranscriptionJob(recordingId, origin, audio, newClient, callbacks).also { job ->
                 job.showResultInApp = showResultInApp
                 jobs[recordingId] = job
                 try {
@@ -88,7 +101,11 @@ class TranscriptionManager(
             }
         }
         callbacks.dispatch { listeners.forEach { it.onStarted(job) } }
-        background.run { run(job) }
+        val runner = when (origin) {
+            TranscriptionOrigin.DICTATION -> dictationRunner
+            TranscriptionOrigin.BULK -> bulkRunner
+        }
+        runner.run { run(job) }
         return job
     }
 
@@ -190,9 +207,19 @@ class TranscriptionManager(
     }
 }
 
+/** Where a transcription came from, which picks the thread it runs on. */
+enum class TranscriptionOrigin {
+    /** A recording from the dictation overlay. */
+    DICTATION,
+
+    /** An imported file, or a recording the user taps Transcribe on again. */
+    BULK,
+}
+
 /** One recording's transcription, run by [TranscriptionManager]. */
 class TranscriptionJob internal constructor(
     val recordingId: String,
+    val origin: TranscriptionOrigin,
     internal val audio: () -> TranscriptionAudio,
     newClient: (isCancelled: () -> Boolean) -> TranscriptionClient,
     private val callbacks: CallbackDispatcher,

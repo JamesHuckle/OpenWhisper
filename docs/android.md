@@ -68,10 +68,13 @@ during dictation still cancel insertion.
   shape and model are supported by the current
   [OpenAI transcription API reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
 - `TranscriptionManager`, held by `OpenWhisperApplication`, runs every
-  upload, for the app screen and the dictation overlay alike, on a small pool
-  of two threads. Jobs are keyed by recording: asking for a recording that is
-  already being transcribed returns its job, so it is never uploaded (and paid
-  for) twice. Each job has its own HTTP client, so cancelling one stops only
+  upload, for the app screen and the dictation overlay alike. Each job has an
+  origin: a dictation from the overlay runs on its own thread, and imports and
+  retries from the app screen run one at a time on another, so a keyboard
+  dictation never waits behind a long import. Jobs are keyed by recording:
+  asking for a recording that is already being transcribed returns its job
+  (the app screen joins a running dictation), so it is never uploaded (and
+  paid for) twice. Each job has its own HTTP client, so cancelling one stops only
   its upload, even before it starts. The manager saves each recording's
   status. When Android recreates the app screen the upload carries on and the
   new screen shows the result. Nothing resumes by itself: a job lost with the

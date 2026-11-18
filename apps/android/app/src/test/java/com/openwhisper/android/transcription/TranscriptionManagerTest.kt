@@ -12,6 +12,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -28,11 +29,14 @@ class TranscriptionManagerTest {
         "openwhisper-transcriptions-${System.nanoTime()}",
     )
     private val store = RecordingStore.forDirectory(root)
-    private val executor = Executors.newFixedThreadPool(2)
+    // As in the app: one thread for dictations, one for imports and retries.
+    private val dictationExecutor = Executors.newSingleThreadExecutor()
+    private val bulkExecutor = Executors.newSingleThreadExecutor()
 
     @After
     fun cleanUp() {
-        executor.shutdownNow()
+        dictationExecutor.shutdownNow()
+        bulkExecutor.shutdownNow()
         root.deleteRecursively()
     }
 
@@ -45,14 +49,14 @@ class TranscriptionManagerTest {
         // The first screen starts the upload, then Android recreates it.
         val firstScreen = CapturingListener()
         manager.addListener(firstScreen)
-        val job = manager.submit(recording, showResultInApp = true)
+        val job = manager.submit(recording, TranscriptionOrigin.BULK, showResultInApp = true)
         assertTrue(client.entered.await(5, TimeUnit.SECONDS))
         manager.removeListener(firstScreen)
 
         // The new screen attaches and, say, the user taps Transcribe again.
         val secondScreen = CapturingListener()
         manager.addListener(secondScreen)
-        assertSame(job, manager.submit(recording, showResultInApp = true))
+        assertSame(job, manager.submit(recording, TranscriptionOrigin.BULK, showResultInApp = true))
         client.release.countDown()
 
         assertTrue(secondScreen.finished.await(5, TimeUnit.SECONDS))
@@ -69,8 +73,9 @@ class TranscriptionManagerTest {
     fun theSameRecordingFromTheOverlayAndTheAppIsSentOnce() {
         val client = BlockingClient("One upload")
         client.release.countDown()
-        val uploads = QueuedRunner()
-        val manager = manager(newClient = { client }, background = uploads)
+        val dictationUploads = QueuedRunner()
+        val bulkUploads = QueuedRunner()
+        val manager = TranscriptionManager(store, { client }, dictationUploads, bulkUploads, Direct)
         val writer = store.beginPcm("Dictation", 16_000)
         val pcm = ByteArray(32_000) { (it % 50).toByte() }
         writer.write(pcm, pcm.size)
@@ -91,11 +96,18 @@ class TranscriptionManagerTest {
         assertTrue(manager.isRunning(recording.id))
         assertEquals("transcribing", store.get(recording.id)?.status)
 
-        // The app screen asks for the same recording before it is sent.
+        // The app screen asks for the same recording before it is sent: it
+        // joins the dictation's job, which stays on the dictation thread.
         val app = CapturingListener()
         manager.addListener(app)
-        manager.submit(requireNotNull(store.get(recording.id)), showResultInApp = true)
-        uploads.runAll()
+        val joined = manager.submit(
+            requireNotNull(store.get(recording.id)),
+            TranscriptionOrigin.BULK,
+            showResultInApp = true,
+        )
+        assertEquals(TranscriptionOrigin.DICTATION, joined.origin)
+        assertTrue(bulkUploads.isEmpty())
+        dictationUploads.runAll()
 
         assertEquals(1, client.requests.get())
         assertEquals("One upload", overlayListener.final)
@@ -107,14 +119,17 @@ class TranscriptionManagerTest {
     @Test
     fun cancellingOneJobLeavesAnotherRunning() {
         val clients = CopyOnWriteArrayList<BlockingClient>()
-        val manager = manager(
-            newClient = { BlockingClient("text ${clients.size + 1}").also(clients::add) },
-            background = threads(),
+        val manager = TranscriptionManager(
+            store,
+            { BlockingClient("text ${clients.size + 1}").also(clients::add) },
+            threads(dictationExecutor),
+            threads(bulkExecutor),
+            Direct,
         )
         val listener = CapturingListener(expected = 2)
         manager.addListener(listener)
-        val first = manager.submit(imported("first.mp3"))
-        val second = manager.submit(imported("second.mp3"))
+        val first = manager.submit(imported("first.mp3"), TranscriptionOrigin.DICTATION)
+        val second = manager.submit(imported("second.mp3"), TranscriptionOrigin.BULK)
         val (firstClient, secondClient) = clients
         assertTrue(firstClient.entered.await(5, TimeUnit.SECONDS))
         assertTrue(secondClient.entered.await(5, TimeUnit.SECONDS))
@@ -142,7 +157,7 @@ class TranscriptionManagerTest {
         store.partsFile(interrupted.id).writeText("saved parts")
         val manager = manager(newClient = { client }, background = uploads)
         // A job of this process is never marked interrupted.
-        val running = manager.submit(imported("new.mp3"))
+        val running = manager.submit(imported("new.mp3"), TranscriptionOrigin.BULK)
 
         manager.recoverInterrupted()
 
@@ -167,7 +182,13 @@ class TranscriptionManagerTest {
                 store.finish(retried.id, "complete", transcript = "Finished")
             }
         }
-        val manager = TranscriptionManager(watched, { BlockingClient("unused") }, QueuedRunner(), Direct)
+        val manager = TranscriptionManager(
+            watched,
+            { BlockingClient("unused") },
+            QueuedRunner(),
+            QueuedRunner(),
+            Direct,
+        )
 
         manager.recoverInterrupted()
 
@@ -185,7 +206,7 @@ class TranscriptionManagerTest {
         val recording = imported("full-disk.mp3")
         val folder = File(root, recording.id)
 
-        val job = manager.submit(recording)
+        val job = manager.submit(recording, TranscriptionOrigin.BULK)
         assertTrue(client.entered.await(5, TimeUnit.SECONDS))
         // Storage fills while the upload runs: the final status write fails.
         assertTrue(folder.setWritable(false))
@@ -208,7 +229,7 @@ class TranscriptionManagerTest {
 
         assertTrue(folder.setWritable(false))
         val submitted = try {
-            runCatching { manager.submit(recording) }
+            runCatching { manager.submit(recording, TranscriptionOrigin.BULK) }
         } finally {
             folder.setWritable(true)
         }
@@ -225,7 +246,7 @@ class TranscriptionManagerTest {
         val listener = CapturingListener()
         manager.addListener(listener)
 
-        val job = manager.submit(imported("queued.mp3"))
+        val job = manager.submit(imported("queued.mp3"), TranscriptionOrigin.BULK)
         job.cancel()
         uploads.runAll()
 
@@ -234,12 +255,59 @@ class TranscriptionManagerTest {
         assertEquals(OpenAiHttpTranscriptionClient.CANCELLED_MESSAGE, listener.errors.single())
     }
 
+    @Test
+    fun aDictationRunsWhileOneImportUploadsAndAnotherWaits() {
+        val longImport = BlockingClient("Long import")
+        val queuedImport = BlockingClient("Queued import")
+        val dictation = BlockingClient("Short dictation").also { it.release.countDown() }
+        val clients = ArrayDeque(listOf(longImport, queuedImport, dictation))
+        val manager = TranscriptionManager(
+            store,
+            { clients.removeFirst() },
+            threads(dictationExecutor),
+            threads(bulkExecutor),
+            Direct,
+        )
+
+        // Two imports from the app screen: one uploads, one waits its turn.
+        val first = manager.submit(imported("long.mp3"), TranscriptionOrigin.BULK)
+        assertTrue(longImport.entered.await(5, TimeUnit.SECONDS))
+        val second = manager.submit(imported("queued.mp3"), TranscriptionOrigin.BULK)
+
+        // A keyboard dictation does not wait behind either of them.
+        val spoken = manager.submit(imported("dictation.mp3"), TranscriptionOrigin.DICTATION)
+        val spokenDone = CountDownLatch(1)
+        spoken.onFinished { spokenDone.countDown() }
+        assertTrue(spokenDone.await(5, TimeUnit.SECONDS))
+        assertEquals("complete", store.get(spoken.recordingId)?.status)
+        assertEquals("Short dictation", store.get(spoken.recordingId)?.transcript)
+        assertTrue(manager.isRunning(first.recordingId))
+        assertEquals(0, queuedImport.requests.get())
+
+        // Cancelling the waiting import leaves the uploading one alone.
+        val secondDone = CountDownLatch(1)
+        second.onFinished { secondDone.countDown() }
+        second.cancel()
+        assertTrue(manager.isRunning(first.recordingId))
+        longImport.release.countDown()
+        assertTrue(secondDone.await(5, TimeUnit.SECONDS))
+
+        assertEquals("complete", store.get(first.recordingId)?.status)
+        assertEquals("Long import", store.get(first.recordingId)?.transcript)
+        assertEquals(0, longImport.cancels.get())
+        assertEquals("cancelled", store.get(second.recordingId)?.status)
+        assertEquals(0, queuedImport.requests.get())
+        assertEquals("complete", store.get(spoken.recordingId)?.status)
+    }
+
+    /** A manager that runs dictations and bulk jobs on [background] alike. */
     private fun manager(
         newClient: (() -> Boolean) -> TranscriptionClient,
         background: BackgroundRunner,
-    ) = TranscriptionManager(store, newClient, background, Direct)
+    ) = TranscriptionManager(store, newClient, background, background, Direct)
 
-    private fun threads() = BackgroundRunner { task -> executor.execute(task) }
+    private fun threads(executor: ExecutorService = bulkExecutor) =
+        BackgroundRunner { task -> executor.execute(task) }
 
     private fun imported(name: String): StoredRecording = store.import(
         name = name,
@@ -319,6 +387,8 @@ private class QueuedRunner : BackgroundRunner {
     fun runAll() {
         while (tasks.isNotEmpty()) tasks.removeFirst().invoke()
     }
+
+    fun isEmpty() = tasks.isEmpty()
 }
 
 private data object Direct : CallbackDispatcher {

@@ -25,8 +25,13 @@ class OpenWhisperApplication : Application() {
         // Shared by every job's client, so once the service refuses this
         // phone's FLAC later uploads go straight to WAV.
         val flacRefused = AtomicBoolean(false)
-        val executor = Executors.newFixedThreadPool(TRANSCRIPTION_THREADS) { task ->
-            Thread(task, "openwhisper-transcription")
+        // Dictations get their own thread, so a keyboard dictation never
+        // waits behind an import or retry; those run one at a time.
+        val dictationExecutor = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "openwhisper-dictation-transcription")
+        }
+        val bulkExecutor = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "openwhisper-bulk-transcription")
         }
         transcriptions = TranscriptionManager(
             store = RecordingStore(this),
@@ -37,17 +42,16 @@ class OpenWhisperApplication : Application() {
                     isCancelled = isCancelled,
                 )
             },
-            background = ExecutorBackgroundRunner(executor),
+            dictationRunner = ExecutorBackgroundRunner(dictationExecutor),
+            bulkRunner = ExecutorBackgroundRunner(bulkExecutor),
             callbacks = MainThreadCallbackDispatcher(),
         )
         // Recordings an earlier process was transcribing wait for the user to
         // tap Transcribe; their finished parts are kept.
-        executor.execute(transcriptions::recoverInterrupted)
+        bulkExecutor.execute(transcriptions::recoverInterrupted)
     }
 
     companion object {
-        private const val TRANSCRIPTION_THREADS = 2
-
         fun transcriptions(context: Context): TranscriptionManager =
             (context.applicationContext as OpenWhisperApplication).transcriptions
     }

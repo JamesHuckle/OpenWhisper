@@ -33,6 +33,7 @@ import com.openwhisper.android.settings.SecureApiKeyStore
 import com.openwhisper.android.settings.SettingsRepository
 import com.openwhisper.android.transcription.TranscriptionJob
 import com.openwhisper.android.transcription.TranscriptionManager
+import com.openwhisper.android.transcription.TranscriptionOrigin
 import com.openwhisper.android.update.AndroidUpdateClient
 import com.openwhisper.android.update.UpdateManifest
 import com.openwhisper.android.update.UpdateNotifier
@@ -273,7 +274,7 @@ class MainActivity : Activity() {
             }
             // Handed over even if this screen has gone meanwhile: the screen
             // Android recreates shows the result.
-            imported.onSuccess { transcriptions.submit(it, showResultInApp = true) }
+            imported.onSuccess { transcriptions.submit(it, TranscriptionOrigin.BULK, showResultInApp = true) }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 importInFlight = false
@@ -337,7 +338,7 @@ class MainActivity : Activity() {
     private fun retranscribeRecording(recording: StoredRecording) {
         // A recording already being transcribed (by the overlay, say) is not
         // sent again; its result shows here when it ends.
-        transcriptions.submit(recording, showResultInApp = true)
+        transcriptions.submit(recording, TranscriptionOrigin.BULK, showResultInApp = true)
     }
 
     private fun showImportedTranscript(transcript: String, recording: StoredRecording?) {
