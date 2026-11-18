@@ -70,6 +70,45 @@ class TranscriptionManagerTest {
     }
 
     @Test
+    fun aRetryOfTheOldestRecordingSurvivesNewImportsAndGoesAtTheNextCleanup() {
+        val client = BlockingClient("The oldest memo")
+        val manager = manager(newClient = { client }, background = threads())
+        val oldest = imported("oldest.mp3")
+        repeat(RecordingStore.RETAIN_COUNT - 1) { index ->
+            Thread.sleep(2)
+            imported("clip-$index.mp3")
+        }
+
+        val listener = CapturingListener()
+        manager.addListener(listener)
+        manager.submit(oldest, TranscriptionOrigin.BULK, showResultInApp = true)
+        assertTrue(client.entered.await(5, TimeUnit.SECONDS))
+        val parts = store.partsFile(oldest.id).apply { writeText("{\"key\":\"k\",\"parts\":[]}") }
+
+        // The app screen, with its own store of the folder, imports more files
+        // while the retry uploads.
+        val screen = RecordingStore.forDirectory(root)
+        repeat(3) { index ->
+            Thread.sleep(2)
+            screen.import("new-$index.mp3", "audio/mpeg", "mp3", ByteArrayInputStream(byteArrayOf(5, 6)))
+        }
+        assertTrue(store.file(oldest).isFile)
+        assertTrue(parts.exists())
+
+        client.release.countDown()
+        assertTrue(listener.finished.await(5, TimeUnit.SECONDS))
+        assertEquals(listOf("The oldest memo"), listener.transcripts)
+        assertEquals("complete", store.get(oldest.id)?.status)
+        assertEquals("The oldest memo", store.get(oldest.id)?.transcript)
+
+        // Released once saved: the next cleanup keeps only the newest ten.
+        Thread.sleep(2)
+        screen.import("after.mp3", "audio/mpeg", "mp3", ByteArrayInputStream(byteArrayOf(7, 8)))
+        assertEquals(null, store.get(oldest.id))
+        assertEquals(RecordingStore.RETAIN_COUNT, store.list().size)
+    }
+
+    @Test
     fun theSameRecordingFromTheOverlayAndTheAppIsSentOnce() {
         val client = BlockingClient("One upload")
         client.release.countDown()

@@ -39,6 +39,60 @@ class RecordingStoreTest {
     }
 
     @Test
+    fun aReservedRecordingOutlivesTheLimitUntilReleasedThenGoesAtTheNextCleanup() {
+        withRoot { root ->
+            // A retry holds the oldest recording while the app screen, with
+            // its own store of the same folder, imports more files.
+            val manager = RecordingStore.forDirectory(root)
+            val screen = RecordingStore.forDirectory(root)
+            val oldest = importInto(screen, "oldest.wav")
+            manager.reserve(oldest.id)
+            manager.reserve(oldest.id)
+            val parts = manager.partsFile(oldest.id).apply { writeText("{\"key\":\"k\",\"parts\":[]}") }
+            repeat(RecordingStore.RETAIN_COUNT + 2) { index -> importInto(screen, "clip-$index.wav") }
+
+            assertEquals(RecordingStore.RETAIN_COUNT + 1, screen.list().size)
+            assertTrue(screen.file(oldest).isFile)
+            assertTrue(parts.exists())
+
+            // Held twice, so one release still keeps it.
+            manager.release(oldest.id)
+            importInto(screen, "one-more.wav")
+            assertNotNull(screen.get(oldest.id))
+
+            // Released: kept until the next cleanup, which deletes it.
+            manager.finish(oldest.id, "complete", transcript = "Saved after the retry")
+            manager.release(oldest.id)
+            assertEquals("Saved after the retry", screen.get(oldest.id)?.transcript)
+            importInto(screen, "last.wav")
+            assertNull(screen.get(oldest.id))
+            assertFalse(File(root, oldest.id).exists())
+            assertEquals(RecordingStore.RETAIN_COUNT, screen.list().size)
+        }
+    }
+
+    @Test
+    fun aLongCaptureIsNeverDeletedByNewerImports() {
+        withRoot { root ->
+            val service = RecordingStore.forDirectory(root)
+            val screen = RecordingStore.forDirectory(root)
+            val writer = service.beginPcm("Long dictation", 16_000)
+            val oneSecond = ByteArray(32_000) { (it % 97).toByte() }
+            writer.write(oneSecond, oneSecond.size)
+            repeat(RecordingStore.RETAIN_COUNT + 1) { index -> importInto(screen, "clip-$index.wav") }
+            writer.write(oneSecond, oneSecond.size)
+
+            val recording = writer.finish("saved")
+            assertTrue(recording.file.isFile)
+            assertEquals(44L + 2 * oneSecond.size, service.get(recording.id)?.bytes)
+
+            // Finished, it is no longer held: the next cleanup deletes it.
+            importInto(screen, "last.wav")
+            assertNull(service.get(recording.id))
+        }
+    }
+
+    @Test
     fun activePcmRecordingIsCheckpointedAsPlayableWav() {
         withStore { store ->
             val writer = store.beginPcm("Long recording", 16_000)
@@ -286,6 +340,17 @@ class RecordingStoreTest {
             assertTrue(last!!.transcript.endsWith(longText))
             assertTrue(last.transcript.startsWith("0-199 ") || last.transcript.startsWith("1-199 "))
         }
+    }
+
+    /** Imports a small file, a little later than the last, so the newest is clear. */
+    private fun importInto(store: RecordingStore, name: String): StoredRecording {
+        Thread.sleep(2)
+        return store.import(
+            name = name,
+            mimeType = "audio/wav",
+            extension = "wav",
+            input = ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)),
+        )
     }
 
     private fun littleEndianInt(bytes: ByteArray, offset: Int): Int =

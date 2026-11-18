@@ -44,6 +44,14 @@ data class PcmRecording(
  * it begins and when it finishes, never in between: the size shown for it is
  * read from its audio file instead, so the microphone never waits on this
  * store's lock.
+ *
+ * Only the newest [RETAIN_COUNT] recordings are kept, except that a recording
+ * still in use is never deleted: a capture holds its recording from
+ * [beginPcm] until [PcmRecordingWriter.finish], and a transcription holds its
+ * recording with [reserve] until [release]. A released recording past the
+ * limit goes at the next cleanup. Every store of the same folder shares these
+ * reservations, so an import on the app screen never deletes a recording the
+ * dictation overlay or a retry is still using.
  */
 class RecordingStore private constructor(
     private val root: File,
@@ -51,7 +59,29 @@ class RecordingStore private constructor(
 ) {
     constructor(context: Context) : this(File(context.filesDir, "recordings"))
 
-    internal val lock: Any = lockFor(root)
+    private val folder: Folder = folderFor(root)
+
+    internal val lock: Any = folder
+
+    /**
+     * Keeps [id] from being deleted until a matching [release], however many
+     * newer recordings arrive. Reservations are counted, so a recording held
+     * twice (a new job started just as the last one ends) stays held until
+     * both release it.
+     */
+    fun reserve(id: String) {
+        synchronized(lock) {
+            folder.reservations[id] = (folder.reservations[id] ?: 0) + 1
+        }
+    }
+
+    /** Ends one [reserve]; past the limit, the recording goes at the next cleanup. */
+    fun release(id: String) {
+        synchronized(lock) {
+            val count = folder.reservations[id] ?: return
+            if (count > 1) folder.reservations[id] = count - 1 else folder.reservations.remove(id)
+        }
+    }
 
     fun beginPcm(name: String, sampleRate: Int): PcmRecordingWriter = synchronized(lock) {
         root.mkdirs()
@@ -75,8 +105,16 @@ class RecordingStore private constructor(
                 error = "",
             ),
         )
+        // Held until the writer finishes, so a long capture survives any
+        // number of newer imports.
+        reserve(id)
         prune()
-        PcmRecordingWriter(this, id, file, sampleRate)
+        try {
+            PcmRecordingWriter(this, id, file, sampleRate)
+        } catch (failure: Throwable) {
+            release(id)
+            throw failure
+        }
     }
 
     fun import(
@@ -213,8 +251,9 @@ class RecordingStore private constructor(
         )
     }
 
+    /** Deletes every recording past the newest [RETAIN_COUNT] that is not reserved. */
     private fun prune() {
-        list().drop(RETAIN_COUNT).forEach { recording ->
+        list().drop(RETAIN_COUNT).filter { it.id !in folder.reservations }.forEach { recording ->
             File(root, recording.id).takeIf { it.parentFile == root }?.deleteRecursively()
         }
     }
@@ -227,10 +266,15 @@ class RecordingStore private constructor(
         private val SUPPORTED_EXTENSIONS =
             setOf("wav", "mp3", "m4a", "mp4", "mpeg", "mpga", "webm", "ogg")
 
-        private val folderLocks = ConcurrentHashMap<String, Any>()
+        /** One folder's shared lock, and the recordings reserved in it (guarded by that lock). */
+        private class Folder {
+            val reservations = mutableMapOf<String, Int>()
+        }
 
-        private fun lockFor(root: File): Any =
-            folderLocks.computeIfAbsent(root.absoluteFile.normalize().path) { Any() }
+        private val folders = ConcurrentHashMap<String, Folder>()
+
+        private fun folderFor(root: File): Folder =
+            folders.computeIfAbsent(root.absoluteFile.normalize().path) { Folder() }
 
         /** A store of [root]; [onMetadataRead] hears the id of every recording whose details are read. */
         internal fun forDirectory(
@@ -253,6 +297,9 @@ class PcmRecordingWriter internal constructor(
     private var bytesSinceCheckpoint = 0L
     private var closed = false
 
+    /** Whether this capture still holds its recording; see [RecordingStore.reserve]. */
+    private var reserved = true
+
     @Synchronized
     fun write(bytes: ByteArray, count: Int) {
         check(!closed) { "Recording is already closed" }
@@ -265,10 +312,19 @@ class PcmRecordingWriter internal constructor(
     @Synchronized
     fun finish(status: String): PcmRecording {
         if (!closed) {
-            checkpoint()
-            wav.close()
-            closed = true
-            store.finish(id, status)
+            try {
+                checkpoint()
+                wav.close()
+                closed = true
+                store.finish(id, status)
+            } finally {
+                // Released once, even when finishing fails, so a broken
+                // capture is never kept past the limit for ever.
+                if (reserved) {
+                    reserved = false
+                    store.release(id)
+                }
+            }
         }
         return PcmRecording(id, file, sampleRate, pcmBytes)
     }

@@ -18,7 +18,9 @@ import java.util.concurrent.CopyOnWriteArraySet
  * recording is never uploaded (and paid for) twice at once. Each job has its
  * own client, so cancelling one job never stops another. The manager writes
  * each recording's status: "transcribing", then "complete", "failed" or
- * "cancelled".
+ * "cancelled". Each job reserves its recording in the store from the moment
+ * it starts until its result is saved, so newer imports and captures never
+ * delete the audio or saved parts of a recording still being transcribed.
  *
  * Each job has a [TranscriptionOrigin]. Dictations run on [dictationRunner]
  * and imports and retries on [bulkRunner], so a short keyboard dictation never
@@ -91,11 +93,15 @@ class TranscriptionManager(
             TranscriptionJob(recordingId, origin, audio, newClient, callbacks).also { job ->
                 job.showResultInApp = showResultInApp
                 jobs[recordingId] = job
+                // Reserved before the status change, whose cleanup could
+                // otherwise delete an old recording just as its retry starts.
+                store.reserve(recordingId)
                 try {
                     store.finish(recordingId, "transcribing")
                 } catch (error: Exception) {
-                    // Never run, so never left registered.
+                    // Never run, so never left registered or reserved.
                     jobs.remove(recordingId, job)
+                    store.release(recordingId)
                     throw error
                 }
             }
@@ -127,6 +133,20 @@ class TranscriptionManager(
     }
 
     private fun run(job: TranscriptionJob) {
+        val result = try {
+            transcribeAndSave(job)
+        } finally {
+            // Past the newest recordings, it goes at the store's next cleanup.
+            store.release(job.recordingId)
+        }
+        callbacks.dispatch {
+            job.finish(result)
+            listeners.forEach { it.onFinished(job, result) }
+        }
+    }
+
+    /** Transcribes [job]'s recording, saves its status and ends the job. */
+    private fun transcribeAndSave(job: TranscriptionJob): Result<String> {
         val transcribed = if (job.isCancelled) {
             Result.failure(cancelled())
         } else {
@@ -172,10 +192,7 @@ class TranscriptionManager(
             }
             jobs.remove(job.recordingId, job)
         }
-        callbacks.dispatch {
-            job.finish(result)
-            listeners.forEach { it.onFinished(job, result) }
-        }
+        return result
     }
 
     private fun audioFor(recording: StoredRecording): TranscriptionAudio {
