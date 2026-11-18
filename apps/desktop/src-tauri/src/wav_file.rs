@@ -7,9 +7,15 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 
-/// WAVE_FORMAT_PCM and WAVE_FORMAT_EXTENSIBLE (which wraps PCM in larger
-/// files from other programs).
-const PCM_FORMAT_TAGS: [u16; 2] = [1, 0xFFFE];
+const WAVE_FORMAT_PCM: u16 = 1;
+/// Larger files from other programs: the encoding is named by the SubFormat
+/// GUID that follows the usual format fields.
+const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+/// KSDATAFORMAT_SUBTYPE_PCM, as stored in the file. Other subformats (IEEE
+/// float, for one) are not integer PCM.
+const PCM_SUBFORMAT: [u8; 16] = [
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WavFormat {
@@ -60,12 +66,17 @@ pub fn read_wav_format(file: &mut File) -> io::Result<WavFormat> {
                 let channels = u16::from_le_bytes([fmt[2], fmt[3]]);
                 let sample_rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
                 let bits = u16::from_le_bytes([fmt[14], fmt[15]]);
-                if !PCM_FORMAT_TAGS.contains(&tag)
-                    || channels == 0
-                    || sample_rate == 0
-                    || bits == 0
-                    || bits % 8 != 0
-                {
+                let pcm = match tag {
+                    WAVE_FORMAT_PCM => true,
+                    WAVE_FORMAT_EXTENSIBLE if size >= 40 => {
+                        // cbSize, valid bits and channel mask, then SubFormat.
+                        let mut extension = [0_u8; 24];
+                        file.read_exact(&mut extension)?;
+                        extension[8..24] == PCM_SUBFORMAT
+                    }
+                    _ => false,
+                };
+                if !pcm || channels == 0 || sample_rate == 0 || bits == 0 || bits % 8 != 0 {
                     return Err(invalid("Not a PCM WAV file"));
                 }
                 format = Some((channels, bits / 8, sample_rate));
@@ -172,6 +183,49 @@ mod tests {
         let _ = std::fs::remove_file(path);
 
         assert_eq!(format.data_bytes, 8);
+    }
+
+    /// A WAVE_FORMAT_EXTENSIBLE file of 16-bit mono audio of `subformat`.
+    fn extensible_wav(subformat: [u8; 16], audio: &[u8]) -> Vec<u8> {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(60 + audio.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&40_u32.to_le_bytes());
+        wav.extend_from_slice(&WAVE_FORMAT_EXTENSIBLE.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&16_000_u32.to_le_bytes());
+        wav.extend_from_slice(&32_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(&22_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(&4_u32.to_le_bytes());
+        wav.extend_from_slice(&subformat);
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(audio.len() as u32).to_le_bytes());
+        wav.extend_from_slice(audio);
+        wav
+    }
+
+    fn read_bytes(wav: &[u8]) -> io::Result<WavFormat> {
+        let (path, mut file) = temp_wav(wav);
+        let result = read_wav_format(&mut file);
+        let _ = std::fs::remove_file(path);
+        result
+    }
+
+    #[test]
+    fn an_extensible_wav_is_read_only_when_it_holds_integer_pcm() {
+        let pcm = read_bytes(&extensible_wav(PCM_SUBFORMAT, &[1, 0, 2, 0])).unwrap();
+        assert_eq!(
+            (pcm.sample_width, pcm.data_offset, pcm.data_bytes),
+            (2, 68, 4)
+        );
+
+        let mut float = PCM_SUBFORMAT;
+        float[0] = 0x03; // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+        assert!(read_bytes(&extensible_wav(float, &[0; 8])).is_err());
     }
 
     #[test]
