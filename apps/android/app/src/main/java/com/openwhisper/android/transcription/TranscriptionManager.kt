@@ -94,7 +94,9 @@ class TranscriptionManager(
     fun recoverInterrupted() {
         store.list().filter { it.status == "transcribing" }.forEach { recording ->
             synchronized(lock) {
-                if (recording.id !in jobs) {
+                // Read again: a job of this process may have finished, and
+                // saved its transcript, since the list was read.
+                if (recording.id !in jobs && store.get(recording.id)?.status == "transcribing") {
                     store.finish(recording.id, "failed", error = INTERRUPTED_MESSAGE)
                 }
             }

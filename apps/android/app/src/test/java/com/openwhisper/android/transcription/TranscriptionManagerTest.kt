@@ -156,6 +156,27 @@ class TranscriptionManagerTest {
     }
 
     @Test
+    fun recoveryLeavesARetryThatFinishedAfterTheListWasRead() {
+        val retried = imported("retried.mp3")
+        store.finish(retried.id, "transcribing")
+        // The retry finishes while recovery is between reading the list and
+        // looking at this recording: on its second read of the recording.
+        val reads = AtomicInteger()
+        val watched = RecordingStore.forDirectory(root) { id ->
+            if (id == retried.id && reads.incrementAndGet() == 2) {
+                store.finish(retried.id, "complete", transcript = "Finished")
+            }
+        }
+        val manager = TranscriptionManager(watched, { BlockingClient("unused") }, QueuedRunner(), Direct)
+
+        manager.recoverInterrupted()
+
+        val recording = requireNotNull(store.get(retried.id))
+        assertEquals("complete", recording.status)
+        assertEquals("Finished", recording.transcript)
+    }
+
+    @Test
     fun aJobCancelledBeforeItRunsIsNeverSent() {
         val client = BlockingClient("unused")
         val uploads = QueuedRunner()
