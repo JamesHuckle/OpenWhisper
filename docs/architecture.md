@@ -57,7 +57,11 @@ WhisperFlow is split into two runtime layers, in one process:
    then saved first. The recording file commands run off the main thread.
 2. The shell starts a session (`worker_start_session`) with the settings
    saved at that moment. A Live session opens its Realtime websocket at
-   once.
+   once. If it cannot, the page starts the session again with
+   `standardOnly: true` (no websocket), keeps recording, and transcribes the
+   saved recording with Standard when the user stops. Imports and retries
+   always start their session with `standardOnly: true`, so they work while
+   Live is selected.
 3. The shell saves every audio chunk once, to the recording's WAV file
    (`src-tauri/src/recording_store.rs`). The page sends each chunk as raw
    bytes, with its recording or session id in a header, never as base64
@@ -74,7 +78,12 @@ WhisperFlow is split into two runtime layers, in one process:
 4. The session pushes transcript updates and the final text as events.
 5. The shell finalizes the transcription. A Live session commits its audio
    and waits for the text (`worker_finalize_session_audio`); a connection
-   that closes without it is an error. For standard transcription the shell
+   that closes without it is an error. When a Live dictation fails (its
+   audio could not be sent, finalizing fails, or its session reports an
+   error other than "No audio found"), the page stops it and transcribes the
+   saved recording once with Standard, in a new session; that final text is
+   pasted over the Live draft. A Live session handed its saved file is also
+   transcribed with the Standard model. For standard transcription the shell
    closes the WAV file and the transcriber reads it from disk in parts
    (`recording_transcribe`). For a microphone recording the shell first
    encodes the WAV once as lossless FLAC (`src-tauri/src/flac_upload.rs`,

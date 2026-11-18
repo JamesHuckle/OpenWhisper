@@ -1,3 +1,4 @@
+import audioRules from "../../../packages/protocol/audio-rules.json";
 import { isLiveTranscription, type TranscriptionModel } from "./models";
 import { PCM_MIME_TYPE } from "./pcm-capture";
 import {
@@ -99,6 +100,10 @@ export function createDictationController(deps: DictationDeps) {
   // every chunk. Otherwise audio goes only to the saved backup, and the
   // transcriber reads that file once the recording stops.
   let streamAudioToWorker = false;
+  // The dictation's session is a Live one. If it fails, the saved recording
+  // is transcribed with Standard instead, once (fellBackToStandard).
+  let sessionWasLive = false;
+  let fellBackToStandard = false;
   let targetWriteQueue: Promise<void> = Promise.resolve();
   let currentRecordingId: string | null = null;
   let lastFailedRecordingId: string | null = null;
@@ -218,7 +223,10 @@ export function createDictationController(deps: DictationDeps) {
         setState("idle");
         return;
       }
-      streamAudioToWorker = isLiveTranscription(settings.transcriptionModel);
+      const live = isLiveTranscription(settings.transcriptionModel);
+      streamAudioToWorker = live;
+      sessionWasLive = false;
+      fellBackToStandard = false;
 
       currentRecordingId = null;
       backupTail = Promise.resolve();
@@ -279,9 +287,31 @@ export function createDictationController(deps: DictationDeps) {
           flushAudioBatch();
           return true;
         },
-        startSession: () => invoke("worker_start_session", {
-          profileId: "default",
-        }) as Promise<{ session_id: string }>,
+        startSession: async () => {
+          if (live) {
+            try {
+              const session = (await invoke("worker_start_session", {
+                profileId: "default",
+              })) as { session_id: string };
+              sessionWasLive = true;
+              return session;
+            } catch (error) {
+              if (cancelCount !== cancelsBefore) throw error;
+              // The Live connection could not open. Recording goes on, and
+              // the saved recording is transcribed with Standard on stop.
+              log(`live session start failed=${errorMessage(error)}; using Standard`);
+              streamAudioToWorker = false;
+              audioQueue.reset();
+              return (await invoke("worker_start_session", {
+                profileId: "default",
+                standardOnly: true,
+              })) as { session_id: string };
+            }
+          }
+          return (await invoke("worker_start_session", {
+            profileId: "default",
+          })) as { session_id: string };
+        },
       });
       if (!result) return;
       if (cancelCount !== cancelsBefore) {
@@ -295,7 +325,7 @@ export function createDictationController(deps: DictationDeps) {
       audioQueue.attachSession(currentSessionId);
       finalTranscript = "";
       liveTranscript = "";
-      streamTextToTarget = isLiveTranscription(settings.transcriptionModel);
+      streamTextToTarget = sessionWasLive;
       targetWriteQueue = Promise.resolve();
       log(`session ready startup_ms=${Math.round(performance.now() - startupStartedAt)}`);
 
@@ -374,6 +404,11 @@ export function createDictationController(deps: DictationDeps) {
       // Cancel answers at once, so a cancelled session's last request can
       // still fail here; the cancel already tidied up.
       if (currentSessionId !== sessionId) return;
+      const message = errorMessage(err);
+      if (canTranscribeWithStandard(message)) {
+        await transcribeWithStandard(message);
+        return;
+      }
       // The app keeps the session, and a Live session its connection, until
       // it is stopped.
       await invoke("worker_stop_session", { sessionId }).catch((error) => {
@@ -381,6 +416,64 @@ export function createDictationController(deps: DictationDeps) {
       });
       if (currentSessionId !== sessionId) return;
       await handleTranscriptionFailure(err);
+      cleanup();
+      setState("idle");
+    }
+  }
+
+  // A failed Live dictation is transcribed once more from its saved
+  // recording, with Standard transcription; its final text replaces the
+  // Live draft. Not when the recording held no speech, or was not saved whole.
+  function canTranscribeWithStandard(error: string): boolean {
+    return (
+      state === "transcribing" &&
+      sessionWasLive &&
+      !fellBackToStandard &&
+      currentRecordingId !== null &&
+      backupError === null &&
+      error !== audioRules.no_audio_message
+    );
+  }
+
+  async function transcribeWithStandard(error: string) {
+    const recordingId = currentRecordingId;
+    const failedSessionId = currentSessionId;
+    if (!recordingId) return;
+    fellBackToStandard = true;
+    const cancelsBefore = cancelCount;
+    log(`live transcription failed=${error}; transcribing the saved recording with Standard`);
+    streamAudioToWorker = false;
+    streamTextToTarget = false;
+    audioQueue.reset();
+    try {
+      // The failed session may already be gone; stopping it closes its connection.
+      if (failedSessionId) {
+        await invoke("worker_stop_session", { sessionId: failedSessionId }).catch((stopError) => {
+          log(`stop session failed=${errorMessage(stopError)}`);
+        });
+      }
+      if (cancelCount !== cancelsBefore) return;
+      const session = (await invoke("worker_start_session", {
+        profileId: "default",
+        standardOnly: true,
+      })) as { session_id: string };
+      const sessionId = session.session_id;
+      if (cancelCount !== cancelsBefore) {
+        // Cancelled while the session was starting; the cancel already tidied up.
+        await invoke("worker_stop_session", { sessionId }).catch((stopError) => {
+          log(`stop session failed=${errorMessage(stopError)}`);
+        });
+        return;
+      }
+      currentSessionId = sessionId;
+      finalTranscript = "";
+      liveTranscript = "";
+      await invoke("recording_transcribe", { recordingId, sessionId });
+    } catch (fallbackError) {
+      log(`standard fallback error=${errorMessage(fallbackError)}`);
+      // A cancel already tidied up; its failure is expected.
+      if (cancelCount !== cancelsBefore) return;
+      await handleTranscriptionFailure(fallbackError);
       cleanup();
       setState("idle");
     }
@@ -433,9 +526,6 @@ export function createDictationController(deps: DictationDeps) {
       if (!settings.hasOpenaiApiKey) {
         throw new Error("Set your OpenAI API key before importing audio");
       }
-      if (isLiveTranscription(settings.transcriptionModel)) {
-        throw new Error("Choose Standard transcription for imported audio files");
-      }
       // The native picker hands the path to the app, which copies the file
       // from disk; the audio never passes through this window.
       const stored = (await invoke("recording_import")) as { id: string } | null;
@@ -473,9 +563,6 @@ export function createDictationController(deps: DictationDeps) {
       if (!settings.hasOpenaiApiKey) {
         throw new Error("Set your OpenAI API key before transcribing saved audio");
       }
-      if (isLiveTranscription(settings.transcriptionModel)) {
-        throw new Error("Choose Standard transcription for saved audio files");
-      }
       await transcribeStoredAudio(recordingId, "recording-retry", op);
     } catch (error) {
       await failStoredAudio(op, error);
@@ -500,6 +587,7 @@ export function createDictationController(deps: DictationDeps) {
     deps.clearNotice();
     currentRecordingId = recordingId;
     lastFailedRecordingId = null;
+    sessionWasLive = false;
     sessionFailure = "";
     shouldPasteFinalTranscript = false;
     finalTranscript = "";
@@ -515,8 +603,11 @@ export function createDictationController(deps: DictationDeps) {
     storedAudioStarting = false;
     deps.closeMenu();
 
+    // Saved audio is always transcribed with Standard, so no Live
+    // connection is opened even when Live is selected.
     const session = (await invoke("worker_start_session", {
       profileId,
+      standardOnly: true,
     })) as { session_id: string };
     const sessionId = session.session_id;
     if (op !== operationId) {
@@ -541,6 +632,7 @@ export function createDictationController(deps: DictationDeps) {
 
   function cleanup() {
     log(`cleanup state=${state} session=${currentSessionId ?? "none"}`);
+    sessionWasLive = false;
     deps.stopMeter(false);
     capture.discard();
     currentSessionId = null;
@@ -566,7 +658,8 @@ export function createDictationController(deps: DictationDeps) {
   async function handleSessionEvent(message: WorkerSessionEvent) {
     if (!currentSessionId || message.session_id !== currentSessionId) return;
     try {
-      await applyTranscriptEvent(message.event);
+      // A failed Live session handed over to Standard is not completed here.
+      if (await applyTranscriptEvent(message.event)) return;
       if (message.done) await completeSession(message.session_id);
     } catch (error) {
       const text = errorMessage(error, "Could not finish the transcription");
@@ -579,7 +672,8 @@ export function createDictationController(deps: DictationDeps) {
     }
   }
 
-  async function applyTranscriptEvent(ev: TranscriptEvent) {
+  /** Applies one event; true when a failed Live session is being transcribed with Standard instead. */
+  async function applyTranscriptEvent(ev: TranscriptEvent): Promise<boolean> {
     if (ev.type === "final") {
       finalTranscript = `${finalTranscript} ${ev.text}`.trim();
       liveTranscript = ev.text;
@@ -612,11 +706,20 @@ export function createDictationController(deps: DictationDeps) {
         });
       }
     } else if (ev.type === "error") {
-      sessionFailure = ev.text || "Transcription failed";
+      const failure = ev.text || "Transcription failed";
+      if (canTranscribeWithStandard(failure)) {
+        // Not awaited, so the new session's events are handled as they arrive.
+        void transcribeWithStandard(failure).catch((error) => {
+          log(`standard fallback failed=${errorMessage(error)}`);
+        });
+        return true;
+      }
+      sessionFailure = failure;
       await handleTranscriptionFailure(sessionFailure);
     } else if (ev.type === "warning") {
       deps.showToast(ev.text, 8000);
     }
+    return false;
   }
 
   async function completeSession(sessionId: string) {

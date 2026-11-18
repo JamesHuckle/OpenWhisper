@@ -321,7 +321,7 @@ describe("dictation controller", () => {
 
     await dictation.transcribeImportedFile();
     expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
-      { profileId: "file-import" },
+      { profileId: "file-import", standardOnly: true },
     ]);
     expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
       { recordingId: "imported-1", sessionId: "s-1" },
@@ -345,7 +345,7 @@ describe("dictation controller", () => {
       error: "",
     });
     expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
-      { profileId: "recording-retry" },
+      { profileId: "recording-retry", standardOnly: true },
     ]);
     expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
       { recordingId: "rec-9", sessionId: "s-1" },
@@ -531,21 +531,200 @@ describe("dictation controller", () => {
     expect(app.commands()).not.toContain("recording_transcribe");
   });
 
-  it("stops the Live session when its audio could not be sent", async () => {
+  it("stops the Live session when its audio could not be sent and transcribes the saved recording with Standard", async () => {
     const { app, mic, dictation, failures } = setup(LIVE_TRANSCRIPTION_MODEL);
     app.fail("worker_append_audio_chunk", new Error("Connection lost"));
     await startRecording(dictation);
     mic.hear(BATCH);
+    app.answers.worker_start_session = { session_id: "s-2" };
 
     await dictation.toggleRecording();
     await settle();
 
-    expect(failures).toEqual([{ message: "Connection lost", recordingSaved: true }]);
     expect(app.commands()).not.toContain("worker_finalize_session_audio");
     expect(app.named("worker_stop_session").map((call) => call.args)).toEqual([
       { sessionId: "s-1" },
     ]);
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", sessionId: "s-2" },
+    ]);
+    expect(failures).toEqual([]);
+    expect(dictation.state).toBe("transcribing");
+  });
+
+  describe("a failed Live dictation", () => {
+    async function liveDictationStopped() {
+      const env = setup(LIVE_TRANSCRIPTION_MODEL);
+      await startRecording(env.dictation);
+      env.mic.hear(BATCH);
+      await settle();
+      env.app.answers.worker_start_session = { session_id: "s-2" };
+      return env;
+    }
+
+    async function expectStandardTranscriptPasted(env: Awaited<ReturnType<typeof liveDictationStopped>>) {
+      const { app, dictation, failures, remembered } = env;
+      expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
+        { profileId: "default" },
+        { profileId: "default", standardOnly: true },
+      ]);
+      expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+        { recordingId: "rec-1", sessionId: "s-2" },
+      ]);
+      await dictation.receiveSessionEvent({
+        session_id: "s-2",
+        event: { type: "final", text: "Hello from Standard" },
+        done: true,
+      });
+      // Pasted, so it replaces the Live draft in the field.
+      expect(app.named("insert_final_text").map((call) => call.args)).toEqual([
+        { text: "Hello from Standard" },
+      ]);
+      expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+        { recordingId: "rec-1", status: "complete", transcript: "Hello from Standard", error: "" },
+      ]);
+      expect(remembered).toEqual(["Hello from Standard"]);
+      expect(failures).toEqual([]);
+      expect(dictation.state).toBe("idle");
+    }
+
+    it("is transcribed with Standard when finalizing it fails", async () => {
+      const env = await liveDictationStopped();
+      env.app.fail("worker_finalize_session_audio", new Error("Session is already finalizing"));
+
+      await env.dictation.toggleRecording();
+      await settle();
+
+      expect(env.app.named("worker_stop_session").map((call) => call.args)).toEqual([
+        { sessionId: "s-1" },
+      ]);
+      await expectStandardTranscriptPasted(env);
+    });
+
+    it("is transcribed with Standard when its session reports an error", async () => {
+      const env = await liveDictationStopped();
+      await env.dictation.toggleRecording();
+      await settle();
+      expect(env.app.named("worker_finalize_session_audio")).toHaveLength(1);
+
+      await env.dictation.receiveSessionEvent(
+        sessionEvent({ type: "error", text: "Realtime transcription session is closed" }, true),
+      );
+      await settle();
+
+      await expectStandardTranscriptPasted(env);
+    });
+
+    it("is not transcribed again when it held no audio", async () => {
+      const { app, dictation, failures } = await liveDictationStopped();
+      await dictation.toggleRecording();
+      await settle();
+
+      await dictation.receiveSessionEvent(sessionEvent({ type: "error", text: "No audio found" }, true));
+      await settle();
+
+      expect(app.commands()).not.toContain("recording_transcribe");
+      expect(failures).toEqual([{ message: "No audio found", recordingSaved: true }]);
+      expect(dictation.state).toBe("idle");
+    });
+
+    it("falls back only once: a failed Standard transcription is reported", async () => {
+      const { app, dictation, failures } = await liveDictationStopped();
+      await dictation.toggleRecording();
+      await settle();
+      await dictation.receiveSessionEvent(
+        sessionEvent({ type: "error", text: "Realtime transcription timed out" }, true),
+      );
+      await settle();
+
+      await dictation.receiveSessionEvent({
+        session_id: "s-2",
+        event: { type: "error", text: "OpenAI is unreachable" },
+        done: true,
+      });
+
+      expect(app.named("recording_transcribe")).toHaveLength(1);
+      expect(failures).toEqual([{ message: "OpenAI is unreachable", recordingSaved: true }]);
+      expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+        { recordingId: "rec-1", status: "failed", transcript: "", error: "OpenAI is unreachable" },
+      ]);
+      expect(dictation.state).toBe("idle");
+    });
+
+    it("stops the Standard session when cancelled while it starts", async () => {
+      const { app, dictation, failures } = await liveDictationStopped();
+      await dictation.toggleRecording();
+      await settle();
+      app.hold("worker_start_session");
+      await dictation.receiveSessionEvent(
+        sessionEvent({ type: "error", text: "Realtime transcription timed out" }, true),
+      );
+      await settle();
+
+      await dictation.cancelTranscription();
+      app.release("worker_start_session");
+      await settle();
+
+      expect(app.commands()).not.toContain("recording_transcribe");
+      expect(app.named("worker_stop_session").at(-1)?.args).toEqual({ sessionId: "s-2" });
+      expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+        { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+      ]);
+      expect(failures).toEqual([]);
+      expect(dictation.state).toBe("idle");
+    });
+  });
+
+  it("keeps recording for Standard when the Live connection cannot open", async () => {
+    const { app, mic, dictation, failures } = setup(LIVE_TRANSCRIPTION_MODEL);
+    app.hold("worker_start_session");
+    void dictation.toggleRecording();
+    await settle();
+    mic.hear(BATCH);
+    app.reject("worker_start_session", new Error("Realtime connection failed"));
+    await settle();
+    app.release("worker_start_session");
+    await settle();
+
+    expect(dictation.state).toBe("recording");
+    expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
+      { profileId: "default" },
+      { profileId: "default", standardOnly: true },
+    ]);
+    mic.hear(BATCH);
+    await dictation.toggleRecording();
+    await settle();
+
+    expect(app.commands()).not.toContain("worker_append_audio_chunk");
+    expect(app.commands()).not.toContain("worker_finalize_session_audio");
+    expect(app.named("recording_append_chunk")).toHaveLength(2);
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", sessionId: "s-1" },
+    ]);
+    expect(failures).toEqual([]);
+  });
+
+  it("transcribes imported and saved audio with Standard while Live is selected", async () => {
+    const { app, dictation, failures } = setup(LIVE_TRANSCRIPTION_MODEL);
+
+    await dictation.retranscribeRecording("rec-9");
+
+    expect(failures).toEqual([]);
+    expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
+      { profileId: "recording-retry", standardOnly: true },
+    ]);
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-9", sessionId: "s-1" },
+    ]);
+    await dictation.receiveSessionEvent(sessionEvent({ type: "final", text: "Again" }, true));
     expect(dictation.state).toBe("idle");
+
+    await dictation.transcribeImportedFile();
+    expect(failures).toEqual([]);
+    expect(app.named("recording_transcribe").map((call) => call.args)).toContainEqual({
+      recordingId: "imported-1",
+      sessionId: "s-1",
+    });
   });
 
   it("leaves a recording started during an import alone when the import's copy fails", async () => {
