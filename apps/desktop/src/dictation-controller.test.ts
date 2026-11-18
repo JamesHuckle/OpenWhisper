@@ -405,4 +405,22 @@ describe("dictation controller", () => {
     ]);
     expect(dictation.state).toBe("idle");
   });
+
+  it("drops Live pieces queued for a cancelled session instead of typing them into the next one", async () => {
+    const { app, dictation } = setup(LIVE_TRANSCRIPTION_MODEL);
+    await startRecording(dictation);
+    app.hold("type_to_target");
+    await dictation.receiveSessionEvent(sessionEvent({ type: "partial", text: "Old" }));
+    await dictation.receiveSessionEvent(sessionEvent({ type: "partial", text: " words" }));
+    await settle();
+    await dictation.toggleRecording();
+    await dictation.cancelTranscription();
+
+    app.answers.worker_start_session = { session_id: "s-2" };
+    await startRecording(dictation);
+    app.release("type_to_target");
+    await settle();
+
+    expect(app.named("type_to_target").map((call) => call.args)).toEqual([{ text: "Old" }]);
+  });
 });

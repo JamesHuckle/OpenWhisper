@@ -522,12 +522,16 @@ export function createDictationController(deps: DictationDeps) {
       deps.showTranscript(liveTranscript, false);
       if (streamTextToTarget) {
         const delta = ev.text;
+        // A piece still queued when its session is cancelled is never typed
+        // into the field a later recording locked.
+        const sessionId = currentSessionId;
         targetWriteQueue = targetWriteQueue.then(async () => {
-          if (!streamTextToTarget) return;
+          if (!streamTextToTarget || currentSessionId !== sessionId) return;
           // The native side checks the field before each piece. Once it stops
           // (field changed, cursor moved, password field), the final text is
           // pasted without deleting what the user did.
           const write = (await invoke("type_to_target", { text: delta })) as TargetWrite;
+          if (currentSessionId !== sessionId) return;
           if (write.outcome !== "typed") {
             streamTextToTarget = false;
             log(`live target typing stopped reason=${write.reason ?? "unknown"}`);
