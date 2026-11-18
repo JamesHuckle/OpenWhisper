@@ -192,6 +192,12 @@ app.innerHTML = `
             <path d="M3.5 7.5V5A1.5 1.5 0 0 1 5 3.5h5l2 2h5" />
           </svg>
         </button>
+        <button id="menu-open-logs" class="menu-icon-action" type="button" title="Open log folder" aria-label="Open log folder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <path d="M6.5 3.5h8l4 4v11.5a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5Z" />
+            <path d="M8.5 11h7M8.5 14h7M8.5 17h4.5" />
+          </svg>
+        </button>
       </div>
       <div id="recent-recordings" class="recent-recordings"></div>
       <div class="menu-divider"></div>
@@ -283,6 +289,7 @@ const failureOpenRecording = document.getElementById("failure-open-recording") a
 const failureDismiss = document.getElementById("failure-dismiss") as HTMLButtonElement;
 const menuImportAudio = document.getElementById("menu-import-audio") as HTMLButtonElement;
 const menuOpenRecordings = document.getElementById("menu-open-recordings") as HTMLButtonElement;
+const menuOpenLogs = document.getElementById("menu-open-logs") as HTMLButtonElement;
 const recentRecordings = document.getElementById("recent-recordings")!;
 const widgetNoticeText = document.getElementById("widget-notice-text")!;
 
@@ -1024,6 +1031,12 @@ failureDismiss.addEventListener("click", () => {
 menuOpenRecordings.addEventListener("click", () => {
   void invoke("recordings_open_folder").catch((error) => {
     showToast(errorMessage(error, "Could not open recordings folder"));
+  });
+});
+
+menuOpenLogs.addEventListener("click", () => {
+  void invoke("logs_open_folder").catch((error) => {
+    showToast(errorMessage(error, "Could not open log folder"));
   });
 });
 

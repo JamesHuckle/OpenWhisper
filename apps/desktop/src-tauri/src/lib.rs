@@ -512,6 +512,18 @@ fn recordings_open_folder(app_handle: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Opens the folder holding `openwhisper.log` (src/debug_log.rs), so a user
+/// can send it when something went wrong.
+#[tauri::command]
+fn logs_open_folder(app_handle: AppHandle) -> Result<(), String> {
+    let dir = app_handle.path().app_log_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app_handle
+        .opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 fn transcription(state: &AppState) -> Result<&Sessions, String> {
     state
         .transcription
@@ -1138,6 +1150,11 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // First, so every later line also reaches the log file.
+            match app.path().app_log_dir() {
+                Ok(dir) => debug_log::init_log_file(&dir),
+                Err(error) => debug_log_line("log", &format!("no log folder: {error}")),
+            }
             let emit_app = app.handle().clone();
             match Sessions::new(Arc::new(move |event| {
                 let _ = emit_app.emit(SESSION_EVENT, event);
@@ -1158,7 +1175,7 @@ pub fn run() {
             *settings = loaded;
 
             if let Err(e) = setup_tray(app) {
-                eprintln!("Failed to create tray icon: {e}");
+                debug_log_line("tray", &format!("Failed to create tray icon: {e}"));
             }
 
             // The frontend's first layout commit performs the initial reveal.
@@ -1298,6 +1315,7 @@ pub fn run() {
             recording_list,
             recording_open,
             recordings_open_folder,
+            logs_open_folder,
             debug_log,
             get_foreground_app,
             open_api_keys_page,

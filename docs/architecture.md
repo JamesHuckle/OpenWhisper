@@ -26,6 +26,11 @@ WhisperFlow is split into two runtime layers, in one process:
      crash while saving never hides a recording or resets the settings. The
      Android app saves recording details with `AtomicFile`, under one lock
      shared by every `RecordingStore` of the same folder.
+   - debug log: `src-tauri/src/debug_log.rs` writes each line to stderr and
+     to `openwhisper.log` in the app log folder (release builds on Windows
+     have no console). Past 1 MB the file becomes `openwhisper.log.1`,
+     replacing the older one. The menu's "Open log folder" button opens the
+     folder. Lines never hold dictated text, keys or prompts.
    - code layout: `src-tauri/src/lib.rs` holds the Tauri commands, the tray
      and start-up. Logic that needs no Tauri sits in files beside it
      (`settings.rs`, `recordings.rs`, `overlay_geometry.rs` and the files

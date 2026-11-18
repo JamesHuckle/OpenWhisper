@@ -320,6 +320,23 @@ describe("desktop regression contracts", () => {
     expect(native).toContain("FinalizeAudio::Saved(audio)");
   });
 
+  it("keeps the debug log in a file users can open from the menu", () => {
+    // Release builds on Windows have no console, so stderr alone loses every
+    // line (debug_log.rs tests the file itself in core-tests).
+    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    const native = readNativeSource();
+
+    expect(native).toContain("debug_log::init_log_file(&dir)");
+    expect(native.indexOf("debug_log::init_log_file(&dir)")).toBeLessThan(
+      native.indexOf("load_settings_and_api_key(app.handle())"),
+    );
+    expect(native).toContain("fn logs_open_folder(");
+    expect(native).toMatch(/recordings_open_folder,\s*logs_open_folder,/);
+    expect(main).toContain('id="menu-open-logs"');
+    expect(main).toContain('invoke("logs_open_folder")');
+    expect(native).not.toContain("eprintln!");
+  });
+
   it("keeps the saved backup open while recording", () => {
     const native = readNativeSource();
 
