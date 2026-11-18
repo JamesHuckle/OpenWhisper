@@ -40,6 +40,15 @@ If a release fails, fix the reported problem and push again, or rerun the
 workflow from the Actions tab: a rerun replaces the unfinished draft. Nothing
 reaches users until both builds and both feeds are checked.
 
+Re-running an old run is safe. Only a commit that comes after the newest
+release tag is released, so an older commit is skipped ("already in vX") and a
+commit whose history split from the last release fails. Just before it creates
+the draft and again just before it publishes, the workflow fetches `main` and
+the tags and checks that the commit is on `main`, comes after the newest
+published release and gets a higher version. If a run published its release
+and then stopped, rerunning it only checks that release's files and feeds; it
+never marks it latest again.
+
 Machines that used the old local release hooks should remove that setting once:
 
 ```bash

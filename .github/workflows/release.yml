@@ -2,6 +2,8 @@
 # release tag, it then builds signed Windows and Android releases, uploads them
 # to a draft GitHub Release, checks both update feeds and publishes the draft
 # as latest. Website-only pushes stop after the tests (Vercel deploys apps/web).
+# A re-run of an old run never publishes: only a commit that comes after the
+# newest release is released.
 # The release steps live in scripts/release.mjs.
 # Every job caches what it downloads or compiles (npm, Cargo, Gradle and
 # the Android toolchain), so a release only rebuilds what changed.
@@ -198,7 +200,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The full history and tags, so publish can check that this commit comes
+      # after the newest release before it marks anything latest.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}

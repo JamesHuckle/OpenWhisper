@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -9,11 +9,15 @@ import {
   androidVersionCode,
   applyVersion,
   checkFeeds,
+  checkPublish,
+  checkReleaseAssets,
   committedVersion,
+  gitIn,
   isAppChange,
   latestTag,
   needsRelease,
   nextVersion,
+  planRelease,
   repositoryRoot,
   setVersion,
   versionFiles,
@@ -73,6 +77,149 @@ describe("release decision", () => {
     assert.equal(needsRelease("v0.2.27", ["apps/web/app/page.tsx", "README.md"]), false);
     assert.equal(needsRelease("v0.2.27", ["apps/web/app/page.tsx", "apps/android/app/build.gradle.kts"]), true);
     assert.equal(needsRelease(null, []), true);
+  });
+});
+
+// A throwaway repository: v0.2.27 released at `released`, then main moves on
+// to `next` (app code); `old` is a branch cut before the release.
+function releaseHistory() {
+  const root = mkdtempSync(join(tmpdir(), "openwhisper-history-"));
+  const plain = gitIn(root);
+  const run = (...args) => plain(
+    "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+    ...args,
+  );
+  const commit = (path, message) => {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), `${message}\n`);
+    run("add", "-A");
+    run("commit", "-q", "-m", message);
+    return run("rev-parse", "HEAD");
+  };
+  run("init", "-q", "-b", "main");
+  const base = commit("apps/desktop/src/main.ts", "base");
+  const released = commit("apps/desktop/src/main.ts", "released");
+  run("tag", "v0.2.27", released);
+  const website = commit("apps/web/app/page.tsx", "website");
+  const next = commit("apps/android/app/build.gradle.kts", "next");
+  run("checkout", "-q", "-b", "old", base);
+  const old = commit("apps/desktop/src/lib.ts", "old branch");
+  run("checkout", "-q", "main");
+  run("update-ref", "refs/remotes/origin/main", next);
+  return { root, run, base, released, website, next, old, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+describe("release order", () => {
+  const published = (tag, extra = {}) => ({ tag_name: tag, draft: false, assets: [], ...extra });
+
+  it("releases a commit that comes after the last release with new app code", () => {
+    const history = releaseHistory();
+    try {
+      const plan = planRelease({ run: history.run, committed: "0.2.27", head: history.next });
+      assert.equal(plan.release, true);
+      assert.equal(plan.version, "0.2.28");
+      const website = planRelease({ run: history.run, committed: "0.2.27", head: history.website });
+      assert.equal(website.release, false);
+      assert.match(website.message, /No app code changed/);
+      assert.deepEqual(
+        checkPublish({ run: history.run, version: "0.2.28", target: history.next, releases: [published("v0.2.27")] }),
+        { action: "publish" },
+      );
+    } finally {
+      history.cleanup();
+    }
+  });
+
+  it("never releases an old run re-run after a newer release", () => {
+    const history = releaseHistory();
+    try {
+      history.run("tag", "v0.2.28", history.next);
+      for (const head of [history.released, history.website, history.next]) {
+        const plan = planRelease({ run: history.run, committed: "0.2.27", head });
+        assert.equal(plan.release, false, head);
+        assert.match(plan.message, /already in v0\.2\.28/);
+      }
+      // Even if a stale plan reaches publish, it refuses to mark older code latest.
+      const releases = [published("v0.2.27"), published("v0.2.28")];
+      assert.throws(
+        () => checkPublish({ run: history.run, version: "0.2.29", target: history.website, releases }),
+        /already in v0\.2\.28/,
+      );
+      assert.throws(
+        () => checkPublish({ run: history.run, version: "0.2.28", target: history.website, releases: [published("v0.2.27"), published("v0.2.29")] }),
+        /not newer than v0\.2\.29/,
+      );
+    } finally {
+      history.cleanup();
+    }
+  });
+
+  it("fails on main, and only tests on other branches, when history split from the last release", () => {
+    const history = releaseHistory();
+    try {
+      assert.throws(
+        () => planRelease({ run: history.run, committed: "0.2.27", head: history.old }),
+        /does not contain v0\.2\.27/,
+      );
+      assert.equal(planRelease({ run: history.run, committed: "0.2.27", head: history.old, onMain: false }).release, false);
+      // A commit that never reached main is never published.
+      assert.throws(
+        () => checkPublish({ run: history.run, version: "0.2.28", target: history.old, releases: [published("v0.2.27")] }),
+        /not on main/,
+      );
+      history.run("update-ref", "refs/remotes/origin/main", history.old);
+      assert.throws(
+        () => checkPublish({ run: history.run, version: "0.2.28", target: history.old, releases: [published("v0.2.27")] }),
+        /does not contain v0\.2\.27/,
+      );
+    } finally {
+      history.cleanup();
+    }
+  });
+
+  it("finishes a re-run after publishing without marking the release latest again", () => {
+    const history = releaseHistory();
+    try {
+      history.run("tag", "v0.2.28", history.next);
+      const release = published("v0.2.28", {
+        assets: [
+          { name: "a.exe", state: "uploaded", size: 10 },
+          { name: "b.apk", state: "uploaded", size: 20 },
+        ],
+      });
+      const result = checkPublish({
+        run: history.run, version: "0.2.28", target: history.next, releases: [published("v0.2.27"), release],
+      });
+      assert.equal(result.action, "finish");
+      assert.equal(result.newest, true);
+      assert.deepEqual(checkReleaseAssets(result.release, { "a.exe": 10, "b.apk": 20 }), []);
+      assert.deepEqual(checkReleaseAssets(result.release, { "a.exe": 10, "b.apk": 21, "c.json": 5 }), [
+        "v0.2.28 has a b.apk of 20 bytes, not 21.",
+        "v0.2.28 is missing c.json.",
+      ]);
+      assert.equal(
+        checkPublish({
+          run: history.run, version: "0.2.28", target: history.next, releases: [release, published("v0.2.29")],
+        }).newest,
+        false,
+      );
+      // The same tag from another commit is never touched.
+      assert.throws(
+        () => checkPublish({ run: history.run, version: "0.2.28", target: history.website, releases: [release] }),
+        /already published from commit/,
+      );
+      // A leftover draft does not count as published.
+      assert.deepEqual(
+        checkPublish({
+          run: history.run, version: "0.2.28", target: history.next,
+          releases: [published("v0.2.27"), { tag_name: "v0.2.28", draft: true }],
+        }),
+        { action: "publish" },
+      );
+    } finally {
+      history.cleanup();
+    }
   });
 });
 
@@ -179,5 +326,11 @@ describe("build caches", () => {
     }
     // The desktop calls OpenAI itself; no Python is set up or bundled.
     assert.doesNotMatch(workflow, /setup-uv|apps\/worker/);
+  });
+
+  it("gives plan and publish the full history and tags to check the release order", () => {
+    for (const name of ["plan", "publish"]) {
+      assert.match(job(name), /actions\/checkout@v4\s+with:\s+fetch-depth: 0\s+fetch-tags: true/, name);
+    }
   });
 });

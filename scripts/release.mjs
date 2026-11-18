@@ -4,9 +4,12 @@
 //
 //   node scripts/release.mjs plan
 //     Prints release=, version=, version_code= and tag= lines for
-//     $GITHUB_OUTPUT. A release is due when app code changed since the last
-//     release tag. The version is the last tag + 1, or the committed desktop
-//     version when someone raised it by hand (for a minor or major release).
+//     $GITHUB_OUTPUT. A release is due when the commit comes after the last
+//     release tag and app code changed since that tag. A commit that is
+//     already in the last release (an old run re-run) is not released again,
+//     and a commit whose history split from the last release fails. The
+//     version is the last tag + 1, or the committed desktop version when
+//     someone raised it by hand (for a minor or major release).
 //
 //   node scripts/release.mjs set-version <version>
 //     Writes the version into every desktop and Android version file. The
@@ -16,6 +19,12 @@
 //     Uploads the signed Windows and Android files and both update feeds to a
 //     draft release, checks the draft, then publishes it as latest and checks
 //     the public feeds. The tag is created only when the draft is published.
+//     Just before it creates the draft and again just before it publishes, it
+//     fetches main and the tags and checks that the commit is on main, comes
+//     after the newest published release and gets a higher version. When the
+//     same tag was already published from the same commit (a re-run after a
+//     partly finished run), it only checks that release's files and feeds and
+//     never marks it latest again.
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -251,9 +260,11 @@ export function checkFeeds({ repository, version, signature, apkSha256, windows,
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-function git(...args) {
-  return execFileSync("git", ["-C", repositoryRoot, ...args], { encoding: "utf8" }).trim();
+export function gitIn(root) {
+  return (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
 }
+
+const git = gitIn(repositoryRoot);
 
 function gh(...args) {
   return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim();
@@ -263,12 +274,75 @@ function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function plan() {
-  const tags = git("tag", "--list", "v*").split("\n").filter(Boolean);
-  const lastTag = latestTag(tags);
-  const changed = lastTag ? git("diff", "--name-only", lastTag, "HEAD").split("\n").filter(Boolean) : [];
+// ── Release order ─────────────────────────────────────────────────────────────
+
+function isAncestor(run, ancestor, commit) {
+  try {
+    run("merge-base", "--is-ancestor", ancestor, commit);
+    return true;
+  } catch (error) {
+    if (error.status === 1) return false;
+    throw error;
+  }
+}
+
+export function commitOf(run, ref) {
+  return run("rev-parse", "--verify", `${ref}^{commit}`);
+}
+
+// Where a commit sits against a release's commit: the same commit, "after" it
+// (the release is in the commit's history), "before" it (the commit is
+// already in the release) or "split" (neither history contains the other).
+export function commitOrder(run, releaseCommit, commit) {
+  if (releaseCommit === commit) return "same";
+  if (isAncestor(run, releaseCommit, commit)) return "after";
+  if (isAncestor(run, commit, releaseCommit)) return "before";
+  return "split";
+}
+
+// Decides whether the commit `head` is released and with which version.
+// Re-running an old run must never give old code a higher version, so a
+// commit that is not after the last release tag is never released.
+export function planRelease({ run, committed, head = "HEAD", onMain = true }) {
+  const commit = commitOf(run, head);
+  const lastTag = latestTag(run("tag", "--list", "v*").split("\n").filter(Boolean));
+  const version = nextVersion(lastTag, committed);
+  if (!lastTag) return { release: true, version, message: `No release tag yet: releasing v${version}.` };
+
+  const order = commitOrder(run, commitOf(run, lastTag), commit);
+  if (order === "same" || order === "before") {
+    return {
+      release: false,
+      version,
+      message: `Commit ${commit} is already in ${lastTag}, the newest release (an old run was re-run): no release.`,
+    };
+  }
+  if (order === "split") {
+    const message = `Commit ${commit} does not contain ${lastTag}, the newest release: its history split from the released code.`;
+    // A manual run on another branch only tests, so a branch cut before the
+    // last release is fine there; on main it means the history was rewritten.
+    if (!onMain) return { release: false, version, message: `${message} No release outside main.` };
+    throw new Error(`${message} Releasing it would replace newer code; merge ${lastTag} into main first.`);
+  }
+
+  const changed = run("diff", "--name-only", lastTag, commit).split("\n").filter(Boolean);
   const release = needsRelease(lastTag, changed);
-  const version = nextVersion(lastTag, committedVersion(repositoryRoot));
+  return {
+    release,
+    version,
+    message: release
+      ? `App code changed since ${lastTag}: releasing v${version}.`
+      : `No app code changed since ${lastTag}: no release.`,
+  };
+}
+
+function plan() {
+  const ref = process.env.GITHUB_REF;
+  const { release, version, message } = planRelease({
+    run: git,
+    committed: committedVersion(repositoryRoot),
+    onMain: !ref || ref === "refs/heads/main",
+  });
   const lines = [
     `release=${release}`,
     `version=${version}`,
@@ -276,11 +350,57 @@ function plan() {
     `tag=v${version}`,
   ];
   console.log(lines.join("\n"));
-  console.error(
-    release
-      ? `App code changed since ${lastTag ?? "the first commit"}: releasing v${version}.`
-      : `No app code changed since ${lastTag}: no release.`,
-  );
+  console.error(message);
+}
+
+// Checks, against freshly fetched main and tags, that publishing `version` from
+// `target` moves users forward. `releases` is GitHub's list of releases.
+// Returns { action: "publish" } for a new release, or { action: "finish",
+// release, newest } when this tag was already published from this commit by a
+// run that stopped part way; throws when publishing would ship older code.
+export function checkPublish({ run, version, target, releases, main = "refs/remotes/origin/main" }) {
+  const tag = `v${version}`;
+  const commit = commitOf(run, target);
+  if (!isAncestor(run, commit, commitOf(run, main))) {
+    throw new Error(`Commit ${commit} is not on main; releases come only from main.`);
+  }
+
+  const published = releases.filter((release) => !release.draft && latestTag([release.tag_name]));
+  const newestTag = latestTag(published.map((release) => release.tag_name));
+  const same = published.find((release) => release.tag_name === tag);
+  if (same) {
+    const releasedCommit = commitOf(run, tag);
+    if (releasedCommit !== commit) {
+      throw new Error(`Release ${tag} is already published from commit ${releasedCommit}, not ${commit}.`);
+    }
+    return { action: "finish", release: same, newest: newestTag === tag };
+  }
+  if (!newestTag) return { action: "publish" };
+
+  if (compareVersions(parseVersion(version), parseVersion(newestTag)) <= 0) {
+    throw new Error(
+      `${tag} is not newer than ${newestTag}, the newest published release. Run the workflow again so it plans a new version.`,
+    );
+  }
+  const order = commitOrder(run, commitOf(run, newestTag), commit);
+  if (order === "same" || order === "before") {
+    throw new Error(`Commit ${commit} is already in ${newestTag}, the newest published release: not publishing it as ${tag}.`);
+  }
+  if (order === "split") {
+    throw new Error(`Commit ${commit} does not contain ${newestTag}, the newest published release: not publishing it as ${tag}.`);
+  }
+  return { action: "publish" };
+}
+
+// Returns the problems with a published release's files; empty means complete.
+export function checkReleaseAssets(release, expected) {
+  const problems = [];
+  for (const [name, size] of Object.entries(expected)) {
+    const asset = release.assets?.find((candidate) => candidate.name === name);
+    if (!asset || asset.state !== "uploaded") problems.push(`${release.tag_name} is missing ${name}.`);
+    else if (asset.size !== size) problems.push(`${release.tag_name} has a ${name} of ${asset.size} bytes, not ${size}.`);
+  }
+  return problems;
 }
 
 async function fetchWithRetry(url, attempts = 10) {
@@ -340,52 +460,74 @@ async function publish(options) {
   writeFileSync(path(names.androidFeed), JSON.stringify(androidFeed({ repository, version, sha256: apkSha256 })));
   const uploads = Object.values(names);
 
-  // A failed earlier run can leave a draft behind; never touch a published one.
-  const existing = JSON.parse(gh("api", `repos/${repository}/releases`, "--paginate", "--slurp"))
-    .flat()
-    .filter((release) => release.tag_name === tag);
-  for (const release of existing) {
-    if (!release.draft) throw new Error(`Release ${tag} is already published.`);
-    console.log(`==> Removing the unfinished draft ${tag} (${release.id})`);
-    gh("api", "-X", "DELETE", `repos/${repository}/releases/${release.id}`);
-  }
+  const releaseList = () =>
+    JSON.parse(gh("api", `repos/${repository}/releases`, "--paginate", "--slurp")).flat();
+  const confirmOrder = () => {
+    console.log("==> Fetching main and the release tags");
+    git("fetch", "--force", "--tags", "origin", "+refs/heads/main:refs/remotes/origin/main");
+    const releases = releaseList();
+    return { releases, ...checkPublish({ run: git, version, target, releases }) };
+  };
 
-  const notesDirectory = mkdtempSync(join(tmpdir(), "openwhisper-release-"));
-  try {
-    const notesPath = join(notesDirectory, "notes.md");
-    writeFileSync(notesPath, androidReleaseNotes(repository, version));
-    console.log(`==> Creating draft release ${tag} for ${target}`);
-    gh("release", "create", tag, "--repo", repository, "--draft", "--target", target,
-      "--title", `${productName} ${tag}`, "--generate-notes", "--notes-file", notesPath);
-    console.log("==> Uploading release files to the draft");
-    gh("release", "upload", tag, "--repo", repository, "--clobber", ...uploads.map(path));
-
-    console.log("==> Checking the draft");
-    const draft = JSON.parse(gh("release", "view", tag, "--repo", repository, "--json", "isDraft,assets"));
-    if (!draft.isDraft) throw new Error(`Release ${tag} is no longer a draft.`);
-    for (const name of uploads) {
-      const asset = draft.assets.find((candidate) => candidate.name === name);
-      if (!asset || asset.state !== "uploaded" || asset.size !== statSync(path(name)).size) {
-        throw new Error(`The draft is missing a complete ${name}.`);
-      }
+  const first = confirmOrder();
+  if (first.action === "finish") {
+    // An earlier run published this tag from this commit and then stopped.
+    console.log(`==> ${tag} is already published from ${target}; checking its files`);
+    const problems = checkReleaseAssets(
+      first.release,
+      Object.fromEntries(uploads.map((name) => [name, statSync(path(name)).size])),
+    );
+    if (problems.length) throw new Error(`The published release is incomplete:\n${problems.join("\n")}`);
+    if (!first.newest) {
+      console.log(`${productName} ${tag} is complete; a newer release has replaced it as latest.`);
+      return;
     }
-    const downloads = join(notesDirectory, "draft");
-    gh("release", "download", tag, "--repo", repository, "--dir", downloads,
-      "--pattern", names.windowsFeed, "--pattern", names.androidFeed);
-    const draftProblems = checkFeeds({
-      repository,
-      version,
-      signature,
-      apkSha256,
-      windows: JSON.parse(readFileSync(join(downloads, names.windowsFeed), "utf8")),
-      android: JSON.parse(readFileSync(join(downloads, names.androidFeed), "utf8")),
-    });
-    if (draftProblems.length) throw new Error(`The draft's update feeds are wrong:\n${draftProblems.join("\n")}`);
+  } else {
+    // A failed earlier run can leave a draft behind; published ones were checked above.
+    for (const release of first.releases.filter((candidate) => candidate.tag_name === tag)) {
+      console.log(`==> Removing the unfinished draft ${tag} (${release.id})`);
+      gh("api", "-X", "DELETE", `repos/${repository}/releases/${release.id}`);
+    }
 
-    console.log(`==> Publishing ${tag} as the latest release`);
-    gh("release", "edit", tag, "--repo", repository, "--draft=false", "--latest");
-  } finally {
-    rmSync(notesDirectory, { recursive: true, force: true });
+    const notesDirectory = mkdtempSync(join(tmpdir(), "openwhisper-release-"));
+    try {
+      const notesPath = join(notesDirectory, "notes.md");
+      writeFileSync(notesPath, androidReleaseNotes(repository, version));
+      console.log(`==> Creating draft release ${tag} for ${target}`);
+      gh("release", "create", tag, "--repo", repository, "--draft", "--target", target,
+        "--title", `${productName} ${tag}`, "--generate-notes", "--notes-file", notesPath);
+      console.log("==> Uploading release files to the draft");
+      gh("release", "upload", tag, "--repo", repository, "--clobber", ...uploads.map(path));
+
+      console.log("==> Checking the draft");
+      const draft = JSON.parse(gh("release", "view", tag, "--repo", repository, "--json", "isDraft,assets"));
+      if (!draft.isDraft) throw new Error(`Release ${tag} is no longer a draft.`);
+      for (const name of uploads) {
+        const asset = draft.assets.find((candidate) => candidate.name === name);
+        if (!asset || asset.state !== "uploaded" || asset.size !== statSync(path(name)).size) {
+          throw new Error(`The draft is missing a complete ${name}.`);
+        }
+      }
+      const downloads = join(notesDirectory, "draft");
+      gh("release", "download", tag, "--repo", repository, "--dir", downloads,
+        "--pattern", names.windowsFeed, "--pattern", names.androidFeed);
+      const draftProblems = checkFeeds({
+        repository,
+        version,
+        signature,
+        apkSha256,
+        windows: JSON.parse(readFileSync(join(downloads, names.windowsFeed), "utf8")),
+        android: JSON.parse(readFileSync(join(downloads, names.androidFeed), "utf8")),
+      });
+      if (draftProblems.length) throw new Error(`The draft's update feeds are wrong:\n${draftProblems.join("\n")}`);
+
+      // Main or the releases may have moved while the draft was built.
+      if (confirmOrder().action !== "publish") throw new Error(`Release ${tag} was published by another run.`);
+      console.log(`==> Publishing ${tag} as the latest release`);
+      gh("release", "edit", tag, "--repo", repository, "--draft=false", "--latest");
+    } finally {
+      rmSync(notesDirectory, { recursive: true, force: true });
+    }
   }
 
   console.log("==> Checking the public update feeds and APK");
