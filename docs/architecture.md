@@ -79,7 +79,9 @@ WhisperFlow is split into two runtime layers, in one process:
    (`recording_transcribe`). For a microphone recording the shell first
    encodes the WAV once as lossless FLAC (`src-tauri/src/flac_upload.rs`,
    about half the bytes for speech), split into parts that each fit one
-   upload, with the byte range of the WAV each holds. The transcriber
+   upload, with the byte range of the WAV each holds. The log records how
+   long it took (`encode_ms`, about 60 ms per minute of audio in an ignored
+   timing test in that file) and the WAV and FLAC sizes. The transcriber
    checks the WAV for silence and uploads the parts,
    one request each; a long recording's later parts are prompted with the
    text before them. When the service refuses a FLAC part the rest of the

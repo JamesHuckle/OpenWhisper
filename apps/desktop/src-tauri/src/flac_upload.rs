@@ -409,6 +409,35 @@ mod tests {
         assert_eq!(files_in(&dir.0), vec!["audio.wav"]);
     }
 
+    /// How long the upload copy of a long dictation takes to make. Run it in
+    /// release mode, as the app is built:
+    /// cargo test --release --manifest-path apps/desktop/src-tauri/core-tests/Cargo.toml -- --ignored --nocapture five_minutes
+    #[test]
+    #[ignore]
+    fn five_minutes_of_speech_encode_time() {
+        let dir = TempDir::new();
+        let wav = dir.0.join("audio.wav");
+        let minutes = 5;
+        write_wav(&wav, &samples(24_000 * 60 * minutes));
+
+        let started = std::time::Instant::now();
+        let parts = write_upload_parts(&wav, &dir.0, max_upload_bytes()).unwrap();
+        let elapsed = started.elapsed();
+
+        let flac_bytes: u64 = parts
+            .iter()
+            .map(|part| fs::metadata(&part.path).unwrap().len())
+            .sum();
+        println!(
+            "encoded {minutes} min in {} ms ({} ms per minute): {} parts, wav {} bytes, flac {} bytes",
+            elapsed.as_millis(),
+            elapsed.as_millis() / minutes as u128,
+            parts.len(),
+            fs::metadata(&wav).unwrap().len(),
+            flac_bytes
+        );
+    }
+
     #[test]
     fn upload_limit_comes_from_the_shared_audio_rules() {
         assert!(max_upload_bytes() > 1_000_000);

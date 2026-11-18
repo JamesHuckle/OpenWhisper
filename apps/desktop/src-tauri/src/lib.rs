@@ -453,13 +453,33 @@ async fn recording_transcribe(
 /// parts: the WAV is then sent, as it is for the rest of a recording once
 /// the service refuses a part. They are written in `dir`, the recording's
 /// folder.
+///
+/// Logs how long the encoding took and the sizes before and after, so the
+/// wait it adds between stopping and the text appearing can be checked.
 async fn flac_upload_parts(wav_path: PathBuf, dir: PathBuf) -> Vec<flac_upload::UploadPart> {
+    let wav_bytes = fs::metadata(&wav_path).map(|m| m.len()).unwrap_or(0);
+    let started = Instant::now();
     let written = tauri::async_runtime::spawn_blocking(move || {
         flac_upload::write_upload_parts(&wav_path, &dir, audio_rules::max_upload_bytes())
     })
     .await;
+    let encode_ms = started.elapsed().as_millis();
     match written {
-        Ok(Ok(parts)) => parts,
+        Ok(Ok(parts)) => {
+            let flac_bytes: u64 = parts
+                .iter()
+                .filter_map(|part| fs::metadata(&part.path).ok())
+                .map(|m| m.len())
+                .sum();
+            debug_log_line(
+                "recording",
+                &format!(
+                    "FLAC upload parts: {} parts, encode_ms={encode_ms} wav_bytes={wav_bytes} flac_bytes={flac_bytes}",
+                    parts.len()
+                ),
+            );
+            parts
+        }
         Ok(Err(error)) => {
             debug_log_line("recording", &format!("FLAC upload parts failed: {error}"));
             Vec::new()
