@@ -1,11 +1,9 @@
 import { FloatingMic } from "./floating-mic";
 import { DownloadButton } from "./download-button";
-import { GITHUB_URL } from "@/lib/config";
-import { getLatestVersion } from "@/lib/github";
+import { GITHUB_URL, RELEASES_URL } from "@/lib/config";
 import { GitHubIcon } from "./icons";
 
-export async function Hero() {
-  const version = await getLatestVersion();
+export function Hero() {
   return (
     <section className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-6 pt-20 pb-32">
       {/* Background gradient */}
@@ -74,7 +72,15 @@ export async function Hero() {
 
         {/* Version note */}
         <p className="animate-fade-in-up delay-600 mt-6 text-xs text-text-muted/60">
-          Windows 10+ &middot; Android 9+ &middot; {version ?? "latest"}
+          Windows 10+ &middot; Android 9+ &middot;{" "}
+          <a
+            href={RELEASES_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline-offset-2 transition-colors hover:text-text-muted hover:underline"
+          >
+            Latest release on GitHub
+          </a>
         </p>
       </div>
     </section>
