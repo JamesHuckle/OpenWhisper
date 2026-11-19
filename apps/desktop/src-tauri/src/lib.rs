@@ -36,7 +36,7 @@ use debug_log::debug_log_line;
 use models::{is_supported_transcription_model, migrate_transcription_model};
 use overlay_geometry::{
     move_overlay_hidden, overlay_placement, settle_hidden, MonitorTransitionDebouncer,
-    OverlayAnchor, OverlayLayoutSpec, OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
+    OverlayAnchor, OverlayLayoutSpec, OverlayRevealIntent, PlacementVisibility,
 };
 use recording_store::PcmWavWriter;
 use recordings::{
@@ -128,26 +128,6 @@ fn resolve_overlay_anchor(state: &Arc<AppState>) -> Result<Option<OverlayAnchor>
 }
 
 #[cfg(target_os = "windows")]
-fn commit_native_placement(
-    hwnd: isize,
-    placement: OverlayPlacement,
-    visibility: PlacementVisibility,
-) -> Result<(), String> {
-    overlay_positioner::set_window_placement(hwnd, placement.position, placement.size, visibility)
-}
-
-#[cfg(target_os = "windows")]
-fn native_placement_matches(hwnd: isize, expected: OverlayPlacement) -> Result<bool, String> {
-    let observed = overlay_positioner::window_placement(hwnd)
-        .ok_or_else(|| "GetWindowRect failed while verifying overlay placement".to_string())?;
-    Ok(
-        observed.0 == expected.position
-            && observed.1 == expected.size
-            && observed.2 == expected.dpi,
-    )
-}
-
-#[cfg(target_os = "windows")]
 fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Result<bool, String> {
     let state = app.state::<Arc<AppState>>().inner().clone();
     let Some(_layout_guard) = OverlayLayoutGuard::try_acquire(&state.overlay_layout_locked) else {
@@ -186,8 +166,10 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
     let moved = move_overlay_hidden(
         placement,
         restore,
-        |placement, visibility| commit_native_placement(hwnd, placement, visibility),
-        |placement| native_placement_matches(hwnd, placement),
+        |placement, visibility| {
+            overlay_positioner::set_window_placement(hwnd, placement, visibility)
+        },
+        |placement| overlay_positioner::placement_matches(hwnd, placement),
         || std::thread::sleep(std::time::Duration::from_millis(8)),
     );
     if was_visible {
@@ -234,7 +216,7 @@ fn position_main_window_before_reveal(app: &AppHandle) -> Result<bool, String> {
     let Some(layout) = layout else {
         return Ok(false);
     };
-    commit_native_placement(
+    overlay_positioner::set_window_placement(
         window.hwnd().map_err(|e| e.to_string())?.0 as isize,
         overlay_placement(anchor, layout),
         PlacementVisibility::Keep,
@@ -848,12 +830,18 @@ async fn overlay_apply_layout(
                 tauri::async_runtime::spawn_blocking(move || {
                     settle_hidden(
                         placement,
-                        |placement, visibility| commit_native_placement(hwnd, placement, visibility),
-                        |placement| native_placement_matches(hwnd, placement),
+                        |placement, visibility| {
+                            overlay_positioner::set_window_placement(hwnd, placement, visibility)
+                        },
+                        |placement| overlay_positioner::placement_matches(hwnd, placement),
                         || std::thread::sleep(std::time::Duration::from_millis(8)),
                     )?
                     .ok_or_else(|| "Initial overlay placement did not settle".to_string())?;
-                    commit_native_placement(hwnd, placement, PlacementVisibility::Show)
+                    overlay_positioner::set_window_placement(
+                        hwnd,
+                        placement,
+                        PlacementVisibility::Show,
+                    )
                 })
                 .await
                 .map_err(|e| e.to_string())??;
@@ -863,7 +851,7 @@ async fn overlay_apply_layout(
                 } else {
                     PlacementVisibility::HideWithoutRedraw
                 };
-                commit_native_placement(hwnd, placement, visibility)?;
+                overlay_positioner::set_window_placement(hwnd, placement, visibility)?;
             }
             // The recording pill can appear while the window is already up (an
             // idle→recording transition is a Keep, not a Show). Re-raise it to

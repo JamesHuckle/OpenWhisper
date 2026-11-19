@@ -4,7 +4,7 @@
 //! `HWND` and `HMONITOR` only here.
 
 use crate::overlay_geometry::{
-    overlay_bottom_anchor, OverlayAnchor, PlacementVisibility, Position, Size,
+    overlay_bottom_anchor, OverlayAnchor, OverlayPlacement, PlacementVisibility, Position, Size,
 };
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -77,8 +77,7 @@ pub fn monitor_at(x: i32, y: i32) -> isize {
 
 pub fn set_window_placement(
     hwnd: isize,
-    position: Position,
-    size: Size,
+    placement: OverlayPlacement,
     visibility: PlacementVisibility,
 ) -> Result<(), String> {
     let visibility_flags = match visibility {
@@ -93,10 +92,10 @@ pub fn set_window_placement(
         SetWindowPos(
             to_hwnd(hwnd),
             None,
-            position.x,
-            position.y,
-            size.width as i32,
-            size.height as i32,
+            placement.position.x,
+            placement.position.y,
+            placement.size.width as i32,
+            placement.size.height as i32,
             flags,
         )
     }
@@ -127,18 +126,16 @@ pub fn reassert_topmost(hwnd: isize) {
     };
 }
 
-pub fn window_placement(
-    hwnd: isize,
-) -> Option<(Position, Size, u32)> {
+/// Whether the window is at `expected`: its position, size and DPI.
+pub fn placement_matches(hwnd: isize, expected: OverlayPlacement) -> Result<bool, String> {
     let hwnd = to_hwnd(hwnd);
     let mut rect = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
-    Some((
-        Position::new(rect.left, rect.top),
-        Size::new(
+    unsafe { GetWindowRect(hwnd, &mut rect) }
+        .map_err(|_| "GetWindowRect failed while verifying overlay placement".to_string())?;
+    Ok(Position::new(rect.left, rect.top) == expected.position
+        && Size::new(
             rect.right.saturating_sub(rect.left) as u32,
             rect.bottom.saturating_sub(rect.top) as u32,
-        ),
-        unsafe { GetDpiForWindow(hwnd) },
-    ))
+        ) == expected.size
+        && unsafe { GetDpiForWindow(hwnd) } == expected.dpi)
 }
