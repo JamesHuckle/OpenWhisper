@@ -186,6 +186,9 @@ pub fn move_overlay_hidden(
     mut wait: impl FnMut(),
 ) -> Result<u8, String> {
     let moved = settle_hidden(target, &mut commit, &mut matches, &mut wait).and_then(|corrections| {
+        let corrections = corrections.ok_or_else(|| {
+            "Windows did not settle the overlay at its committed DPI placement".to_string()
+        })?;
         if restore.is_some() {
             commit(target, PlacementVisibility::Show)?;
         }
@@ -200,12 +203,17 @@ pub fn move_overlay_hidden(
     }
 }
 
-fn settle_hidden(
+/// Commits `target` hidden and without redraw, then checks it up to 12
+/// times, `wait`ing before each check and committing it hidden again
+/// whenever Windows moved it, until two checks in a row find it in place.
+/// Returns how many times it was committed again, or `None` if the window
+/// is still off `target` at the end; each caller words that error itself.
+pub fn settle_hidden(
     target: OverlayPlacement,
-    commit: &mut impl FnMut(OverlayPlacement, PlacementVisibility) -> Result<(), String>,
-    matches: &mut impl FnMut(OverlayPlacement) -> Result<bool, String>,
-    wait: &mut impl FnMut(),
-) -> Result<u8, String> {
+    mut commit: impl FnMut(OverlayPlacement, PlacementVisibility) -> Result<(), String>,
+    mut matches: impl FnMut(OverlayPlacement) -> Result<bool, String>,
+    mut wait: impl FnMut(),
+) -> Result<Option<u8>, String> {
     commit(target, PlacementVisibility::HideWithoutRedraw)?;
     let mut stable_samples = 0u8;
     let mut correction_count = 0u8;
@@ -222,10 +230,7 @@ fn settle_hidden(
             commit(target, PlacementVisibility::HideWithoutRedraw)?;
         }
     }
-    if !matches(target)? {
-        return Err("Windows did not settle the overlay at its committed DPI placement".to_string());
-    }
-    Ok(correction_count)
+    Ok(matches(target)?.then_some(correction_count))
 }
 
 /// Whether showing the pill may take keyboard focus.
@@ -544,5 +549,52 @@ mod tests {
         );
         assert_eq!(window.placement, target);
         assert!(window.shows.is_empty());
+    }
+
+    /// Settles a fake window that Windows moves off its placement on the
+    /// next `drifts` checks, recording each commit and each wait.
+    fn settle_fake(drifts: usize) -> (Result<Option<u8>, String>, Vec<PlacementVisibility>, usize) {
+        let target = placement_at(2000, 144);
+        let placement = std::cell::Cell::new(placement_at(0, 96));
+        let drifts = std::cell::Cell::new(drifts);
+        let mut commits = Vec::new();
+        let mut waits = 0;
+        let settled = settle_hidden(
+            target,
+            |next, visibility| {
+                placement.set(next);
+                commits.push(visibility);
+                Ok(())
+            },
+            |expected| {
+                if drifts.get() > 0 {
+                    drifts.set(drifts.get() - 1);
+                    placement.set(placement_at(2000, 96));
+                }
+                Ok(placement.get() == expected)
+            },
+            || waits += 1,
+        );
+        (settled, commits, waits)
+    }
+
+    #[test]
+    fn settling_commits_hidden_again_until_two_checks_in_a_row_match() {
+        let (settled, commits, waits) = settle_fake(3);
+
+        assert_eq!(settled, Ok(Some(3)));
+        assert_eq!(commits, vec![PlacementVisibility::HideWithoutRedraw; 4]);
+        assert_eq!(waits, 5);
+    }
+
+    #[test]
+    fn settling_gives_up_after_twelve_checks_without_showing_the_window() {
+        // Each caller turns `None` into its own error and never shows the
+        // window: a pill revealed from hidden stays hidden.
+        let (settled, commits, waits) = settle_fake(usize::MAX);
+
+        assert_eq!(settled, Ok(None));
+        assert_eq!(commits, vec![PlacementVisibility::HideWithoutRedraw; 13]);
+        assert_eq!(waits, 12);
     }
 }

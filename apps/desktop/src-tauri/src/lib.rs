@@ -35,8 +35,8 @@ use anyhow::{anyhow, Result};
 use debug_log::debug_log_line;
 use models::{is_supported_transcription_model, migrate_transcription_model};
 use overlay_geometry::{
-    move_overlay_hidden, overlay_placement, MonitorTransitionDebouncer, OverlayAnchor,
-    OverlayLayoutSpec, OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
+    move_overlay_hidden, overlay_placement, settle_hidden, MonitorTransitionDebouncer,
+    OverlayAnchor, OverlayLayoutSpec, OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
 };
 use recording_store::PcmWavWriter;
 use recordings::{
@@ -841,35 +841,29 @@ async fn overlay_apply_layout(
                     was_visible
                 ),
             );
-            let visibility = match (was_visible, visible) {
-                (true, true) => PlacementVisibility::Keep,
-                (false, true) => PlacementVisibility::HideWithoutRedraw,
-                (_, false) => PlacementVisibility::HideWithoutRedraw,
-            };
-            commit_native_placement(hwnd, placement, visibility)?;
-
             if visible && !was_visible {
-                let mut stable_samples = 0u8;
-                for _ in 0..12 {
-                    tokio::time::sleep(std::time::Duration::from_millis(8)).await;
-                    if native_placement_matches(hwnd, placement)? {
-                        stable_samples = stable_samples.saturating_add(1);
-                        if stable_samples >= 2 {
-                            break;
-                        }
-                    } else {
-                        stable_samples = 0;
-                        commit_native_placement(
-                            hwnd,
-                            placement,
-                            PlacementVisibility::HideWithoutRedraw,
-                        )?;
-                    }
-                }
-                if !native_placement_matches(hwnd, placement)? {
-                    return Err("Initial overlay placement did not settle".to_string());
-                }
-                commit_native_placement(hwnd, placement, PlacementVisibility::Show)?;
+                // A hidden pill is shown only once Windows has settled it at
+                // its placement. The checks sleep (at most about 100 ms), so
+                // they run off the async runtime's threads.
+                tauri::async_runtime::spawn_blocking(move || {
+                    settle_hidden(
+                        placement,
+                        |placement, visibility| commit_native_placement(hwnd, placement, visibility),
+                        |placement| native_placement_matches(hwnd, placement),
+                        || std::thread::sleep(std::time::Duration::from_millis(8)),
+                    )?
+                    .ok_or_else(|| "Initial overlay placement did not settle".to_string())?;
+                    commit_native_placement(hwnd, placement, PlacementVisibility::Show)
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+            } else {
+                let visibility = if visible {
+                    PlacementVisibility::Keep
+                } else {
+                    PlacementVisibility::HideWithoutRedraw
+                };
+                commit_native_placement(hwnd, placement, visibility)?;
             }
             // The recording pill can appear while the window is already up (an
             // idle→recording transition is a Keep, not a Show). Re-raise it to
