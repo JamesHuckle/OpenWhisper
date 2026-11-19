@@ -1,6 +1,6 @@
 {
-  "versionCode": 3,
-  "versionName": "0.2.1",
+  "versionCode": 4,
+  "versionName": "0.2.2",
   "apk": "https://open-whisper.vercel.app/zoon-meetings/ZoonMeetings-Android.apk",
-  "sha256": "64b4abcceafeb10cac7734d579bac0c511f2cb45790b679bc04cdee0cba92611"
+  "sha256": "aa21f91ca5e9b1f9790b3e5aaffb3610613976efdc9e35f39a87a89ce29dcf4c"
 }
