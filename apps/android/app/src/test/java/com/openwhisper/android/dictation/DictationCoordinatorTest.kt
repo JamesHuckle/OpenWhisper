@@ -32,10 +32,25 @@ class DictationCoordinatorTest {
         assertEquals(1, backend.finishCount)
         assertEquals(DictationState.Finalizing("Hello"), states.last())
 
+        // Pressing again while finalizing, or a partial arriving then, changes nothing.
+        coordinator.onMicPressed()
+        backend.listener?.onPartial("Hello there")
+        assertEquals(1, backend.finishCount)
+        assertEquals(DictationState.Finalizing("Hello"), coordinator.currentState)
+
         backend.listener?.onFinal("Hello world")
         assertEquals("Hello world", editor.committedText)
         assertEquals(listOf("Hello world"), copiedTranscripts)
-        assertEquals(DictationState.Idle, states.last())
+        assertEquals(
+            listOf(
+                DictationState.Listening(""),
+                DictationState.Listening("Hello"),
+                DictationState.Finalizing("Hello"),
+                DictationState.ReadyToInsert("Hello world"),
+                DictationState.Idle,
+            ),
+            states,
+        )
     }
 
     @Test
@@ -86,6 +101,68 @@ class DictationCoordinatorTest {
         assertEquals(1, backend.cancelCount)
         assertEquals(DictationState.Idle, states.last())
         assertEquals(DictationState.Idle, coordinator.currentState)
+    }
+
+    @Test
+    fun cancellationReturnsToIdleFromFinalizingAndFailed() {
+        val backend = FakeDictationBackend()
+        val editor = FakeEditorSessionPort()
+        val coordinator = DictationCoordinator(backend, editor, {})
+
+        coordinator.onMicPressed()
+        coordinator.onMicPressed()
+        assertEquals(DictationState.Finalizing(""), coordinator.currentState)
+        coordinator.cancel()
+        assertEquals(DictationState.Idle, coordinator.currentState)
+
+        coordinator.onMicPressed()
+        backend.listener?.onError("network")
+        assertEquals(DictationState.Failed("network"), coordinator.currentState)
+        coordinator.cancel()
+        assertEquals(DictationState.Idle, coordinator.currentState)
+        assertEquals(0, editor.commitCount)
+    }
+
+    @Test
+    fun lateFinalTranscriptCannotCorruptIdleState() {
+        val backend = FakeDictationBackend()
+        val editor = FakeEditorSessionPort()
+        val states = mutableListOf<DictationState>()
+        val copiedTranscripts = mutableListOf<String>()
+        val coordinator = DictationCoordinator(
+            backend,
+            editor,
+            states::add,
+            copiedTranscripts::add,
+        )
+
+        coordinator.onMicPressed()
+        coordinator.onMicPressed()
+        val staleListener = backend.listener
+        coordinator.cancel()
+        staleListener?.onFinal("stale")
+        staleListener?.onPartial("stale")
+
+        assertEquals(DictationState.Idle, states.last())
+        assertEquals(DictationState.Idle, coordinator.currentState)
+        assertEquals(0, editor.commitCount)
+        assertEquals(emptyList<String>(), copiedTranscripts)
+    }
+
+    @Test
+    fun errorsBecomeRecoverableFailures() {
+        val backend = FakeDictationBackend()
+        val editor = FakeEditorSessionPort()
+        val states = mutableListOf<DictationState>()
+        val coordinator = DictationCoordinator(backend, editor, states::add)
+
+        coordinator.onMicPressed()
+        backend.listener?.onError("Microphone unavailable")
+        assertEquals(DictationState.Failed("Microphone unavailable"), states.last())
+
+        coordinator.onMicPressed()
+        assertEquals(2, backend.startCount)
+        assertEquals(DictationState.Listening(""), states.last())
     }
 }
 
