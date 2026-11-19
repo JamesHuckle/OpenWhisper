@@ -375,7 +375,18 @@ export function checkPublish({ run, version, target, releases, main = "refs/remo
     }
     return { action: "finish", release: same, newest: newestTag === tag };
   }
-  if (!newestTag) return { action: "publish" };
+  // GitHub creates a release from an existing tag as it is; --target only
+  // places a tag that does not exist yet.
+  const publishNew = () => {
+    if (run("tag", "--list", tag)) {
+      const taggedCommit = commitOf(run, tag);
+      if (taggedCommit !== commit) {
+        throw new Error(`Tag ${tag} already points to commit ${taggedCommit}, not ${commit}.`);
+      }
+    }
+    return { action: "publish" };
+  };
+  if (!newestTag) return publishNew();
 
   if (compareVersions(parseVersion(version), parseVersion(newestTag)) <= 0) {
     throw new Error(
@@ -389,7 +400,7 @@ export function checkPublish({ run, version, target, releases, main = "refs/remo
   if (order === "split") {
     throw new Error(`Commit ${commit} does not contain ${newestTag}, the newest published release: not publishing it as ${tag}.`);
   }
-  return { action: "publish" };
+  return publishNew();
 }
 
 // Returns the problems with a published release's files; empty means complete.

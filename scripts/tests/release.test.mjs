@@ -209,6 +209,12 @@ describe("release order", () => {
         () => checkPublish({ run: history.run, version: "0.2.28", target: history.website, releases: [release] }),
         /already published from commit/,
       );
+      // An unpublished tag on another commit is never released from this one.
+      history.run("tag", "v0.2.30", history.website);
+      assert.throws(
+        () => checkPublish({ run: history.run, version: "0.2.30", target: history.next, releases: [published("v0.2.27")] }),
+        /Tag v0\.2\.30 already points to commit/,
+      );
       // A leftover draft does not count as published.
       assert.deepEqual(
         checkPublish({
