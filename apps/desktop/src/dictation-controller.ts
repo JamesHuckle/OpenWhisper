@@ -165,6 +165,38 @@ export function createDictationController(deps: DictationDeps) {
     });
   }
 
+  /**
+   * Transcribes a saved recording with a new Standard session; the app reads
+   * the file from disk, so the audio never loads into this window. `current`
+   * says whether the caller's operation (and, given one, its session) is
+   * still the controller's; once it is not, a cancel or the session's own
+   * end already tidied up.
+   */
+  async function transcribeSavedRecording(
+    recordingId: string,
+    profileId: string,
+    current: (sessionId?: string) => boolean,
+  ) {
+    const sessionId = await startSession(profileId, true);
+    if (!current()) {
+      // Cancelled while the session was starting; the cancel already tidied up.
+      await stopSession(sessionId);
+      return;
+    }
+    currentSessionId = sessionId;
+    finalTranscript = "";
+    liveTranscript = "";
+    try {
+      await invoke("recording_transcribe", { recordingId, sessionId });
+    } catch (error) {
+      // Its failure is expected once the session is no longer this operation's.
+      if (!current(sessionId)) return;
+      // The app keeps the session until it is stopped when this fails before using it.
+      await stopSession(sessionId);
+      throw error;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Recording audio
   // -------------------------------------------------------------------------
@@ -469,32 +501,15 @@ export function createDictationController(deps: DictationDeps) {
     streamAudioToWorker = false;
     streamTextToTarget = false;
     audioQueue.reset();
-    // The Standard session once it is this recording's; the app keeps it
-    // until it is stopped when recording_transcribe fails before using it.
-    let standardSessionId: string | null = null;
     try {
       // The failed session may already be gone; stopping it closes its connection.
       if (failedSessionId) await stopSession(failedSessionId);
       if (cancelCount !== cancelsBefore) return;
-      const sessionId = await startSession("default", true);
-      if (cancelCount !== cancelsBefore) {
-        // Cancelled while the session was starting; the cancel already tidied up.
-        await stopSession(sessionId);
-        return;
-      }
-      currentSessionId = sessionId;
-      standardSessionId = sessionId;
-      finalTranscript = "";
-      liveTranscript = "";
-      await invoke("recording_transcribe", { recordingId, sessionId });
+      await transcribeSavedRecording(recordingId, "default", () => cancelCount === cancelsBefore);
     } catch (fallbackError) {
       log(`standard fallback error=${errorMessage(fallbackError)}`);
       // A cancel already tidied up; its failure is expected.
       if (cancelCount !== cancelsBefore) return;
-      if (standardSessionId) {
-        await stopSession(standardSessionId);
-        if (cancelCount !== cancelsBefore) return;
-      }
       await handleTranscriptionFailure(fallbackError);
       cleanup();
       setState("idle");
@@ -638,25 +653,11 @@ export function createDictationController(deps: DictationDeps) {
 
     // Saved audio is always transcribed with Standard, so no Live
     // connection is opened even when Live is selected.
-    const sessionId = await startSession(profileId, true);
-    if (op !== operationId) {
-      // Cancelled while the session was starting; the cancel already tidied up.
-      await stopSession(sessionId);
-      return;
-    }
-    currentSessionId = sessionId;
-    const cancelled = () => currentSessionId !== sessionId;
-    try {
-      // The app finds the saved file and reads it from disk, so the audio is
-      // never loaded into this window.
-      await invoke("recording_transcribe", { recordingId, sessionId });
-    } catch (error) {
-      // A cancel during the transcription already tidied up; its failure is expected.
-      if (cancelled()) return;
-      // The app keeps the session until it is stopped when this fails before using it.
-      await stopSession(sessionId);
-      throw error;
-    }
+    await transcribeSavedRecording(
+      recordingId,
+      profileId,
+      (sessionId) => op === operationId && (!sessionId || currentSessionId === sessionId),
+    );
   }
 
   function cleanup() {
