@@ -36,6 +36,7 @@ import {
   type WorkerSessionEvent,
 } from "./dictation-controller";
 import { createSettingsSaver } from "./settings-save";
+import { METER_SLICES, startMeter } from "./meter";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -84,10 +85,8 @@ let pcmSilentGain: GainNode | null = null;
 let pcmOnAudio: ((chunk: ArrayBuffer) => void) | null = null;
 
 let micStream: MediaStream | null = null;
-let soundVisualizer: { start: () => void; stop: () => void } | null = null;
-let volumeMonitorFrameId: number | null = null;
-let volumeMonitorDisconnect: (() => void) | null = null;
-const SILENT_THRESHOLD = 14;
+// Stops the recording meter; null when none is running.
+let meterStop: (() => void) | null = null;
 let micDevices: MicDevice[] = [];
 let selectedMicId = "default";
 let menuOpen = false;
@@ -344,14 +343,21 @@ const dictation = createDictationController({
   clearNotice: clearWidgetNotice,
   startMeter() {
     widget.dataset.silent = "true";
-    soundVisualizer = startMeterVisualizer();
-    soundVisualizer?.start();
-    startVolumeMonitor();
+    meterStop?.();
+    meterStop = pcmSource && startMeter(pcmSource, {
+      draw: drawMeter,
+      isRecording: () => dictation.state === "recording",
+      setSilent: (silent) => {
+        widget.dataset.silent = String(silent);
+      },
+    });
   },
   stopMeter(waiting) {
-    soundVisualizer?.stop();
-    soundVisualizer = null;
-    stopVolumeMonitor();
+    if (meterStop) {
+      meterStop();
+      meterStop = null;
+      delete widget.dataset.silent;
+    }
     if (waiting) setWaveBarLevels(Array(VOLUME_BAR_COUNT).fill(0.5));
   },
   showTranscript(text, final) {
@@ -719,117 +725,27 @@ function setWaveBarLevels(levels: number[]) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Volume monitor — show wobbly line when mic is silent during recording
-// ---------------------------------------------------------------------------
-// The scrolling waveform while recording. It listens on the running
-// capture's source, in the same audio context: a context of its own opened
-// the speakers, which woke Bluetooth headphones and froze the page for about
-// a second on every recording.
-const METER_SLICES = 20;
+// The scrolling waveform while recording; new bars enter on the right.
 const METER_BAR_WIDTH = 3;
 const METER_COLOR = "#9ef0c9";
 
-function startMeterVisualizer(): { start: () => void; stop: () => void } | null {
-  const source = pcmSource;
-  if (!source) return null;
-  const analyser = source.context.createAnalyser();
-  source.connect(analyser);
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  const history: number[] = [];
-  let frameId: number | null = null;
-
-  function draw() {
-    const canvas = meterCanvas;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    const { width, height } = canvas;
-    context.fillStyle = METER_COLOR;
-    context.clearRect(0, 0, width, height);
-    context.beginPath();
-    const sliceWidth = width / METER_SLICES;
-    // New bars enter on the right and scroll left.
-    const firstSlice = METER_SLICES - history.length;
-    history.forEach((value, index) => {
-      let fraction = value / 255;
-      if (fraction < 0.05) fraction += 0.05;
-      const top = (height / 2) * fraction;
-      context.rect((firstSlice + index) * sliceWidth, top, METER_BAR_WIDTH, height - 2 * top);
-    });
-    context.fill();
-  }
-
-  function tick() {
-    analyser.getByteTimeDomainData(data);
-    let min = 255;
-    let max = 0;
-    for (const value of data) {
-      if (value < min) min = value;
-      if (value > max) max = value;
-    }
-    history.push(255 - (max - min));
-    if (history.length > METER_SLICES) history.shift();
-    draw();
-    frameId = requestAnimationFrame(tick);
-  }
-
-  return {
-    start() {
-      if (frameId !== null) cancelAnimationFrame(frameId);
-      frameId = requestAnimationFrame(tick);
-    },
-    stop() {
-      if (frameId !== null) cancelAnimationFrame(frameId);
-      frameId = null;
-      try {
-        source.disconnect(analyser);
-      } catch {
-        // Stopping the capture already disconnected the source.
-      }
-    },
-  };
-}
-
-// Listens on the running capture's source, in the same audio context.
-function startVolumeMonitor() {
-  const source = pcmSource;
-  if (!source) return;
-  const analyser = source.context.createAnalyser();
-  analyser.fftSize = 256;
-  source.connect(analyser);
-  const data = new Uint8Array(analyser.fftSize);
-
-  function tick() {
-    if (dictation.state !== "recording") return;
-    analyser.getByteTimeDomainData(data);
-    let min = 255, max = 0;
-    for (let i = 0; i < data.length; i++) {
-      if (data[i] < min) min = data[i];
-      if (data[i] > max) max = data[i];
-    }
-    const range = max - min;
-    widget.dataset.silent = range < SILENT_THRESHOLD ? "true" : "false";
-    volumeMonitorFrameId = requestAnimationFrame(tick);
-  }
-  volumeMonitorFrameId = requestAnimationFrame(tick);
-
-  volumeMonitorDisconnect = () => {
-    if (volumeMonitorFrameId !== null) {
-      cancelAnimationFrame(volumeMonitorFrameId);
-      volumeMonitorFrameId = null;
-    }
-    try {
-      source.disconnect(analyser);
-    } catch {
-      // Stopping the capture already disconnected the source.
-    }
-    volumeMonitorDisconnect = null;
-    delete widget.dataset.silent;
-  };
-}
-
-function stopVolumeMonitor() {
-  volumeMonitorDisconnect?.();
+function drawMeter(history: readonly number[]) {
+  const canvas = meterCanvas;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  const { width, height } = canvas;
+  context.fillStyle = METER_COLOR;
+  context.clearRect(0, 0, width, height);
+  context.beginPath();
+  const sliceWidth = width / METER_SLICES;
+  const firstSlice = METER_SLICES - history.length;
+  history.forEach((value, index) => {
+    let fraction = value / 255;
+    if (fraction < 0.05) fraction += 0.05;
+    const top = (height / 2) * fraction;
+    context.rect((firstSlice + index) * sliceWidth, top, METER_BAR_WIDTH, height - 2 * top);
+  });
+  context.fill();
 }
 
 // ---------------------------------------------------------------------------

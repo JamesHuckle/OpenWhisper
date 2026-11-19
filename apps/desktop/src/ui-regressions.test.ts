@@ -5,8 +5,8 @@ import { describe, expect, it } from "vitest";
 // Text checks for past bugs in code no behaviour test can reach: the page's
 // CSS and browser calls in main.ts, and Windows-only or Tauri-bound Rust.
 // Everything else is tested by running it (dictation-controller,
-// recording-pipeline, target-write, overlay-layout, settings-save and the Rust
-// core-tests).
+// recording-pipeline, target-write, overlay-layout, settings-save, meter and
+// the Rust core-tests).
 const desktopRoot = resolve(import.meta.dirname, "..");
 const nativeSourceDir = resolve(desktopRoot, "src-tauri/src");
 const read = (path: string) => readFileSync(resolve(desktopRoot, path), "utf8");
