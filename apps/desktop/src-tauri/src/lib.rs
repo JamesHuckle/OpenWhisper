@@ -35,8 +35,8 @@ use anyhow::{anyhow, Result};
 use debug_log::debug_log_line;
 use models::{is_supported_transcription_model, migrate_transcription_model};
 use overlay_geometry::{
-    overlay_placement, MonitorTransitionDebouncer, OverlayAnchor, OverlayLayoutSpec,
-    OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
+    move_overlay_hidden, overlay_placement, MonitorTransitionDebouncer, OverlayAnchor,
+    OverlayLayoutSpec, OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
 };
 use recording_store::PcmWavWriter;
 use recordings::{
@@ -98,6 +98,11 @@ const MONITOR_FOLLOW_INTERVAL: std::time::Duration = std::time::Duration::from_m
 /// resolution or scaling, a monitor plugged in or removed).
 #[cfg(target_os = "windows")]
 const MONITOR_FALLBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long the pill waits after a failed move to another monitor before
+/// it tries again.
+#[cfg(target_os = "windows")]
+const MONITOR_RETRY_AFTER_FAILURE: std::time::Duration = std::time::Duration::from_secs(1);
 
 struct AppState {
     // Set once the app starts. Each dictation is a session here; none waits
@@ -171,7 +176,7 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
         return Ok(false);
     };
 
-    {
+    let previous = {
         let current = state
             .overlay_anchor
             .lock()
@@ -179,7 +184,8 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
         if *current == Some(anchor) {
             return Ok(true);
         }
-    }
+        *current
+    };
 
     let layout = *state
         .overlay_layout
@@ -195,34 +201,21 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
     let placement = overlay_placement(anchor, layout);
     let was_visible = window.is_visible().map_err(|e| e.to_string())?;
 
-    // A monitor move can dispatch WM_DPICHANGED after SetWindowPos returns.
-    // Keep every intermediate rectangle hidden and non-redrawing, then expose
-    // exactly one already-settled rectangle to the compositor.
-    commit_native_placement(hwnd, placement, PlacementVisibility::HideWithoutRedraw)?;
-    let mut stable_samples = 0u8;
-    let mut correction_count = 0u8;
-    for _ in 0..12 {
-        std::thread::sleep(std::time::Duration::from_millis(8));
-        if native_placement_matches(hwnd, placement)? {
-            stable_samples = stable_samples.saturating_add(1);
-            if stable_samples >= 2 {
-                break;
-            }
-        } else {
-            stable_samples = 0;
-            correction_count = correction_count.saturating_add(1);
-            commit_native_placement(hwnd, placement, PlacementVisibility::HideWithoutRedraw)?;
-        }
-    }
-    if !native_placement_matches(hwnd, placement)? {
-        return Err(
-            "Windows did not settle the overlay at its committed DPI placement".to_string(),
-        );
-    }
+    // A pill that was visible comes back at its last good placement if the
+    // move fails, so a failed move never hides it for good.
+    let restore = was_visible
+        .then(|| previous.map_or(placement, |previous| overlay_placement(previous, layout)));
+    let moved = move_overlay_hidden(
+        placement,
+        restore,
+        |placement, visibility| commit_native_placement(hwnd, placement, visibility),
+        |placement| native_placement_matches(hwnd, placement),
+        || std::thread::sleep(std::time::Duration::from_millis(8)),
+    );
     if was_visible {
-        commit_native_placement(hwnd, placement, PlacementVisibility::Show)?;
         overlay_positioner::reassert_topmost(hwnd);
     }
+    let correction_count = moved?;
     debug_log_line(
         "window",
         &format!(
@@ -1313,10 +1306,16 @@ pub fn run() {
                                 match sync_overlay_window_to_anchor(&monitor_handle, target) {
                                     Ok(true) => break,
                                     Ok(false) => {}
-                                    Err(err) => debug_log_line(
-                                        "window",
-                                        &format!("monitor switch failed: {err}"),
-                                    ),
+                                    Err(err) => {
+                                        debug_log_line(
+                                            "window",
+                                            &format!("monitor switch failed: {err}"),
+                                        );
+                                        // A failed move shows the pill again where
+                                        // it was; wait before the next try so it
+                                        // does not flicker between attempts.
+                                        std::thread::sleep(MONITOR_RETRY_AFTER_FAILURE);
+                                    }
                                 }
                             }
                             std::thread::sleep(MONITOR_FOLLOW_INTERVAL);

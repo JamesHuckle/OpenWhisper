@@ -1,7 +1,8 @@
 //! Where the pill window goes: its anchor at the bottom centre of a monitor,
 //! its size and position in physical pixels at that monitor's DPI, when a
-//! move to another monitor is committed, when a cursor move should wake the
-//! thread that follows the cursor, and whether showing it takes focus.
+//! move to another monitor is committed and how it is made while hidden,
+//! when a cursor move should wake the thread that follows the cursor, and
+//! whether showing it takes focus.
 //! The Win32 calls that apply a placement are in `overlay_positioner.rs`.
 //!
 //! This file needs no Tauri, so its tests also run in `core-tests`.
@@ -163,6 +164,68 @@ pub fn overlay_placement(anchor: OverlayAnchor, layout: OverlayLayoutSpec) -> Ov
         size,
         dpi: anchor.dpi,
     }
+}
+
+/// Moves the pill to `target` on another monitor. A monitor move can
+/// dispatch WM_DPICHANGED after SetWindowPos returns, so every in-between
+/// rectangle is kept hidden and non-redrawing, and only one already-settled
+/// rectangle is shown. `commit` applies a placement, `matches` says whether
+/// the window is at a placement, and `wait` pauses between checks.
+///
+/// `restore` is the pill's last good placement when it was visible before
+/// the move, and `None` when it was hidden. A visible pill is shown at
+/// `target` once it settles; if any step fails after the pill was hidden, it
+/// is shown again at `restore` and the move's error is returned, so a failed
+/// move never leaves a visible pill hidden. A hidden pill is never shown.
+/// Returns how many times Windows moved the pill off `target` while hidden.
+pub fn move_overlay_hidden(
+    target: OverlayPlacement,
+    restore: Option<OverlayPlacement>,
+    mut commit: impl FnMut(OverlayPlacement, PlacementVisibility) -> Result<(), String>,
+    mut matches: impl FnMut(OverlayPlacement) -> Result<bool, String>,
+    mut wait: impl FnMut(),
+) -> Result<u8, String> {
+    let moved = settle_hidden(target, &mut commit, &mut matches, &mut wait).and_then(|corrections| {
+        if restore.is_some() {
+            commit(target, PlacementVisibility::Show)?;
+        }
+        Ok(corrections)
+    });
+    match (moved, restore) {
+        (Err(err), Some(restore)) => Err(match commit(restore, PlacementVisibility::Show) {
+            Ok(()) => err,
+            Err(restore_err) => format!("{err}; showing the pill again also failed: {restore_err}"),
+        }),
+        (moved, _) => moved,
+    }
+}
+
+fn settle_hidden(
+    target: OverlayPlacement,
+    commit: &mut impl FnMut(OverlayPlacement, PlacementVisibility) -> Result<(), String>,
+    matches: &mut impl FnMut(OverlayPlacement) -> Result<bool, String>,
+    wait: &mut impl FnMut(),
+) -> Result<u8, String> {
+    commit(target, PlacementVisibility::HideWithoutRedraw)?;
+    let mut stable_samples = 0u8;
+    let mut correction_count = 0u8;
+    for _ in 0..12 {
+        wait();
+        if matches(target)? {
+            stable_samples = stable_samples.saturating_add(1);
+            if stable_samples >= 2 {
+                break;
+            }
+        } else {
+            stable_samples = 0;
+            correction_count = correction_count.saturating_add(1);
+            commit(target, PlacementVisibility::HideWithoutRedraw)?;
+        }
+    }
+    if !matches(target)? {
+        return Err("Windows did not settle the overlay at its committed DPI placement".to_string());
+    }
+    Ok(correction_count)
 }
 
 /// Whether showing the pill may take keyboard focus.
@@ -333,5 +396,153 @@ mod tests {
                 .iter()
                 .all(|placement| *placement == expected));
         }
+    }
+
+    /// A pill window that moves where it is told, except that Windows moves
+    /// it off its placement on the next `drifts` checks (as WM_DPICHANGED
+    /// does), and the step named in `fails` returns an error.
+    struct FakeWindow {
+        placement: OverlayPlacement,
+        visible: bool,
+        drifts: usize,
+        fails: Option<FakeFailure>,
+        shows: Vec<OverlayPlacement>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum FakeFailure {
+        Hide,
+        Check,
+        Show,
+        Every,
+    }
+
+    fn placement_at(x: i32, dpi: u32) -> OverlayPlacement {
+        OverlayPlacement {
+            position: Position::new(x, 900),
+            size: Size::new(100, 28),
+            dpi,
+        }
+    }
+
+    fn move_fake(
+        visible: bool,
+        drifts: usize,
+        fails: Option<FakeFailure>,
+    ) -> (Result<u8, String>, FakeWindow, OverlayPlacement, OverlayPlacement) {
+        let last_good = placement_at(0, 96);
+        let target = placement_at(2000, 144);
+        let window = std::cell::RefCell::new(FakeWindow {
+            placement: last_good,
+            visible,
+            drifts,
+            fails,
+            shows: Vec::new(),
+        });
+        let moved = move_overlay_hidden(
+            target,
+            visible.then_some(last_good),
+            |placement, visibility| {
+                let mut window = window.borrow_mut();
+                let failing = match visibility {
+                    PlacementVisibility::HideWithoutRedraw => FakeFailure::Hide,
+                    _ => FakeFailure::Show,
+                };
+                if window.fails == Some(failing) || window.fails == Some(FakeFailure::Every) {
+                    return Err(format!("SetWindowPos failed ({failing:?})"));
+                }
+                window.placement = placement;
+                match visibility {
+                    PlacementVisibility::Keep => {}
+                    PlacementVisibility::HideWithoutRedraw => window.visible = false,
+                    PlacementVisibility::Show => {
+                        window.visible = true;
+                        window.shows.push(placement);
+                    }
+                }
+                Ok(())
+            },
+            |placement| {
+                let mut window = window.borrow_mut();
+                if window.fails == Some(FakeFailure::Check) {
+                    return Err("GetWindowRect failed while verifying overlay placement".to_string());
+                }
+                if window.drifts > 0 {
+                    window.drifts -= 1;
+                    window.placement.size = Size::new(150, 42);
+                }
+                Ok(window.placement == placement)
+            },
+            || {},
+        );
+        (moved, window.into_inner(), last_good, target)
+    }
+
+    #[test]
+    fn visible_pill_is_shown_once_at_its_settled_target() {
+        let (moved, window, _, target) = move_fake(true, 3, None);
+
+        assert_eq!(moved, Ok(3));
+        assert!(window.visible);
+        assert_eq!(window.placement, target);
+        assert_eq!(window.shows, vec![target]);
+    }
+
+    #[test]
+    fn pill_hidden_on_purpose_stays_hidden_after_a_move() {
+        let (moved, window, _, target) = move_fake(false, 1, None);
+
+        assert_eq!(moved, Ok(1));
+        assert!(!window.visible);
+        assert_eq!(window.placement, target);
+        assert!(window.shows.is_empty());
+    }
+
+    #[test]
+    fn visible_pill_comes_back_at_its_last_good_placement_when_a_move_fails() {
+        // Bug: a visible pill that failed to settle on another monitor was
+        // left hidden, and the retry then treated it as hidden on purpose.
+        let failures = [
+            (usize::MAX, None, "Windows did not settle the overlay at its committed DPI placement"),
+            (0, Some(FakeFailure::Hide), "SetWindowPos failed (Hide)"),
+            (0, Some(FakeFailure::Check), "GetWindowRect failed while verifying overlay placement"),
+        ];
+        for (drifts, fails, error) in failures {
+            let (moved, window, last_good, _) = move_fake(true, drifts, fails);
+
+            assert_eq!(moved, Err(error.to_string()), "{fails:?}");
+            assert!(window.visible, "{fails:?}");
+            assert_eq!(window.placement, last_good, "{fails:?}");
+            assert_eq!(window.shows, vec![last_good], "{fails:?}");
+        }
+    }
+
+    #[test]
+    fn pill_hidden_on_purpose_is_never_shown_when_a_move_fails() {
+        let failures = [
+            (usize::MAX, None),
+            (0, Some(FakeFailure::Hide)),
+            (0, Some(FakeFailure::Check)),
+            (0, Some(FakeFailure::Every)),
+        ];
+        for (drifts, fails) in failures {
+            let (moved, window, _, _) = move_fake(false, drifts, fails);
+
+            assert!(moved.is_err(), "{fails:?}");
+            assert!(!window.visible, "{fails:?}");
+            assert!(window.shows.is_empty(), "{fails:?}");
+        }
+    }
+
+    #[test]
+    fn failed_show_at_the_target_and_failed_restore_are_both_reported() {
+        let (moved, window, _, target) = move_fake(true, 0, Some(FakeFailure::Show));
+
+        assert_eq!(
+            moved,
+            Err("SetWindowPos failed (Show); showing the pill again also failed: SetWindowPos failed (Show)".to_string())
+        );
+        assert_eq!(window.placement, target);
+        assert!(window.shows.is_empty());
     }
 }

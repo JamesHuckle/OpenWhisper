@@ -164,6 +164,9 @@ with the write rules in `paste_target.rs`:
    changes, and the mouse hook wakes the pill's monitor check only when the
    cursor enters another monitor. That check then runs every 100 ms until
    the pill has moved, and otherwise once every 5 s for display changes.
+   The pill moves while hidden and is shown once it has settled; if a move
+   fails, a visible pill is shown again where it was and the move is retried
+   after 1 s. A pill hidden on purpose stays hidden.
 2. When a recording starts, `capture_paste_target` locks that window and its
    focused control for the whole recording. Focus tracking never changes it.
 3. Before every write the target is checked again:
