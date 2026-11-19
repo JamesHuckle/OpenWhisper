@@ -142,21 +142,22 @@ describe("recording startup latency contracts", () => {
   });
 
   it("retains opening audio while worker startup is arbitrarily delayed", async () => {
-    const uploaded: number[] = [];
-    const queue = new SessionAudioQueue(async (_sessionId, buffer) => {
-      uploaded.push(valueOf(buffer));
+    const uploaded: string[] = [];
+    const queue = new SessionAudioQueue(async (sessionId, buffer) => {
+      uploaded.push(`${sessionId}:${Array.from(new Uint8Array(buffer)).join(",")}`);
     });
 
-    queue.append(chunk(1));
-    queue.append(chunk(2));
+    queue.append(Uint8Array.of(1, 2).buffer);
+    queue.append(new ArrayBuffer(0));
+    queue.append(chunk(3));
+    await settle();
 
     expect(uploaded).toEqual([]);
-    expect(queue.bufferedChunkCount).toBe(2);
 
     queue.attachSession("cold-worker");
     await queue.drain();
 
-    expect(uploaded).toEqual([1, 2]);
+    expect(uploaded).toEqual(["cold-worker:1,2", "cold-worker:3"]);
   });
 
   it("preserves capture order across slow IPC and chunks arriving after startup", async () => {
@@ -259,48 +260,6 @@ describe("recording startup latency contracts", () => {
     await settle();
     await expect(queue.drain()).resolves.toBeUndefined();
     expect(uploaded).toEqual(["next-recording:5"]);
-  });
-
-  it("waits for a final MediaRecorder blob conversion before finalization", async () => {
-    const uploaded: number[] = [];
-    let releaseConversion!: (buffer: ArrayBuffer) => void;
-    const conversion = new Promise<ArrayBuffer>((resolve) => {
-      releaseConversion = resolve;
-    });
-    const queue = new SessionAudioQueue(async (_sessionId, buffer) => {
-      uploaded.push(valueOf(buffer));
-    });
-
-    queue.attachSession("release-during-startup");
-    queue.appendAsync(conversion);
-    const drained = queue.drain();
-    await Promise.resolve();
-    expect(uploaded).toEqual([]);
-
-    releaseConversion(chunk(9));
-    await drained;
-    expect(uploaded).toEqual([9]);
-  });
-
-  it("cannot leak a stale blob conversion into the next recording", async () => {
-    const uploaded: number[] = [];
-    let releaseOldConversion!: (buffer: ArrayBuffer) => void;
-    const oldConversion = new Promise<ArrayBuffer>((resolve) => {
-      releaseOldConversion = resolve;
-    });
-    const queue = new SessionAudioQueue(async (_sessionId, buffer) => {
-      uploaded.push(valueOf(buffer));
-    });
-
-    queue.appendAsync(oldConversion);
-    queue.reset();
-    queue.attachSession("next-recording");
-    releaseOldConversion(chunk(4));
-    await Promise.resolve();
-    await Promise.resolve();
-    await queue.drain();
-
-    expect(uploaded).toEqual([]);
   });
 
   it("sends batched audio to the shell as the same raw bytes, in order", async () => {

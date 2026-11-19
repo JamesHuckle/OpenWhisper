@@ -79,16 +79,11 @@ export async function startCaptureFirst<Capture, Backup, Session>(steps: {
 export class SessionAudioQueue {
   private sessionId: string | null = null;
   private buffered: ArrayBuffer[] = [];
-  private ingestTail: Promise<void> = Promise.resolve();
   private uploadTail: Promise<void> = Promise.resolve();
   private firstError: unknown = null;
   private generation = 0;
 
   constructor(private readonly upload: AudioChunkUploader) {}
-
-  get bufferedChunkCount(): number {
-    return this.buffered.length;
-  }
 
   append(buffer: ArrayBuffer): void {
     if (buffer.byteLength === 0) return;
@@ -97,19 +92,6 @@ export class SessionAudioQueue {
       return;
     }
     this.scheduleUpload(this.sessionId, buffer);
-  }
-
-  appendAsync(buffer: Promise<ArrayBuffer>): void {
-    const generation = this.generation;
-    this.ingestTail = this.ingestTail
-      .then(async () => {
-        try {
-          const resolved = await buffer;
-          if (generation === this.generation) this.append(resolved);
-        } catch (error) {
-          if (generation === this.generation) this.rememberError(error);
-        }
-      });
   }
 
   attachSession(sessionId: string): void {
@@ -122,7 +104,6 @@ export class SessionAudioQueue {
   }
 
   async drain(): Promise<void> {
-    await this.ingestTail;
     await this.uploadTail;
     if (this.firstError !== null) throw this.firstError;
   }
@@ -131,7 +112,6 @@ export class SessionAudioQueue {
     this.generation += 1;
     this.sessionId = null;
     this.buffered = [];
-    this.ingestTail = Promise.resolve();
     this.uploadTail = Promise.resolve();
     this.firstError = null;
   }
