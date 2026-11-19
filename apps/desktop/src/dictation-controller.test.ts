@@ -776,6 +776,31 @@ describe("dictation controller", () => {
       expect(failures).toEqual([]);
       expect(dictation.state).toBe("idle");
     });
+
+    it("leaves a Standard transcription cancelled while it runs alone when it fails late", async () => {
+      const { app, dictation, failures } = await liveDictationStopped();
+      await dictation.toggleRecording();
+      await settle();
+      app.hold("recording_transcribe");
+      await dictation.receiveSessionEvent(
+        sessionEvent({ type: "error", text: "Realtime transcription timed out" }, true),
+      );
+      await settle();
+
+      await dictation.cancelTranscription();
+      app.reject("recording_transcribe", new Error("Session was stopped"));
+      await settle();
+
+      expect(app.named("worker_stop_session").map((call) => call.args)).toEqual([
+        { sessionId: "s-1" },
+        { sessionId: "s-2" },
+      ]);
+      expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+        { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+      ]);
+      expect(failures).toEqual([]);
+      expect(dictation.state).toBe("idle");
+    });
   });
 
   it("keeps recording for Standard when the Live connection cannot open", async () => {
@@ -898,6 +923,27 @@ describe("dictation controller", () => {
     expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
       { recordingId: "rec-1", sessionId: "s-2" },
     ]);
+  });
+
+  it("leaves a retry cancelled during its transcription alone when it fails late", async () => {
+    const { app, dictation, failures } = setup();
+    app.hold("recording_transcribe");
+    const retry = dictation.retranscribeRecording("rec-9");
+    await settle();
+
+    await dictation.cancelTranscription();
+    app.reject("recording_transcribe", new Error("Session was stopped"));
+    await retry;
+    await settle();
+
+    expect(app.named("worker_stop_session").map((call) => call.args)).toEqual([{ sessionId: "s-1" }]);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-9", status: "transcribing", transcript: "", error: "" },
+      { recordingId: "rec-9", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
+    expect(failures).toEqual([]);
+    expect(dictation.lastFailedRecordingId).toBeNull();
+    expect(dictation.state).toBe("idle");
   });
 
   it("reports a retry whose session fails while it is still current", async () => {
