@@ -23,7 +23,11 @@ pub const IMPORT_EXTENSIONS: &[&str] = &["wav", "mp3", "m4a", "mp4", "mpeg", "mp
 
 const WAV_HEADER_BYTES: u64 = 44;
 
-pub fn wav_header(pcm_bytes: u32, sample_rate: u32) -> [u8; 44] {
+/// The 44-byte header of a PCM WAV file holding `pcm_bytes` of audio with
+/// `sample_width` bytes per sample. Microphone recordings are mono 16-bit
+/// (1 channel, 2 bytes).
+pub fn wav_header(pcm_bytes: u32, channels: u16, sample_width: u16, sample_rate: u32) -> [u8; 44] {
+    let frame_bytes = channels.saturating_mul(sample_width);
     let mut header = [0_u8; 44];
     header[0..4].copy_from_slice(b"RIFF");
     header[4..8].copy_from_slice(&(36_u32.saturating_add(pcm_bytes)).to_le_bytes());
@@ -31,11 +35,12 @@ pub fn wav_header(pcm_bytes: u32, sample_rate: u32) -> [u8; 44] {
     header[12..16].copy_from_slice(b"fmt ");
     header[16..20].copy_from_slice(&16_u32.to_le_bytes());
     header[20..22].copy_from_slice(&1_u16.to_le_bytes());
-    header[22..24].copy_from_slice(&1_u16.to_le_bytes());
+    header[22..24].copy_from_slice(&channels.to_le_bytes());
     header[24..28].copy_from_slice(&sample_rate.to_le_bytes());
-    header[28..32].copy_from_slice(&(sample_rate.saturating_mul(2)).to_le_bytes());
-    header[32..34].copy_from_slice(&2_u16.to_le_bytes());
-    header[34..36].copy_from_slice(&16_u16.to_le_bytes());
+    header[28..32]
+        .copy_from_slice(&(sample_rate.saturating_mul(u32::from(frame_bytes))).to_le_bytes());
+    header[32..34].copy_from_slice(&frame_bytes.to_le_bytes());
+    header[34..36].copy_from_slice(&(sample_width.saturating_mul(8)).to_le_bytes());
     header[36..40].copy_from_slice(b"data");
     header[40..44].copy_from_slice(&pcm_bytes.to_le_bytes());
     header
@@ -45,7 +50,7 @@ fn header_for(file_bytes: u64, sample_rate: u32) -> [u8; 44] {
     let pcm_bytes = file_bytes
         .saturating_sub(WAV_HEADER_BYTES)
         .min(u32::MAX as u64) as u32;
-    wav_header(pcm_bytes, sample_rate)
+    wav_header(pcm_bytes, 1, 2, sample_rate)
 }
 
 /// The open WAV file of a microphone recording in progress.
@@ -65,7 +70,7 @@ impl PcmWavWriter {
             .create(true)
             .truncate(true)
             .open(path)?;
-        file.write_all(&wav_header(0, sample_rate))?;
+        file.write_all(&header_for(WAV_HEADER_BYTES, sample_rate))?;
         Ok(Self {
             file,
             file_bytes: WAV_HEADER_BYTES,
@@ -128,40 +133,41 @@ pub fn repair_wav_header(path: &Path, sample_rate: u32) -> io::Result<u64> {
     Ok(file_bytes)
 }
 
+/// Audio file types by extension. A type's first row names its stored
+/// copies and uploads; the later rows are other names for it. A type not
+/// listed is treated as WebM.
+const AUDIO_TYPES: &[(&str, &str)] = &[
+    ("wav", "audio/wav"),
+    ("wav", "audio/x-wav"),
+    ("mp3", "audio/mpeg"),
+    ("mp3", "audio/mp3"),
+    ("mpeg", "audio/mpeg"),
+    ("mpga", "audio/mpeg"),
+    ("m4a", "audio/x-m4a"),
+    ("mp4", "audio/mp4"),
+    ("ogg", "audio/ogg"),
+    ("flac", "audio/flac"),
+    ("flac", "audio/x-flac"),
+    ("webm", "audio/webm"),
+];
+
 /// The audio type of an imported file, from its name.
 pub fn mime_type_for_file_name(name: &str) -> &'static str {
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".wav") {
-        "audio/wav"
-    } else if lower.ends_with(".mp3") || lower.ends_with(".mpeg") || lower.ends_with(".mpga") {
-        "audio/mpeg"
-    } else if lower.ends_with(".m4a") {
-        "audio/x-m4a"
-    } else if lower.ends_with(".mp4") {
-        "audio/mp4"
-    } else if lower.ends_with(".ogg") {
-        "audio/ogg"
-    } else {
-        "audio/webm"
-    }
+    let extension = name.rsplit_once('.').map_or("", |(_, extension)| extension);
+    AUDIO_TYPES
+        .iter()
+        .find(|(known, _)| known.eq_ignore_ascii_case(extension))
+        .map_or("audio/webm", |(_, mime_type)| mime_type)
 }
 
-/// The extension a stored copy of an imported file gets.
-pub fn safe_extension(name: &str, mime_type: &str) -> &'static str {
-    let lowercase = name.to_ascii_lowercase();
-    if lowercase.ends_with(".wav") || mime_type.contains("wav") {
-        "wav"
-    } else if lowercase.ends_with(".mp3") || mime_type.contains("mpeg") {
-        "mp3"
-    } else if lowercase.ends_with(".m4a") || mime_type.contains("m4a") {
-        "m4a"
-    } else if lowercase.ends_with(".mp4") || mime_type.contains("mp4") {
-        "mp4"
-    } else if lowercase.ends_with(".ogg") || mime_type.contains("ogg") {
-        "ogg"
-    } else {
-        "webm"
-    }
+/// The file name extension (without the dot) for an audio type: what a
+/// stored copy of an imported file is named, and how the transcription
+/// service recognises an upload.
+pub fn extension_for_mime_type(mime_type: &str) -> &'static str {
+    AUDIO_TYPES
+        .iter()
+        .find(|(_, known)| *known == mime_type)
+        .map_or("webm", |(extension, _)| extension)
 }
 
 #[cfg(test)]
@@ -295,7 +301,7 @@ mod tests {
             &4_u32.to_le_bytes(),
         ]
         .concat();
-        assert_eq!(wav_header(4, 24_000).to_vec(), expected);
+        assert_eq!(wav_header(4, 1, 2, 24_000).to_vec(), expected);
     }
 
     #[test]
@@ -312,7 +318,7 @@ mod tests {
             ("Imported audio", "webm"),
         ] {
             assert_eq!(
-                safe_extension(name, mime_type_for_file_name(name)),
+                extension_for_mime_type(mime_type_for_file_name(name)),
                 stored,
                 "{name}"
             );
@@ -331,7 +337,7 @@ mod tests {
         for extension in IMPORT_EXTENSIONS {
             let name = format!("audio.{extension}");
             let mime_type = mime_type_for_file_name(&name);
-            let stored = safe_extension(&name, mime_type);
+            let stored = extension_for_mime_type(mime_type);
             assert_eq!(
                 mime_type_for_file_name(&format!("audio.{stored}")),
                 mime_type

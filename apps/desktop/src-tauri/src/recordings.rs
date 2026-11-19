@@ -223,7 +223,10 @@ pub fn import_recording(
         return Err("The selected audio file is empty".to_string());
     }
     let mime_type = recording_store::mime_type_for_file_name(&name);
-    let file_name = format!("audio.{}", recording_store::safe_extension(&name, mime_type));
+    let file_name = format!(
+        "audio.{}",
+        recording_store::extension_for_mime_type(mime_type)
+    );
     let id = Uuid::new_v4().to_string();
     let dir = root.join(&id);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -264,7 +267,7 @@ mod tests {
             let id = format!("recording-{index}");
             let directory = root.join(&id);
             fs::create_dir_all(&directory).unwrap();
-            fs::write(directory.join("audio.wav"), recording_store::wav_header(0, 24_000)).unwrap();
+            fs::write(directory.join("audio.wav"), recording_store::wav_header(0, 1, 2, 24_000)).unwrap();
             write_recording_metadata(
                 &root,
                 &RecordingMetadata {
@@ -457,11 +460,11 @@ mod tests {
         };
         // The app stopped while recording: the header still says no audio.
         save("crashed", "recording", 44);
-        let mut wav = recording_store::wav_header(0, 24_000).to_vec();
+        let mut wav = recording_store::wav_header(0, 1, 2, 24_000).to_vec();
         wav.extend_from_slice(&[1, 2, 3, 4]);
         fs::write(root.join("crashed").join("audio.wav"), &wav).unwrap();
         save("sending", "transcribing", 48);
-        fs::write(root.join("sending").join("audio.wav"), recording_store::wav_header(4, 24_000))
+        fs::write(root.join("sending").join("audio.wav"), recording_store::wav_header(4, 1, 2, 24_000))
             .unwrap();
         let parts = recording_parts_path(&root, "sending");
         fs::write(&parts, b"{\"key\":\"k\",\"parts\":[]}").unwrap();

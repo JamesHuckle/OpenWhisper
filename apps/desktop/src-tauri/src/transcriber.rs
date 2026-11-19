@@ -15,7 +15,7 @@ use crate::debug_log::debug_log_line;
 use crate::flac_upload::UploadPart;
 use crate::openai_api::{ApiError, OpenAiApi};
 use crate::saved_parts::{parts_key, SavedPart, SavedParts};
-use crate::wav_file::{read_up_to, read_wav_format, wav_bytes, WavFormat};
+use crate::wav_file::{read_wav_format, wav_bytes, WavFormat};
 use futures_util::future::try_join_all;
 use regex::Regex;
 use std::fmt;
@@ -597,8 +597,8 @@ async fn read_audio(path: PathBuf, format: WavFormat, start: u64, end: u64) -> i
     blocking(move || {
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(format.data_offset + start))?;
-        let mut audio = vec![0_u8; (end - start) as usize];
-        let read = read_up_to(&mut file, &mut audio)?;
+        let mut audio = Vec::with_capacity((end - start) as usize);
+        let read = file.take(end - start).read_to_end(&mut audio)?;
         audio.truncate(read - read % format.frame_bytes() as usize);
         Ok(audio)
     })
@@ -902,6 +902,8 @@ mod tests {
         let mut file = File::create(&path).unwrap();
         file.write_all(&crate::recording_store::wav_header(
             pcm_bytes as u32,
+            1,
+            2,
             24_000,
         ))
         .unwrap();
@@ -1018,6 +1020,8 @@ mod tests {
         let mut file = File::create(&path).unwrap();
         file.write_all(&crate::recording_store::wav_header(
             pcm_bytes as u32,
+            1,
+            2,
             24_000,
         ))
         .unwrap();

@@ -15,6 +15,7 @@
 //! This file needs no Tauri, so its tests run in `core-tests`.
 
 use crate::debug_log::debug_log_line;
+use crate::recording_store::extension_for_mime_type;
 use reqwest::{multipart, Client, Response};
 use serde_json::{json, Value};
 use std::fmt;
@@ -232,7 +233,10 @@ impl HttpApi {
     ) -> Result<String, Failure> {
         let timeout = transcribe_timeout(audio.len());
         let file = multipart::Part::bytes(audio)
-            .file_name(format!("session_audio{}", extension_for_mime(mime_type)))
+            .file_name(format!(
+                "session_audio.{}",
+                extension_for_mime_type(mime_type)
+            ))
             .mime_str(mime_type)
             .map_err(|_| ApiError::Unexpected(format!("audio type {mime_type}")))?;
         let mut form = multipart::Form::new()
@@ -492,18 +496,6 @@ fn responses_text(answer: &Value) -> String {
         }
     }
     text
-}
-
-/// The file name extension the service uses to recognise an upload.
-fn extension_for_mime(mime_type: &str) -> &'static str {
-    match mime_type {
-        "audio/wav" | "audio/x-wav" => ".wav",
-        "audio/mpeg" | "audio/mp3" => ".mp3",
-        "audio/mp4" | "audio/x-m4a" => ".m4a",
-        "audio/ogg" => ".ogg",
-        "audio/flac" | "audio/x-flac" => ".flac",
-        _ => ".webm",
-    }
 }
 
 #[cfg(test)]
@@ -810,19 +802,20 @@ mod tests {
     #[test]
     fn uploads_are_named_by_their_audio_type() {
         for (mime_type, extension) in [
-            ("audio/wav", ".wav"),
-            ("audio/x-wav", ".wav"),
-            ("audio/mpeg", ".mp3"),
-            ("audio/mp3", ".mp3"),
-            ("audio/x-m4a", ".m4a"),
-            ("audio/ogg", ".ogg"),
-            ("audio/flac", ".flac"),
-            ("audio/x-flac", ".flac"),
-            ("audio/webm", ".webm"),
-            ("audio/webm;codecs=opus", ".webm"),
-            ("audio/aiff", ".webm"),
+            ("audio/wav", "wav"),
+            ("audio/x-wav", "wav"),
+            ("audio/mpeg", "mp3"),
+            ("audio/mp3", "mp3"),
+            ("audio/x-m4a", "m4a"),
+            ("audio/mp4", "mp4"),
+            ("audio/ogg", "ogg"),
+            ("audio/flac", "flac"),
+            ("audio/x-flac", "flac"),
+            ("audio/webm", "webm"),
+            ("audio/webm;codecs=opus", "webm"),
+            ("audio/aiff", "webm"),
         ] {
-            assert_eq!(extension_for_mime(mime_type), extension, "{mime_type}");
+            assert_eq!(extension_for_mime_type(mime_type), extension, "{mime_type}");
         }
     }
 

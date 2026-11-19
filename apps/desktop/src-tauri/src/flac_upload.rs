@@ -280,7 +280,7 @@ mod tests {
 
     fn write_wav(path: &Path, samples: &[i16]) {
         let pcm: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-        let mut bytes = wav_header(pcm.len() as u32, 24_000).to_vec();
+        let mut bytes = wav_header(pcm.len() as u32, 1, 2, 24_000).to_vec();
         bytes.extend_from_slice(&pcm);
         fs::write(path, bytes).unwrap();
     }

@@ -1,9 +1,11 @@
-//! Reads the format of a PCM WAV file and builds small WAV files from PCM.
+//! Reads the format of a PCM WAV file and builds small WAV files from PCM,
+//! with the one header writer in src/recording_store.rs.
 //!
 //! The FLAC encoder (src/flac_upload.rs) and the transcriber
 //! (src/transcriber.rs) both read saved recordings through this one parser.
 //! This file needs no Tauri, so its tests run in `core-tests`.
 
+use crate::recording_store::wav_header;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -102,21 +104,9 @@ pub fn read_wav_format(file: &mut File) -> io::Result<WavFormat> {
 
 /// A whole WAV file holding `pcm` in the given format.
 pub fn wav_bytes(pcm: &[u8], channels: u16, sample_width: u16, sample_rate: u32) -> Vec<u8> {
-    let data_bytes = pcm.len() as u32;
-    let frame_bytes = channels * sample_width;
-    let mut wav = Vec::with_capacity(44 + pcm.len());
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16_u32.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&channels.to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&(sample_rate * u32::from(frame_bytes)).to_le_bytes());
-    wav.extend_from_slice(&frame_bytes.to_le_bytes());
-    wav.extend_from_slice(&(sample_width * 8).to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_bytes.to_le_bytes());
+    let header = wav_header(pcm.len() as u32, channels, sample_width, sample_rate);
+    let mut wav = Vec::with_capacity(header.len() + pcm.len());
+    wav.extend_from_slice(&header);
     wav.extend_from_slice(pcm);
     wav
 }
@@ -175,11 +165,14 @@ mod tests {
     #[test]
     fn a_built_wav_is_its_header_then_its_audio() {
         let mono = wav_bytes(&[1, 0, 2, 0], 1, 2, 24_000);
-        let header = crate::recording_store::wav_header(4, 24_000);
+        let header = wav_header(4, 1, 2, 24_000);
         assert_eq!(mono, [&header[..], &[1, 0, 2, 0]].concat());
 
         let stereo = wav_bytes(&[0; 8], 2, 2, 16_000);
-        assert_eq!(u32::from_le_bytes(stereo[28..32].try_into().unwrap()), 64_000);
+        assert_eq!(
+            u32::from_le_bytes(stereo[28..32].try_into().unwrap()),
+            64_000
+        );
         assert_eq!(u16::from_le_bytes(stereo[32..34].try_into().unwrap()), 4);
         assert_eq!(u16::from_le_bytes(stereo[34..36].try_into().unwrap()), 16);
     }
