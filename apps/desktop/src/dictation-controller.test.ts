@@ -114,6 +114,7 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
   const toasts: string[] = [];
   const failures: { message: string; recordingSaved: boolean }[] = [];
   const remembered: string[] = [];
+  const logs: string[] = [];
   // The model the menu has selected; a test may change it between recordings.
   const config = { model };
   const dictation = createDictationController({
@@ -132,9 +133,9 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
     rememberTranscript: (transcript) => remembered.push(transcript),
     recordingsChanged: () => undefined,
     closeMenu: () => undefined,
-    log: () => undefined,
+    log: (message) => logs.push(message),
   });
-  return { app, mic, dictation, states, toasts, failures, remembered, config };
+  return { app, mic, dictation, states, toasts, failures, remembered, logs, config };
 }
 
 async function settle() {
@@ -451,6 +452,18 @@ describe("dictation controller", () => {
     expect(app.named("recording_finish").map((call) => call.args)).toEqual([
       { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
     ]);
+    expect(dictation.state).toBe("idle");
+  });
+
+  it("logs a session that fails to stop and still finishes the cancel", async () => {
+    const { app, dictation, logs } = setup();
+    await startRecording(dictation);
+    app.fail("worker_stop_session", new Error("Session already gone"));
+
+    await dictation.cancelTranscription();
+
+    expect(app.named("worker_stop_session").map((call) => call.args)).toEqual([{ sessionId: "s-1" }]);
+    expect(logs).toContain("stop session failed=Session already gone");
     expect(dictation.state).toBe("idle");
   });
 
