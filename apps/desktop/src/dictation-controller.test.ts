@@ -430,6 +430,30 @@ describe("dictation controller", () => {
     expect(dictation.state).toBe("idle");
   });
 
+  it("lets a second cancel wait for the first, so it never cancels the next recording", async () => {
+    const { app, dictation } = setup();
+    await startRecording(dictation);
+    await dictation.toggleRecording();
+    app.hold("worker_stop_session");
+
+    const first = dictation.cancelTranscription();
+    const second = dictation.cancelTranscription();
+    await settle();
+    app.answers.recording_begin = { id: "rec-2" };
+    void dictation.toggleRecording();
+    await settle();
+    app.release("worker_stop_session");
+    await Promise.all([first, second]);
+    await settle();
+
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
+    expect(dictation.state).toBe("idle");
+    await startRecording(dictation);
+    expect(dictation.currentRecordingId).toBe("rec-2");
+  });
+
   it("drops Live pieces queued for a cancelled session instead of typing them into the next one", async () => {
     const { app, dictation } = setup(LIVE_TRANSCRIPTION_MODEL);
     await startRecording(dictation);

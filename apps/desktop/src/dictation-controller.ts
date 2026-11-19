@@ -484,7 +484,19 @@ export function createDictationController(deps: DictationDeps) {
     }
   }
 
-  async function cancelTranscription() {
+  // A cancel still stopping its recording; a second press joins it, so it
+  // never returns the pill to idle while the first can still tidy up a newer
+  // recording.
+  let cancelling: Promise<void> | null = null;
+
+  function cancelTranscription(): Promise<void> {
+    cancelling ??= cancelOnce().finally(() => {
+      cancelling = null;
+    });
+    return cancelling;
+  }
+
+  async function cancelOnce() {
     cancelCount += 1;
     operationId += 1;
     if (!currentRecordingId && pendingAudioParts.length > 0) {
