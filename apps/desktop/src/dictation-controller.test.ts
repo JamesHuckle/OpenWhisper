@@ -675,6 +675,22 @@ describe("dictation controller", () => {
       await expectStandardTranscriptPasted(env);
     });
 
+    it("stops the Standard session when transcribing the saved recording fails", async () => {
+      const env = await liveDictationStopped();
+      env.app.fail("worker_finalize_session_audio", new Error("Session is already finalizing"));
+      env.app.fail("recording_transcribe", new Error("Could not read saved recording"));
+
+      await env.dictation.toggleRecording();
+      await settle();
+
+      expect(env.app.named("worker_stop_session").map((call) => call.args)).toEqual([
+        { sessionId: "s-1" },
+        { sessionId: "s-2" },
+      ]);
+      expect(env.failures).toEqual([{ message: "Could not read saved recording", recordingSaved: true }]);
+      expect(env.dictation.state).toBe("idle");
+    });
+
     it("is transcribed with Standard when its session reports an error", async () => {
       const env = await liveDictationStopped();
       await env.dictation.toggleRecording();
@@ -883,6 +899,17 @@ describe("dictation controller", () => {
       { recordingId: "rec-9", status: "failed", transcript: "", error: "Could not connect" },
     ]);
     expect(dictation.lastFailedRecordingId).toBe("rec-9");
+    expect(dictation.state).toBe("idle");
+  });
+
+  it("stops a retry's session when transcribing the saved recording fails", async () => {
+    const { app, dictation, failures } = setup();
+    app.fail("recording_transcribe", new Error("Could not read saved recording"));
+
+    await dictation.retranscribeRecording("rec-9");
+
+    expect(app.named("worker_stop_session").map((call) => call.args)).toEqual([{ sessionId: "s-1" }]);
+    expect(failures).toEqual([{ message: "Could not read saved recording", recordingSaved: true }]);
     expect(dictation.state).toBe("idle");
   });
 

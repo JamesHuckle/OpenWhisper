@@ -457,6 +457,9 @@ export function createDictationController(deps: DictationDeps) {
     streamAudioToWorker = false;
     streamTextToTarget = false;
     audioQueue.reset();
+    // The Standard session once it is this recording's; the app keeps it
+    // until it is stopped when recording_transcribe fails before using it.
+    let standardSessionId: string | null = null;
     try {
       // The failed session may already be gone; stopping it closes its connection.
       if (failedSessionId) {
@@ -478,6 +481,7 @@ export function createDictationController(deps: DictationDeps) {
         return;
       }
       currentSessionId = sessionId;
+      standardSessionId = sessionId;
       finalTranscript = "";
       liveTranscript = "";
       await invoke("recording_transcribe", { recordingId, sessionId });
@@ -485,6 +489,12 @@ export function createDictationController(deps: DictationDeps) {
       log(`standard fallback error=${errorMessage(fallbackError)}`);
       // A cancel already tidied up; its failure is expected.
       if (cancelCount !== cancelsBefore) return;
+      if (standardSessionId) {
+        await invoke("worker_stop_session", { sessionId: standardSessionId }).catch((stopError) => {
+          log(`stop session failed=${errorMessage(stopError)}`);
+        });
+        if (cancelCount !== cancelsBefore) return;
+      }
       await handleTranscriptionFailure(fallbackError);
       cleanup();
       setState("idle");
@@ -653,6 +663,10 @@ export function createDictationController(deps: DictationDeps) {
     } catch (error) {
       // A cancel during the transcription already tidied up; its failure is expected.
       if (cancelled()) return;
+      // The app keeps the session until it is stopped when this fails before using it.
+      await invoke("worker_stop_session", { sessionId }).catch((stopError) => {
+        log(`stop session failed=${errorMessage(stopError)}`);
+      });
       throw error;
     }
   }
