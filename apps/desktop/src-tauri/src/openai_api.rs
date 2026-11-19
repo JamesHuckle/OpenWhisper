@@ -273,7 +273,13 @@ impl HttpApi {
             .map_err(request_error)?;
         // An answer cut short (its output limit, a content filter) or one
         // that failed holds only part of the text, if any.
-        match answer["status"].as_str() {
+        // A status that is not text is not "completed" either.
+        let status = match &answer["status"] {
+            Value::Null => None,
+            Value::String(status) => Some(status.clone()),
+            other => Some(other.to_string()),
+        };
+        match status.as_deref() {
             None | Some("completed") => Ok(responses_text(&answer)),
             Some(status) => Err(ApiError::Unexpected(format!(
                 "the response was {status}{}",
@@ -372,6 +378,9 @@ where
 fn request_error(error: reqwest::Error) -> ApiError {
     if error.is_timeout() {
         ApiError::Timeout
+    } else if error.is_decode() {
+        // A whole answer that is not JSON: sending again would not change it.
+        ApiError::Unexpected(error.without_url().to_string())
     } else {
         ApiError::Connection(error.without_url().to_string())
     }
@@ -926,6 +935,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_tidy_answer_whose_status_is_not_text_is_an_error() {
+        let server = TestServer::start(vec![Reply::json(
+            200,
+            json!({
+                "status": 123,
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "Odd"}]},
+                ]
+            }),
+        )])
+        .await;
+
+        let error = api(&server, "sk-test")
+            .respond("gpt-5-nano", "Rules", "text", "minimal")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ApiError::Unexpected("the response was 123".into()));
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_not_json_is_sent_once() {
+        let not_json = Reply {
+            status: 200,
+            content_type: "application/json",
+            body: "<html>Gateway</html>".into(),
+            delay: Duration::ZERO,
+            retry_after: None,
+        };
+        let server =
+            TestServer::start(vec![not_json.clone(), not_json, Reply::response("Unused.")]).await;
+        let api = api(&server, "sk-test");
+
+        let tidy = api.respond("gpt-5-nano", "Rules", "text", "minimal").await;
+        let transcript = api
+            .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
+            .await;
+
+        assert!(matches!(tidy, Err(ApiError::Unexpected(_))), "{tidy:?}");
+        assert!(matches!(transcript, Err(ApiError::Unexpected(_))), "{transcript:?}");
+        assert_eq!(server.received().len(), 2);
+    }
+
+    #[tokio::test]
     async fn no_key_sends_nothing() {
         let server = TestServer::start(vec![]).await;
 
@@ -1041,8 +1094,9 @@ mod tests {
         let server =
             TestServer::start(vec![server_error(503), Reply::transcript("Too late.")]).await;
         let api = api(&server, "sk-test");
-        let call = api.transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "");
-        tokio::pin!(call);
+        // Boxed, so drop(call) drops the call itself, not a pinned reference to it.
+        let mut call =
+            Box::pin(api.transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", ""));
 
         // Runs the call until its first try has failed and it is waiting.
         tokio::select! {
