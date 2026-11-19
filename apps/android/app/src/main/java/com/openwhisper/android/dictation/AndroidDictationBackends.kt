@@ -2,21 +2,6 @@ package com.openwhisper.android.dictation
 
 import android.os.Handler
 import android.os.Looper
-import java.util.concurrent.ExecutorService
-
-class ExecutorBackgroundRunner(private val executor: ExecutorService) : BackgroundRunner {
-    override fun run(task: () -> Unit) {
-        executor.execute(task)
-    }
-}
-
-class MainThreadCallbackDispatcher(
-    private val handler: Handler = Handler(Looper.getMainLooper()),
-) : CallbackDispatcher {
-    override fun dispatch(task: () -> Unit) {
-        handler.post(task)
-    }
-}
 
 class DeterministicDemoBackend(
     private val handler: Handler = Handler(Looper.getMainLooper()),

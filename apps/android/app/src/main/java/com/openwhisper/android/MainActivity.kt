@@ -554,8 +554,7 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun canInstallPackages(): Boolean =
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+    private fun canInstallPackages(): Boolean = packageManager.canRequestPackageInstalls()
 
     private fun launchPackageInstaller(file: File) {
         val uri = FileProvider.getUriForFile(this, "$packageName.updates", file)

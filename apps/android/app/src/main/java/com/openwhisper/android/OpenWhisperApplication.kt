@@ -2,8 +2,10 @@ package com.openwhisper.android
 
 import android.app.Application
 import android.content.Context
-import com.openwhisper.android.dictation.ExecutorBackgroundRunner
-import com.openwhisper.android.dictation.MainThreadCallbackDispatcher
+import android.os.Handler
+import android.os.Looper
+import com.openwhisper.android.dictation.BackgroundRunner
+import com.openwhisper.android.dictation.CallbackDispatcher
 import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.settings.SecureApiKeyStore
 import com.openwhisper.android.transcription.OpenAiHttpTranscriptionClient
@@ -33,6 +35,7 @@ class OpenWhisperApplication : Application() {
         val bulkExecutor = Executors.newSingleThreadExecutor { task ->
             Thread(task, "openwhisper-bulk-transcription")
         }
+        val mainThread = Handler(Looper.getMainLooper())
         transcriptions = TranscriptionManager(
             store = RecordingStore(this),
             newClient = { isCancelled ->
@@ -42,9 +45,9 @@ class OpenWhisperApplication : Application() {
                     isCancelled = isCancelled,
                 )
             },
-            dictationRunner = ExecutorBackgroundRunner(dictationExecutor),
-            bulkRunner = ExecutorBackgroundRunner(bulkExecutor),
-            callbacks = MainThreadCallbackDispatcher(),
+            dictationRunner = BackgroundRunner { dictationExecutor.execute(it) },
+            bulkRunner = BackgroundRunner { bulkExecutor.execute(it) },
+            callbacks = CallbackDispatcher { mainThread.post(it) },
         )
         // Recordings an earlier process was transcribing wait for the user to
         // tap Transcribe; their finished parts are kept.
