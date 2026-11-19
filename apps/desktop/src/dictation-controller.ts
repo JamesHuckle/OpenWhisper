@@ -147,6 +147,25 @@ export function createDictationController(deps: DictationDeps) {
   }
 
   // -------------------------------------------------------------------------
+  // Transcription sessions
+  // -------------------------------------------------------------------------
+  /** Starts a session and returns its ID; standardOnly opens no Live connection. */
+  async function startSession(profileId: string, standardOnly = false): Promise<string> {
+    const session = (await invoke(
+      "worker_start_session",
+      standardOnly ? { profileId, standardOnly } : { profileId },
+    )) as { session_id: string };
+    return session.session_id;
+  }
+
+  /** Stops a session; a failure (the session may already be gone) is only logged. */
+  async function stopSession(sessionId: string) {
+    await invoke("worker_stop_session", { sessionId }).catch((error) => {
+      log(`stop session failed=${errorMessage(error)}`);
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // Recording audio
   // -------------------------------------------------------------------------
   function queueAudioChunk(buffer: ArrayBuffer) {
@@ -249,7 +268,7 @@ export function createDictationController(deps: DictationDeps) {
       // recording Live.
       let liveSession = false;
 
-      const result = await startCaptureFirst({
+      const sessionId = await startCaptureFirst({
         lockPasteTarget: () => invoke("capture_paste_target"),
         // Capture is deliberately attached before the backup file, the session
         // or any network startup. Its opening chunks wait until those are ready.
@@ -305,11 +324,9 @@ export function createDictationController(deps: DictationDeps) {
         startSession: async () => {
           if (live) {
             try {
-              const session = (await invoke("worker_start_session", {
-                profileId: "default",
-              })) as { session_id: string };
+              const sessionId = await startSession("default");
               liveSession = true;
-              return session;
+              return sessionId;
             } catch (error) {
               if (cancelCount !== cancelsBefore) throw error;
               // The Live connection could not open. Recording goes on, and
@@ -317,26 +334,19 @@ export function createDictationController(deps: DictationDeps) {
               log(`live session start failed=${errorMessage(error)}; using Standard`);
               streamAudioToWorker = false;
               audioQueue.reset();
-              return (await invoke("worker_start_session", {
-                profileId: "default",
-                standardOnly: true,
-              })) as { session_id: string };
+              return startSession("default", true);
             }
           }
-          return (await invoke("worker_start_session", {
-            profileId: "default",
-          })) as { session_id: string };
+          return startSession("default");
         },
       });
-      if (!result) return;
+      if (!sessionId) return;
       if (cancelCount !== cancelsBefore) {
         // Cancelled while the session was starting; the cancel already tidied up.
-        await invoke("worker_stop_session", { sessionId: result.session_id }).catch((error) => {
-          log(`stop session failed=${errorMessage(error)}`);
-        });
+        await stopSession(sessionId);
         return;
       }
-      currentSessionId = result.session_id;
+      currentSessionId = sessionId;
       sessionWasLive = liveSession;
       audioQueue.attachSession(currentSessionId);
       finalTranscript = "";
@@ -427,9 +437,7 @@ export function createDictationController(deps: DictationDeps) {
       }
       // The app keeps the session, and a Live session its connection, until
       // it is stopped.
-      await invoke("worker_stop_session", { sessionId }).catch((error) => {
-        log(`stop session failed=${errorMessage(error)}`);
-      });
+      await stopSession(sessionId);
       if (currentSessionId !== sessionId) return;
       await handleTranscriptionFailure(err);
       cleanup();
@@ -466,22 +474,12 @@ export function createDictationController(deps: DictationDeps) {
     let standardSessionId: string | null = null;
     try {
       // The failed session may already be gone; stopping it closes its connection.
-      if (failedSessionId) {
-        await invoke("worker_stop_session", { sessionId: failedSessionId }).catch((stopError) => {
-          log(`stop session failed=${errorMessage(stopError)}`);
-        });
-      }
+      if (failedSessionId) await stopSession(failedSessionId);
       if (cancelCount !== cancelsBefore) return;
-      const session = (await invoke("worker_start_session", {
-        profileId: "default",
-        standardOnly: true,
-      })) as { session_id: string };
-      const sessionId = session.session_id;
+      const sessionId = await startSession("default", true);
       if (cancelCount !== cancelsBefore) {
         // Cancelled while the session was starting; the cancel already tidied up.
-        await invoke("worker_stop_session", { sessionId }).catch((stopError) => {
-          log(`stop session failed=${errorMessage(stopError)}`);
-        });
+        await stopSession(sessionId);
         return;
       }
       currentSessionId = sessionId;
@@ -494,9 +492,7 @@ export function createDictationController(deps: DictationDeps) {
       // A cancel already tidied up; its failure is expected.
       if (cancelCount !== cancelsBefore) return;
       if (standardSessionId) {
-        await invoke("worker_stop_session", { sessionId: standardSessionId }).catch((stopError) => {
-          log(`stop session failed=${errorMessage(stopError)}`);
-        });
+        await stopSession(standardSessionId);
         if (cancelCount !== cancelsBefore) return;
       }
       await handleTranscriptionFailure(fallbackError);
@@ -537,11 +533,7 @@ export function createDictationController(deps: DictationDeps) {
     // The session stops being this recording's at once, so a result that
     // arrives while it stops is not pasted or copied.
     currentSessionId = null;
-    if (sessionId) {
-      await invoke("worker_stop_session", { sessionId }).catch((error) => {
-        log(`stop session failed=${errorMessage(error)}`);
-      });
-    }
+    if (sessionId) await stopSession(sessionId);
     if (stopping) await stopping.catch(() => undefined);
     // Capture has stopped; let its last pieces reach the backup before closing it.
     await backupTail;
@@ -646,16 +638,10 @@ export function createDictationController(deps: DictationDeps) {
 
     // Saved audio is always transcribed with Standard, so no Live
     // connection is opened even when Live is selected.
-    const session = (await invoke("worker_start_session", {
-      profileId,
-      standardOnly: true,
-    })) as { session_id: string };
-    const sessionId = session.session_id;
+    const sessionId = await startSession(profileId, true);
     if (op !== operationId) {
       // Cancelled while the session was starting; the cancel already tidied up.
-      await invoke("worker_stop_session", { sessionId }).catch((error) => {
-        log(`stop session failed=${errorMessage(error)}`);
-      });
+      await stopSession(sessionId);
       return;
     }
     currentSessionId = sessionId;
@@ -668,9 +654,7 @@ export function createDictationController(deps: DictationDeps) {
       // A cancel during the transcription already tidied up; its failure is expected.
       if (cancelled()) return;
       // The app keeps the session until it is stopped when this fails before using it.
-      await invoke("worker_stop_session", { sessionId }).catch((stopError) => {
-        log(`stop session failed=${errorMessage(stopError)}`);
-      });
+      await stopSession(sessionId);
       throw error;
     }
   }
@@ -860,10 +844,7 @@ export function createDictationController(deps: DictationDeps) {
       throw new Error("Choose Live transcription before the realtime smoke test");
     }
     await invoke("capture_paste_target");
-    const result = (await invoke("worker_start_session", {
-      profileId: "realtime-smoke",
-    })) as { session_id: string };
-    const sessionId = result.session_id;
+    const sessionId = await startSession("realtime-smoke");
     currentSessionId = sessionId;
     finalTranscript = "";
     liveTranscript = "";
