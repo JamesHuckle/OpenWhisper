@@ -9,6 +9,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.openwhisper.android.R
+import com.openwhisper.android.dp
 
 class DemoTargetActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,6 +60,4 @@ class DemoTargetActivity : Activity() {
         setContentView(ScrollView(this).apply { addView(content) })
         content.requestFocus()
     }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 }

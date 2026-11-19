@@ -587,8 +587,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
     companion object {
         const val EXTRA_DICTATION_ERROR = "com.openwhisper.android.extra.DICTATION_ERROR"
         private const val REQUEST_AUDIO = 100

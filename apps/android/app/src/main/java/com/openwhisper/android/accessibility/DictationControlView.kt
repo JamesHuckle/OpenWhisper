@@ -7,6 +7,7 @@ import android.graphics.RectF
 import android.graphics.drawable.Drawable
 import android.os.SystemClock
 import android.view.View
+import com.openwhisper.android.dp
 import com.openwhisper.android.overlay.OverlayKeyGeometry
 import kotlin.math.max
 import kotlin.math.min
@@ -27,7 +28,6 @@ class DictationControlView(context: Context) : View(context) {
 
     enum class Mode { ICON, LISTENING, PROCESSING }
 
-    private val density = resources.displayMetrics.density
     private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val barRect = RectF()
 
@@ -149,7 +149,7 @@ class DictationControlView(context: Context) : View(context) {
 
     private fun drawIcon(canvas: Canvas) {
         val drawable = icon ?: return
-        val size = dp(OverlayKeyGeometry.ICON_SIZE_DP)
+        val size = context.dp(OverlayKeyGeometry.ICON_SIZE_DP)
         val left = (width - size) / 2
         val top = (height - size) / 2
         drawable.setBounds(left, top, left + size, top + size)
@@ -159,8 +159,8 @@ class DictationControlView(context: Context) : View(context) {
 
     private fun drawBars(canvas: Canvas) {
         barPaint.color = contentColor
-        val barWidth = dp(BAR_WIDTH_DP).toFloat()
-        val gap = dp(BAR_GAP_DP).toFloat()
+        val barWidth = context.dp(BAR_WIDTH_DP).toFloat()
+        val gap = context.dp(BAR_GAP_DP).toFloat()
         val totalWidth = BAR_COUNT * barWidth + (BAR_COUNT - 1) * gap
         val startX = (width - totalWidth) / 2f
         val centerY = height / 2f
@@ -174,8 +174,6 @@ class DictationControlView(context: Context) : View(context) {
             canvas.drawRoundRect(barRect, radius, radius, barPaint)
         }
     }
-
-    private fun dp(value: Int): Int = (value * density).toInt()
 
     private companion object {
         const val BAR_COUNT = 4

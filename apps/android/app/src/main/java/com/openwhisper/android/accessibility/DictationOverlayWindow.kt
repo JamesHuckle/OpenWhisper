@@ -17,6 +17,7 @@ import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import com.openwhisper.android.R
 import com.openwhisper.android.dictation.DictationState
+import com.openwhisper.android.dp
 import com.openwhisper.android.overlay.NormalizedOverlayPosition
 import com.openwhisper.android.overlay.OverlayKeyGeometry
 import com.openwhisper.android.overlay.OverlayMovementBounds
@@ -29,11 +30,10 @@ class DictationOverlayWindow(
     private val windowManager: WindowManager,
     onClick: () -> Unit,
 ) {
-    private val density = context.resources.displayMetrics.density
     private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES_NAME, 0)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
-    val controlWidthPx = dp(OverlayKeyGeometry.WIDTH_DP)
-    val controlHeightPx = dp(OverlayKeyGeometry.HEIGHT_DP)
+    val controlWidthPx = context.dp(OverlayKeyGeometry.WIDTH_DP)
+    val controlHeightPx = context.dp(OverlayKeyGeometry.HEIGHT_DP)
     private var attached = false
     private var movementBounds: OverlayMovementBounds? = null
     // Home is where the key sits while the keyboard is open; it survives restarts.
@@ -59,7 +59,7 @@ class DictationOverlayWindow(
     }
     private val control = DictationControlView(context).apply {
         id = R.id.overlay_microphone
-        elevation = dp(2).toFloat()
+        elevation = context.dp(2).toFloat()
         contentDescription = context.getString(R.string.start_dictation)
         tooltipText = context.getString(R.string.move_microphone_hint)
         setOnClickListener { onClick() }
@@ -111,7 +111,7 @@ class DictationOverlayWindow(
         displayBounds = displayBounds,
         controlWidthPx = controlWidthPx,
         controlHeightPx = controlHeightPx,
-        marginPx = dp(OverlayKeyGeometry.GUTTER_MARGIN_DP).coerceAtLeast(1),
+        marginPx = context.dp(OverlayKeyGeometry.GUTTER_MARGIN_DP).coerceAtLeast(1),
     )
 
     private fun place(position: ScreenPoint, bounds: OverlayMovementBounds): Boolean {
@@ -226,7 +226,7 @@ class DictationOverlayWindow(
     ) {
         control.contentDescription = context.getString(R.string.movable_microphone_description, description)
         control.tooltipText = tooltip
-        control.elevation = dp(if (emphasized) 6 else 2).toFloat()
+        control.elevation = context.dp(if (emphasized) 6 else 2).toFloat()
         control.background = roundedKey(colors)
         control.visibility = View.VISIBLE
     }
@@ -234,9 +234,9 @@ class DictationOverlayWindow(
     private fun roundedKey(colors: ControlColors): RippleDrawable {
         val shape = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(OverlayKeyGeometry.CORNER_RADIUS_DP).toFloat()
+            cornerRadius = context.dp(OverlayKeyGeometry.CORNER_RADIUS_DP).toFloat()
             setColor(colors.background)
-            setStroke(dp(1).coerceAtLeast(1), colors.border)
+            setStroke(context.dp(1).coerceAtLeast(1), colors.border)
         }
         return RippleDrawable(
             ColorStateList.valueOf(withAlpha(colors.icon, 0x2E)),
@@ -357,8 +357,6 @@ class DictationOverlayWindow(
         gestureCancelled = false
         control.isPressed = false
     }
-
-    private fun dp(value: Int): Int = (value * density).toInt()
 
     private data class ControlColors(val background: Int, val icon: Int, val border: Int)
 
