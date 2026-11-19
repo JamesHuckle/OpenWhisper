@@ -133,11 +133,11 @@ worker did the work:
   session; `recording_transcribe { recordingId, sessionId }` finishes a
   Standard one from its saved recording.
 - `worker_stop_session { sessionId }` cancels the session's token: a running
-  upload or tidy request is dropped at once, the session sends no more
-  events, and its finalize returns `{ "final_text": "", "cancelled": true }`.
-- `worker_ping` reports the default and tidy models.
+  upload or tidy request is dropped at once, and the session sends no more
+  events.
 
-Errors are returned as `code: message` text, such as
+Only the start returns a value. The others return nothing when they succeed,
+and errors as `code: message` text, such as
 `bad_request: Unknown session_id`.
 
 Progress, live text, warnings and the result reach the window as the

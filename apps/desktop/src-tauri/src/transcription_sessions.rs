@@ -80,7 +80,6 @@ pub type EventSink = Arc<dyn Fn(Value) + Send + Sync>;
 
 struct Session {
     id: String,
-    profile_id: String,
     prompt: String,
     refine_enabled: bool,
     refine_prompt: String,
@@ -189,19 +188,6 @@ impl Sessions {
         }
     }
 
-    /// What the transcriber uses when a dictation names nothing.
-    pub fn health(&self) -> Value {
-        json!({
-            "status": "ok",
-            "model": session_transcription_model(&env_or(
-                "OPENWHISPER_MODEL",
-                &default_transcription_model(),
-            ))
-            .unwrap_or_default(),
-            "polish_model": self.polish.model,
-        })
-    }
-
     fn session(&self, session_id: &str) -> Result<Arc<Session>, String> {
         lock(&self.sessions)
             .get(session_id)
@@ -290,7 +276,6 @@ impl Sessions {
         );
         let session = Arc::new(Session {
             id: Uuid::new_v4().to_string(),
-            profile_id: settings.profile_id,
             prompt: settings.prompt,
             refine_enabled: settings.refine_enabled,
             refine_prompt: settings.refine_prompt,
@@ -314,17 +299,12 @@ impl Sessions {
 
     /// Stops a session at once: a running transcription is dropped and
     /// sends nothing more.
-    pub fn stop(&self, session_id: &str) -> Result<Value, String> {
+    pub fn stop(&self, session_id: &str) -> Result<(), String> {
         let session = lock(&self.sessions)
             .remove(session_id)
             .ok_or_else(unknown_session)?;
         Self::cancel(&session);
-        Ok(json!({
-            "session_id": session.id,
-            "profile_id": session.profile_id,
-            "final_text": "",
-            "note": "Session stopped.",
-        }))
+        Ok(())
     }
 
     fn cancel(session: &Session) {
@@ -341,7 +321,7 @@ impl Sessions {
     }
 
     /// Sends a Live session's next chunk of 16-bit PCM.
-    pub async fn append(&self, session_id: &str, chunk: &[u8]) -> Result<Value, String> {
+    pub async fn append(&self, session_id: &str, chunk: &[u8]) -> Result<(), String> {
         let session = self.session(session_id)?;
         if !session.live {
             // Standard sessions are transcribed from the saved file.
@@ -350,7 +330,7 @@ impl Sessions {
         if chunk.is_empty() {
             return Err(bad_request("The audio chunk is empty"));
         }
-        let audio_bytes = {
+        {
             let mut state = lock(&session.state);
             if session.cancel.is_cancelled() {
                 return Err(unknown_session());
@@ -360,8 +340,7 @@ impl Sessions {
             }
             state.audio_bytes += chunk.len() as u64;
             state.peak = state.peak.max(pcm_peak(chunk));
-            state.audio_bytes
-        };
+        }
         let mut progress = session.sending.lock().await;
         if progress.stream_bytes > 0
             && progress.stream_bytes + chunk.len() as u64 > self.live_rotate_bytes
@@ -386,7 +365,7 @@ impl Sessions {
             Some(Ok(sent)) => sent.map_err(|error| format!("internal_error: {error}"))?,
         }
         progress.stream_bytes += chunk.len() as u64;
-        Ok(json!({ "buffered_bytes": audio_bytes }))
+        Ok(())
     }
 
     /// Finishes the current Live connection's text and opens the next one.
@@ -421,8 +400,8 @@ impl Sessions {
 
     /// Transcribes and tidies a session's audio. Its result arrives as a
     /// `final` or `error` event before this returns; a stopped session
-    /// returns `cancelled` and sends nothing.
-    pub async fn finalize(&self, session_id: &str, audio: FinalizeAudio) -> Result<Value, String> {
+    /// sends nothing.
+    pub async fn finalize(&self, session_id: &str, audio: FinalizeAudio) -> Result<(), String> {
         let session = self.session(session_id)?;
         {
             let mut state = lock(&session.state);
@@ -430,25 +409,28 @@ impl Sessions {
                 return Err(bad_request("Session is already finalizing"));
             }
             if session.cancel.is_cancelled() {
-                return Ok(self.cancelled(&session));
+                Self::log_cancelled(&session);
+                return Ok(());
             }
             state.finalizing = true;
         }
         let finished = until_cancelled(&session.cancel, self.run_finalize(&session, audio)).await;
         // Finalizing always ends a session, even when it fails.
         lock(&self.sessions).remove(&session.id);
-        Ok(finished.unwrap_or_else(|| self.cancelled(&session)))
+        if finished.is_none() {
+            Self::log_cancelled(&session);
+        }
+        Ok(())
     }
 
-    fn cancelled(&self, session: &Session) -> Value {
+    fn log_cancelled(session: &Session) {
         debug_log_line(
             "transcriber",
             &format!("finalize session_id={:?} cancelled", session.id),
         );
-        json!({ "final_text": "", "cancelled": true })
     }
 
-    async fn run_finalize(&self, session: &Session, audio: FinalizeAudio) -> Value {
+    async fn run_finalize(&self, session: &Session, audio: FinalizeAudio) {
         let progress = session.sending.lock().await;
         let saved = match audio {
             FinalizeAudio::Saved(saved) => {
@@ -536,7 +518,7 @@ impl Sessions {
                         "text": if message.is_empty() { "Transcription failed" } else { message },
                     }),
                 );
-                return json!({ "final_text": "" });
+                return;
             }
         };
 
@@ -613,7 +595,6 @@ impl Sessions {
         }
 
         self.emit(session, json!({ "type": "final", "text": text }));
-        json!({ "final_text": text })
     }
 
     fn close_stream(session: &Session) {
@@ -623,7 +604,7 @@ impl Sessions {
         }
     }
 
-    fn finish_without_audio(&self, session: &Session, reason: &str) -> Value {
+    fn finish_without_audio(&self, session: &Session, reason: &str) {
         debug_log_line(
             "transcriber",
             &format!("finalize session_id={:?} no_audio={reason}", session.id),
@@ -633,7 +614,6 @@ impl Sessions {
             session,
             json!({ "type": "error", "text": rules().no_audio_message }),
         );
-        json!({ "final_text": "" })
     }
 }
 
@@ -737,7 +717,7 @@ mod tests {
             path
         }
 
-        async fn finalize_saved(&self, session_id: &str, path: PathBuf) -> Value {
+        async fn finalize_saved(&self, session_id: &str, path: PathBuf) {
             self.sessions
                 .finalize(
                     session_id,
@@ -753,7 +733,7 @@ mod tests {
         }
 
         /// A whole Standard dictation of one second of speech.
-        async fn dictate(&self, refine_enabled: bool, refine_prompt: &str) -> Value {
+        async fn dictate(&self, refine_enabled: bool, refine_prompt: &str) {
             let id = self
                 .start("gpt-transcribe", refine_enabled, refine_prompt)
                 .await;
@@ -781,12 +761,8 @@ mod tests {
         .await;
         let h = harness(&server.base_url);
 
-        let reply = h.dictate(true, "").await;
+        h.dictate(true, "").await;
 
-        assert_eq!(
-            reply["final_text"],
-            "My bank PIN is 4471. Please remind me at noon."
-        );
         assert_eq!(
             h.events(),
             [
@@ -910,9 +886,11 @@ mod tests {
 
         for path in [h.wav(0.1, 6_000), h.wav(1.0, 0), empty] {
             let id = h.start("gpt-transcribe", true, "").await;
-            assert_eq!(h.finalize_saved(&id, path).await["final_text"], "");
+            h.finalize_saved(&id, path).await;
             assert_eq!(h.last(), ("error".into(), no_audio.clone(), true));
         }
+        // Each ends with its no-audio error alone: no text reaches the window.
+        assert_eq!(h.events(), vec![("error".into(), no_audio, true); 3]);
         assert!(server.received().is_empty());
     }
 
@@ -1017,11 +995,11 @@ mod tests {
         }
 
         let started = Instant::now();
-        let stopped = h.sessions.stop(&id).unwrap();
-        let finished = running.await.unwrap().unwrap();
+        h.sessions.stop(&id).unwrap();
+        running.await.unwrap().unwrap();
 
-        assert_eq!(stopped["note"], "Session stopped.");
-        assert_eq!(finished, json!({ "final_text": "", "cancelled": true }));
+        // The finalize returned without waiting for the 20-second reply, and
+        // sent no event.
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(h.events().is_empty());
         assert_eq!(
@@ -1061,7 +1039,7 @@ mod tests {
 
         h.sessions.stop(&id).unwrap();
 
-        assert_eq!(running.await.unwrap().unwrap()["cancelled"], true);
+        running.await.unwrap().unwrap();
         assert_eq!(
             h.events(),
             [("partial".into(), "Refining transcript...".into(), false)]
@@ -1172,8 +1150,7 @@ mod tests {
         let id = h.start("gpt-live-transcribe", false, "").await;
 
         h.sessions.append(&id, &tone(0.5, 6_000)).await.unwrap();
-        let reply = h
-            .sessions
+        h.sessions
             .finalize(
                 &id,
                 FinalizeAudio::Live {
@@ -1183,7 +1160,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(reply["final_text"], "Hello world.");
         assert_eq!(
             h.events(),
             [
@@ -1220,8 +1196,7 @@ mod tests {
 
         h.sessions.append(&id, &tone(0.5, 6_000)).await.unwrap();
         h.sessions.append(&id, &tone(0.5, 6_000)).await.unwrap();
-        let reply = h
-            .sessions
+        h.sessions
             .finalize(
                 &id,
                 FinalizeAudio::Live {
@@ -1231,7 +1206,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(reply["final_text"], "First stretch. Second stretch.");
+        assert_eq!(
+            h.events(),
+            [(
+                "final".into(),
+                "First stretch. Second stretch.".into(),
+                true
+            )]
+        );
         assert_eq!(server.event_types().len(), 2);
     }
 
@@ -1316,10 +1298,9 @@ mod tests {
         Arc::get_mut(&mut h.sessions).unwrap().base_url = server.base_url.clone();
         let path = h.wav(1.0, 6_000);
 
-        let reply = h.finalize_saved(&id, path).await;
+        h.finalize_saved(&id, path).await;
 
-        assert_eq!(reply["final_text"], DICTATED);
-        assert_eq!(h.last(), ("final".into(), DICTATED.into(), true));
+        assert_eq!(h.events(), [("final".into(), DICTATED.into(), true)]);
         let received = server.received();
         assert_eq!(received.len(), 1);
         assert_eq!(

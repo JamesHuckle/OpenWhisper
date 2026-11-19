@@ -1424,7 +1424,6 @@ if (import.meta.env.PROD) {
   void ensureAutostartEnabled();
 }
 void refreshMicDevices();
-void invoke("worker_ping").catch(() => {});
 // Ready before the first shortcut press; a failure is retried then.
 void pcmCaptureContext().catch((error) => {
   logDebug(`audio capture warm-up failed=${errorMessage(error)}`);

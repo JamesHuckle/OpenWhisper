@@ -366,7 +366,7 @@ async fn recording_transcribe(
     state: State<'_, Arc<AppState>>,
     recording_id: String,
     session_id: String,
-) -> Result<serde_json::Value, String> {
+) -> Result<(), String> {
     let sessions = transcription(&state)?;
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
     close_active_recording(&state.recordings, &root, &recording_id)?;
@@ -557,12 +557,6 @@ async fn app_save_settings(
 // The session commands keep their worker_ names so the window's calls stay
 // the same; the work is done here, in the app.
 
-/// What a dictation would use if it named nothing; a cheap check at startup.
-#[tauri::command]
-async fn worker_ping(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-    Ok(transcription(&state)?.health())
-}
-
 #[tauri::command]
 async fn worker_start_session(
     state: State<'_, Arc<AppState>>,
@@ -590,7 +584,7 @@ async fn worker_start_session(
 async fn worker_stop_session(
     state: State<'_, Arc<AppState>>,
     session_id: String,
-) -> Result<serde_json::Value, String> {
+) -> Result<(), String> {
     transcription(&state)?.stop(&session_id)
 }
 
@@ -600,7 +594,7 @@ async fn worker_stop_session(
 async fn worker_append_audio_chunk(
     state: State<'_, Arc<AppState>>,
     request: Request<'_>,
-) -> Result<serde_json::Value, String> {
+) -> Result<(), String> {
     let (session_id, chunk) = audio_chunk_request(&request, "session-id")?;
     transcription(&state)?.append(&session_id, &chunk).await
 }
@@ -610,7 +604,7 @@ async fn worker_finalize_session_audio(
     state: State<'_, Arc<AppState>>,
     session_id: String,
     mime_type: String,
-) -> Result<serde_json::Value, String> {
+) -> Result<(), String> {
     transcription(&state)?
         .finalize(&session_id, FinalizeAudio::Live { mime_type })
         .await
@@ -1239,7 +1233,6 @@ pub fn run() {
             app_get_settings,
             app_get_openai_api_key,
             app_save_settings,
-            worker_ping,
             worker_start_session,
             worker_stop_session,
             worker_append_audio_chunk,
