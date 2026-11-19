@@ -946,6 +946,22 @@ describe("dictation controller", () => {
     expect(dictation.state).toBe("idle");
   });
 
+  it("reports a retry once when its session fails and ends before the transcribe command fails", async () => {
+    const { app, dictation, failures } = setup();
+    app.hold("recording_transcribe");
+    const retry = dictation.retranscribeRecording("rec-9");
+    await settle();
+
+    await dictation.receiveSessionEvent(sessionEvent({ type: "error", text: "OpenAI is unreachable" }, true));
+    app.reject("recording_transcribe", new Error("Session already ended"));
+    await retry;
+    await settle();
+
+    expect(failures).toEqual([{ message: "OpenAI is unreachable", recordingSaved: true }]);
+    expect(app.commands()).not.toContain("worker_stop_session");
+    expect(dictation.state).toBe("idle");
+  });
+
   it("reports a retry whose session fails while it is still current", async () => {
     const { app, dictation, failures } = setup();
     app.fail("worker_start_session", new Error("Could not connect"));
