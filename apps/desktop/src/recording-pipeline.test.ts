@@ -184,6 +184,83 @@ describe("recording startup latency contracts", () => {
     expect(uploaded).toEqual([1, 2, 3]);
   });
 
+  it("waits for the last audio to reach its recording before finalization", async () => {
+    const uploaded: string[] = [];
+    let releaseLastUpload!: () => void;
+    const lastUploadGate = new Promise<void>((resolve) => {
+      releaseLastUpload = resolve;
+    });
+    const queue = new SessionAudioQueue(async (sessionId, buffer) => {
+      if (valueOf(buffer) === 9) await lastUploadGate;
+      uploaded.push(`${sessionId}:${valueOf(buffer)}`);
+    });
+
+    queue.attachSession("release-during-startup");
+    queue.append(chunk(8));
+    queue.append(chunk(9));
+    let drained = false;
+    const draining = queue.drain().then(() => {
+      drained = true;
+    });
+    await settle();
+    expect(drained).toBe(false);
+    expect(uploaded).toEqual(["release-during-startup:8"]);
+
+    releaseLastUpload();
+    await draining;
+    expect(uploaded).toEqual(["release-during-startup:8", "release-during-startup:9"]);
+  });
+
+  it("fails a recording whose own audio upload fails", async () => {
+    const queue = new SessionAudioQueue(async () => {
+      throw new Error("shell rejected the chunk");
+    });
+
+    queue.attachSession("broken-recording");
+    queue.append(chunk(1));
+
+    await expect(queue.drain()).rejects.toThrow("shell rejected the chunk");
+  });
+
+  it("cannot leak audio buffered before a reset into the next recording", async () => {
+    const uploaded: number[] = [];
+    const queue = new SessionAudioQueue(async (_sessionId, buffer) => {
+      uploaded.push(valueOf(buffer));
+    });
+
+    queue.append(chunk(4));
+    queue.reset();
+    queue.attachSession("next-recording");
+    queue.append(chunk(5));
+    await queue.drain();
+
+    expect(uploaded).toEqual([5]);
+  });
+
+  it("cannot fail the next recording with a late upload failure from before a reset", async () => {
+    const uploaded: string[] = [];
+    let failOldUpload!: (error: Error) => void;
+    const oldUpload = new Promise<void>((_resolve, reject) => {
+      failOldUpload = reject;
+    });
+    const queue = new SessionAudioQueue(async (sessionId, buffer) => {
+      if (sessionId === "old-recording") await oldUpload;
+      uploaded.push(`${sessionId}:${valueOf(buffer)}`);
+    });
+
+    queue.attachSession("old-recording");
+    queue.append(chunk(4));
+    queue.reset();
+    queue.attachSession("next-recording");
+    queue.append(chunk(5));
+    await queue.drain();
+
+    failOldUpload(new Error("old shell session closed"));
+    await settle();
+    await expect(queue.drain()).resolves.toBeUndefined();
+    expect(uploaded).toEqual(["next-recording:5"]);
+  });
+
   it("waits for a final MediaRecorder blob conversion before finalization", async () => {
     const uploaded: number[] = [];
     let releaseConversion!: (buffer: ArrayBuffer) => void;
