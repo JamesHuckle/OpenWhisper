@@ -18,25 +18,21 @@ work.
 
 The checked wrapper hardens long runs: pinned `--model`, `--disable
 remote_models`, and a static `model_catalog_json` (avoids models-cache refresh
-child timeouts / FD leaks). On Windows the wrapper tolerates Codex stderr noise
-so PowerShell cannot abort the run early.
+child timeouts / FD leaks).
 
-Default model: `gpt-5.6-sol` (override with `-Model` / `CURSOR_CODEX_MODEL`).
+Default model: `gpt-5.6-sol` (override with `--model` / `CURSOR_CODEX_MODEL`).
 
 ## Optional Codex invocation
 
-```powershell
-& .\scripts\invoke-codex-agent.ps1 -Task "Add the requested feature and run its tests"
-```
-
-From a Cursor window connected to WSL2:
+The same command works in native Windows, WSL2 and Linux/macOS windows:
 
 ```bash
-bash ./scripts/invoke-codex-agent.sh --task "Add the requested feature and run its tests"
+node scripts/invoke-codex-agent.mjs --task "Add the requested feature and run its tests"
 ```
 
-Use `-ReadOnly` / `--read-only` for analysis that must not edit. Install and
-authenticate Codex separately in each environment (`codex login`).
+Use `--read-only` for analysis that must not edit (`--help` lists every
+option). Install and authenticate Codex separately in each environment
+(`codex login`).
 
 ## Layout
 
@@ -45,22 +41,21 @@ authenticate Codex separately in each environment (`codex login`).
 | `.cursor/rules/codex-orchestrator.mdc` | Always-on: Cursor-first policy |
 | `.cursor/commands/delegate-to-codex.md` | Slash command for opt-in handoff |
 | `.cursor/hooks.json` + `hooks/enforce-codex-wrapper.js` | Block bare `codex` in Agent shell |
-| `scripts/invoke-codex-agent.ps1` / `.sh` | Checked launcher + lock |
+| `scripts/invoke-codex-agent.mjs` | Checked launcher + lock |
 | `scripts/prepare-codex-static-catalog.mjs` | Static model catalog for long exec |
-| `scripts/setup-cursor-codex-a2a.*` | Install / login helpers |
+| `scripts/setup-cursor-codex-a2a.mjs` | Install / login helper |
 
 ## Setup (only if you want Codex available)
 
-```powershell
-& .\scripts\setup-cursor-codex-a2a.ps1 -Install -Login
+```bash
+node scripts/setup-cursor-codex-a2a.mjs --install --login
 ```
 
-```bash
-bash ./scripts/setup-cursor-codex-a2a.sh --install --login
-```
+In WSL2, use a Node installed inside WSL; the setup refuses a Windows Node
+found under `/mnt/<drive>/`.
 
 Optional User Rule copy for Cursor 3 UI visibility:
 
-```powershell
-& .\scripts\setup-cursor-codex-a2a.ps1 -CopyUserRule
+```bash
+node scripts/setup-cursor-codex-a2a.mjs --copy-user-rule
 ```

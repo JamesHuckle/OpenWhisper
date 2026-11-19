@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { parseArgs, resolveCodex } from "../invoke-codex-agent.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const hook = join(repoRoot, ".cursor/hooks/enforce-codex-wrapper.js");
-const launcherFiles = ["invoke-codex-agent.sh", "prepare-codex-static-catalog.mjs"];
-const launch = (root, args) => ["bash", [join(root, "scripts/invoke-codex-agent.sh"), ...args]];
-const wrapperCommand = "bash ./scripts/invoke-codex-agent.sh --task 'run codex exec on the tests'";
+const launcherFiles = ["invoke-codex-agent.mjs", "prepare-codex-static-catalog.mjs"];
+const launch = (root, args) => [process.execPath, [join(root, "scripts/invoke-codex-agent.mjs"), ...args]];
+const wrapperCommand = "node scripts/invoke-codex-agent.mjs --task 'run codex exec on the tests'";
 
 const runHook = command => JSON.parse(
   spawnSync(process.execPath, [hook], { input: JSON.stringify({ command }), encoding: "utf8" }).stdout
@@ -18,6 +19,8 @@ const runHook = command => JSON.parse(
 
 test("hook allows the checked wrapper and blocks a direct codex launch", () => {
   assert.equal(runHook(wrapperCommand).permission, "allow");
+  assert.equal(runHook("node .\\scripts\\invoke-codex-agent.mjs -Task 'x'; codex exec").permission, "allow");
+  assert.equal(runHook("bash ./scripts/invoke-codex-agent.sh --task x; codex exec -").permission, "deny");
   assert.equal(runHook("codex exec --sandbox workspace-write -").permission, "deny");
   assert.equal(runHook("npx codex exec -").permission, "deny");
   assert.equal(runHook("git commit -m 'mention codex here'").permission, "allow");
@@ -74,6 +77,7 @@ test("launcher runs codex exec with the pinned model, static catalog and prompt"
   assert.match(prompt, new RegExp(`- Work only in: ${box.root}\n`));
   assert.match(prompt, /STARTING GIT STATUS\n\?\? scripts\/\n$/);
   assert.equal(readFileSync(`${box.record}.depth`, "utf8"), "1");
+  assert.ok(!existsSync(join(box.gitDir, "cursor-codex-a2a.lock")), "lock released");
 });
 
 test("launcher honours --model, CURSOR_CODEX_MODEL and workspace-write by default", t => {
@@ -83,7 +87,6 @@ test("launcher honours --model, CURSOR_CODEX_MODEL and workspace-write by defaul
   let args = readFileSync(`${box.record}.args`, "utf8").split("\n");
   assert.equal(args[args.indexOf("--model") + 1], "custom-model");
   assert.equal(args[args.indexOf("--sandbox") + 1], "workspace-write");
-  rmSync(join(box.gitDir, "cursor-codex-a2a.lock"), { recursive: true, force: true });
   assert.equal(box.run(["--task", "x"], { CURSOR_CODEX_MODEL: "env-model" }).status, 0);
   args = readFileSync(`${box.record}.args`, "utf8").split("\n");
   assert.equal(args[args.indexOf("--model") + 1], "env-model");
@@ -107,4 +110,24 @@ test("launcher passes on the codex exit status", t => {
   const box = sandbox(7);
   t.after(box.cleanup);
   assert.equal(box.run(["--task", "x"]).status, 7);
+  assert.ok(!existsSync(join(box.gitDir, "cursor-codex-a2a.lock")), "lock released");
+});
+
+test("launcher prints help and parses both option spellings", () => {
+  const help = spawnSync(process.execPath, [join(repoRoot, "scripts/invoke-codex-agent.mjs"), "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /--task, -Task <text>/);
+  assert.deepEqual(parseArgs(["-Task", "t", "-ReadOnly"], {}), { task: "t", readOnly: true, model: "gpt-5.6-sol" });
+  assert.deepEqual(parseArgs(["--task", "t", "--model", "m"], { CURSOR_CODEX_MODEL: "e" }), { task: "t", readOnly: false, model: "m" });
+});
+
+test("launcher resolves the real Codex CLI behind the Windows npm shim", t => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-path-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "codex.cmd"), "");
+  const js = join(dir, "node_modules", "@openai", "codex", "bin", "codex.js");
+  assert.deepEqual(resolveCodex("win32", { Path: dir }, path => path === js), { command: process.execPath, prefixArgs: [js] });
+  assert.match(resolveCodex("win32", { Path: dir }, () => false).error, /reinstall Codex/);
+  assert.match(resolveCodex("win32", { Path: join(dir, "missing") }).error, /codex is not installed/);
+  assert.match(resolveCodex("linux", { PATH: join(dir, "missing") }).error, /codex is not installed/);
 });

@@ -1,7 +1,7 @@
-When the current workspace contains scripts/invoke-codex-agent.ps1 or
-scripts/invoke-codex-agent.sh, Cursor should build and edit files in the
-workspace directly by default (live, in-situ). Do not delegate to Codex unless
+When the current workspace contains scripts/invoke-codex-agent.mjs (or the
+older scripts/invoke-codex-agent.ps1 / .sh), Cursor should build and edit files
+in the workspace directly by default (live, in-situ). Do not delegate to Codex unless
 the user explicitly asks or runs /delegate-to-codex. If Codex is requested, use
-only the checked wrapper scripts — never launch codex directly. If the wrapper
+only the checked wrapper script — never launch codex directly. If the wrapper
 fails, continue in Cursor unless the user insists otherwise. Full policy:
 .cursor/rules/codex-orchestrator.mdc

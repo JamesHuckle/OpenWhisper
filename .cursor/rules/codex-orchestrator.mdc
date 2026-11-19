@@ -24,17 +24,13 @@ not killed by models-cache refresh FD leaks.
 
 Use only the checked wrapper — never bare `codex` / `npx codex`:
 
-```powershell
-& .\scripts\invoke-codex-agent.ps1 -Task '<complete task and acceptance criteria>'
-```
-
 ```bash
-bash ./scripts/invoke-codex-agent.sh --task '<complete task and acceptance criteria>'
+node scripts/invoke-codex-agent.mjs --task '<complete task and acceptance criteria>'
 ```
 
-Use PowerShell only in a native Windows Cursor window; Bash only in WSL/Remote
-Linux. Never cross that boundary. Never run two write delegations concurrently.
-Never nest delegation.
+Run it with the Node of the window's own environment (native Windows, or
+WSL/Remote Linux); never cross that boundary. Never run two write delegations
+concurrently. Never nest delegation.
 
 If the wrapper blocks or fails, report the concrete failure and **continue the
 task yourself in Cursor** unless the user insists on Codex only.

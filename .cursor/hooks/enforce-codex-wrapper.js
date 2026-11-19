@@ -24,7 +24,7 @@ function isDirectCodex(command) {
 }
 
 function isCheckedWrapper(command) {
-  return /(?:^|[\\/])scripts[\\/]invoke-codex-agent\.(?:ps1|sh)\b/i.test(command);
+  return /(?:^|[\s"'\\/])scripts[\\/]invoke-codex-agent\.mjs\b/i.test(command);
 }
 
 let input = "";
@@ -46,7 +46,7 @@ process.stdin.on("end", () => {
         continue: true,
         permission: "deny",
         user_message: "Direct Codex execution is blocked in this project.",
-        agent_message: "Use scripts/invoke-codex-agent.ps1 on Windows or scripts/invoke-codex-agent.sh in WSL; do not bypass the A2A wrapper."
+        agent_message: "Use node scripts/invoke-codex-agent.mjs --task '<task>'; do not bypass the A2A wrapper."
       });
       return;
     }
@@ -59,7 +59,7 @@ process.stdin.on("end", () => {
         continue: true,
         permission: "deny",
         user_message: "Direct Codex execution is blocked in this project.",
-        agent_message: "Use scripts/invoke-codex-agent.ps1 on Windows or scripts/invoke-codex-agent.sh in WSL; do not bypass the A2A wrapper."
+        agent_message: "Use node scripts/invoke-codex-agent.mjs --task '<task>'; do not bypass the A2A wrapper."
       });
       return;
     }

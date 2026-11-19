@@ -35,14 +35,20 @@ const isWsl = !isWindows && (
 );
 const environment = isWindows ? "native Windows" : isWsl ? "WSL2" : "Linux/macOS";
 
+// A Windows Node found on the WSL PATH under /mnt/<drive>/ would install and
+// run the Windows Codex against this Linux checkout.
+if (process.platform === "linux" && /^\/mnt\/[a-z]\//i.test(process.execPath)) {
+  console.error(`Refusing Windows Node ${process.execPath}; install Node natively inside WSL.`);
+  process.exit(11);
+}
+
 const required = [
   ".cursor/hooks.json",
   ".cursor/hooks/enforce-codex-wrapper.js",
   ".cursor/rules/codex-orchestrator.mdc",
   ".cursor/codex-a2a-user-rule.txt",
   ".cursor/commands/delegate-to-codex.md",
-  "scripts/invoke-codex-agent.ps1",
-  "scripts/invoke-codex-agent.sh",
+  "scripts/invoke-codex-agent.mjs",
   "scripts/prepare-codex-static-catalog.mjs"
 ];
 
@@ -107,10 +113,7 @@ if (args.has("--copy-user-rule")) {
 
 if (args.has("--smoke-test")) {
   const task = "A2A setup smoke test. Do not edit files or run commands. Reply exactly: CODEX_A2A_OK";
-  const status = isWindows
-    ? run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", resolve(scriptDir, "invoke-codex-agent.ps1"), "-ReadOnly", "-Task", task])
-    : run("bash", [resolve(scriptDir, "invoke-codex-agent.sh"), "--read-only", "--task", task]);
-  if (status !== 0) process.exit(8);
+  if (run(process.execPath, [resolve(scriptDir, "invoke-codex-agent.mjs"), "--read-only", "--task", task]) !== 0) process.exit(8);
 }
 
 console.log(`
