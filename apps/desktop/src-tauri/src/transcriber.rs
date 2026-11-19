@@ -12,7 +12,7 @@
 
 use crate::audio_rules::{kept_part_text, max_upload_bytes, pcm_is_silent, previous_part_text};
 use crate::debug_log::debug_log_line;
-use crate::flac_upload::UploadPart;
+use crate::flac_upload::{self, UploadPart};
 use crate::openai_api::{ApiError, OpenAiApi};
 use crate::saved_parts::{parts_key, SavedPart, SavedParts};
 use crate::wav_file::{read_wav_format, wav_bytes, WavFormat};
@@ -156,25 +156,41 @@ impl<A: OpenAiApi> Transcriber<A> {
             .await?)
     }
 
-    /// Transcribes a saved recording. Its upload parts go in place of the
-    /// saved file, one request each: a dictation's single part as it is, a
-    /// long recording's parts with the text before each as context. The
-    /// saved file itself goes, in parts when it is long, when there are none
-    /// or the service refuses one.
+    /// Transcribes a saved recording. A microphone recording goes as its
+    /// FLAC upload parts (src/flac_upload.rs), made here and deleted when
+    /// this returns: a dictation's single part as it is, a long recording's
+    /// parts with the text before each as context. The saved file itself
+    /// goes, in parts when it is long, for any other recording, when no
+    /// parts could be made or the service refuses one.
     pub async fn transcribe_recording(
         &self,
-        recording: &Recording,
+        audio: &SavedAudio,
+        prompt: &str,
         on_progress: &(dyn Fn(usize, usize) + Send + Sync),
     ) -> Result<String, TranscribeError> {
-        let mut parts = if recording.upload_mime_type.is_empty() {
-            Vec::new()
+        let uploads = if audio.microphone {
+            UploadFiles(flac_upload_parts(&audio.audio_path).await)
         } else {
-            usable_upload_parts(&recording.upload_parts)
+            UploadFiles(Vec::new())
         };
+        self.transcribe_with_uploads(audio, prompt, on_progress, &uploads.0)
+            .await
+    }
+
+    /// Transcribes a saved recording, sending `upload_parts` in place of
+    /// its WAV when they are usable.
+    async fn transcribe_with_uploads(
+        &self,
+        audio: &SavedAudio,
+        prompt: &str,
+        on_progress: &(dyn Fn(usize, usize) + Send + Sync),
+        upload_parts: &[UploadPart],
+    ) -> Result<String, TranscribeError> {
+        let mut parts = usable_upload_parts(upload_parts);
         if parts.len() == 1 {
             let sent = match read_file(parts[0].path.clone()).await {
                 Ok(upload) => {
-                    self.transcribe_bytes(upload, &recording.upload_mime_type, &recording.prompt)
+                    self.transcribe_bytes(upload, flac_upload::MIME_TYPE, prompt)
                         .await
                 }
                 Err(error) => Err(error.into()),
@@ -183,8 +199,7 @@ impl<A: OpenAiApi> Transcriber<A> {
                 Err(error) if error.upload_refused() => debug_log_line(
                     "transcriber",
                     &format!(
-                        "upload part refused mime_type={:?} error={}; sending the saved file",
-                        recording.upload_mime_type,
+                        "upload part refused error={}; sending the saved file",
                         error.describe()
                     ),
                 ),
@@ -193,13 +208,12 @@ impl<A: OpenAiApi> Transcriber<A> {
             parts.clear();
         }
         self.transcribe_file(
-            &recording.audio_path,
-            &recording.mime_type,
-            &recording.prompt,
+            &audio.audio_path,
+            &audio.mime_type,
+            prompt,
             on_progress,
-            recording.parts_path.clone(),
+            audio.parts_path.clone(),
             &parts,
-            &recording.upload_mime_type,
         )
         .await
     }
@@ -208,8 +222,7 @@ impl<A: OpenAiApi> Transcriber<A> {
     /// parts; with `upload_parts`, a WAV goes as those smaller copies, one
     /// request each. With `parts_path`, each finished part is saved there
     /// and a later call with the same audio and settings sends only the rest.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn transcribe_file(
+    async fn transcribe_file(
         &self,
         path: &Path,
         mime_type: &str,
@@ -217,7 +230,6 @@ impl<A: OpenAiApi> Transcriber<A> {
         on_progress: &(dyn Fn(usize, usize) + Send + Sync),
         parts_path: Option<PathBuf>,
         upload_parts: &[UploadPart],
-        upload_mime_type: &str,
     ) -> Result<String, TranscribeError> {
         let size = fs::metadata(path)
             .map(|metadata| metadata.len())
@@ -225,16 +237,11 @@ impl<A: OpenAiApi> Transcriber<A> {
         if size == 0 {
             return Err(TranscribeError::Message("No audio bytes provided".into()));
         }
-        let uploads = if upload_mime_type.is_empty() {
-            &[][..]
-        } else {
-            upload_parts
-        };
         let limit = max_upload_bytes();
-        if is_wav(mime_type) && (size > limit || !uploads.is_empty()) {
+        if is_wav(mime_type) && (size > limit || !upload_parts.is_empty()) {
             let saved = SavedParts::new(parts_path, parts_key(path, &self.model, prompt)?);
             return self
-                .transcribe_wav_file(path, prompt, on_progress, saved, uploads, upload_mime_type)
+                .transcribe_wav_file(path, prompt, on_progress, saved, upload_parts)
                 .await;
         }
         if size > limit {
@@ -259,7 +266,6 @@ impl<A: OpenAiApi> Transcriber<A> {
         on_progress: &(dyn Fn(usize, usize) + Send + Sync),
         mut saved: SavedParts,
         upload_parts: &[UploadPart],
-        upload_mime_type: &str,
     ) -> Result<String, TranscribeError> {
         let format = read_wav_format(&mut File::open(path)?)?;
         let audio_bytes = format.data_bytes;
@@ -364,7 +370,7 @@ impl<A: OpenAiApi> Transcriber<A> {
                 Some(upload) => {
                     let sent = match read_file(upload.clone()).await {
                         Ok(audio) => {
-                            self.transcribe_bytes(audio, upload_mime_type, &contextual_prompt)
+                            self.transcribe_bytes(audio, flac_upload::MIME_TYPE, &contextual_prompt)
                                 .await
                         }
                         Err(error) => Err(error.into()),
@@ -375,8 +381,7 @@ impl<A: OpenAiApi> Transcriber<A> {
                             debug_log_line(
                                 "parts",
                                 &format!(
-                                    "upload part refused part={} mime_type={upload_mime_type:?} \
-                                     error={}; sending the rest as WAV",
+                                    "upload part refused part={} error={}; sending the rest as WAV",
                                     index + 1,
                                     error.describe()
                                 ),
@@ -523,17 +528,68 @@ impl<A: OpenAiApi> Transcriber<A> {
     }
 }
 
-/// A saved recording to transcribe, and the copies made for its upload.
-pub struct Recording {
+/// A saved recording to transcribe. Nothing here is changed or removed.
+pub struct SavedAudio {
     pub audio_path: PathBuf,
     pub mime_type: String,
-    pub prompt: String,
-    /// Smaller lossless copies (FLAC) of the WAV's parts, each with the
-    /// byte range of the WAV's audio it holds.
-    pub upload_parts: Vec<UploadPart>,
-    pub upload_mime_type: String,
-    /// Where the finished parts of a long recording are saved.
+    /// A 16-bit PCM WAV from the microphone, uploaded as smaller lossless
+    /// FLAC parts.
+    pub microphone: bool,
+    /// Where the finished parts of a long recording are saved, so a retry
+    /// after a failure sends only the rest.
     pub parts_path: Option<PathBuf>,
+}
+
+/// The FLAC upload parts of one transcription, deleted when it returns,
+/// fails or is cancelled.
+struct UploadFiles(Vec<UploadPart>);
+
+impl Drop for UploadFiles {
+    fn drop(&mut self) {
+        for part in &self.0 {
+            let _ = fs::remove_file(&part.path);
+        }
+    }
+}
+
+/// Writes the smaller, lossless FLAC parts of a microphone recording that are
+/// uploaded in place of its WAV, one request each, in the recording's
+/// folder. Empty when there are no parts: the WAV is then sent, as it is for
+/// the rest of a recording once the service refuses a part.
+///
+/// Logs how long the encoding took and the sizes before and after, so the
+/// wait it adds between stopping and the text appearing can be checked.
+async fn flac_upload_parts(wav_path: &Path) -> Vec<UploadPart> {
+    let wav_bytes = fs::metadata(wav_path).map(|m| m.len()).unwrap_or(0);
+    let started = Instant::now();
+    let path = wav_path.to_path_buf();
+    let written = blocking(move || {
+        let dir = path.parent().unwrap_or(Path::new("."));
+        flac_upload::write_upload_parts(&path, dir, max_upload_bytes())
+    })
+    .await;
+    let encode_ms = started.elapsed().as_millis();
+    match written {
+        Ok(parts) => {
+            let flac_bytes: u64 = parts
+                .iter()
+                .filter_map(|part| fs::metadata(&part.path).ok())
+                .map(|m| m.len())
+                .sum();
+            debug_log_line(
+                "recording",
+                &format!(
+                    "FLAC upload parts: {} parts, encode_ms={encode_ms} wav_bytes={wav_bytes} flac_bytes={flac_bytes}",
+                    parts.len()
+                ),
+            );
+            parts
+        }
+        Err(error) => {
+            debug_log_line("recording", &format!("FLAC upload parts failed: {error}"));
+            Vec::new()
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -984,11 +1040,6 @@ mod tests {
                 &|current, total| lock(&progress).push((current, total)),
                 Some(path.with_file_name("parts.json")),
                 upload_parts,
-                if upload_parts.is_empty() {
-                    ""
-                } else {
-                    "audio/flac"
-                },
             )
             .await;
         assert!(
@@ -1044,7 +1095,6 @@ mod tests {
                 &|current, total| lock(&progress).push((current, total)),
                 None,
                 &[],
-                "",
             )
             .await
             .unwrap();
@@ -1374,25 +1424,28 @@ mod tests {
         assert_eq!(run.prompts.len(), 3);
     }
 
-    fn recording(dir: &Path, upload_parts: Vec<UploadPart>) -> Recording {
+    /// A saved one-second microphone recording.
+    fn recording(dir: &Path) -> SavedAudio {
         let audio_path = dir.join("audio.wav");
         let pcm: Vec<u8> = (0..24_000_i32)
             .flat_map(|n| (((n % 50) * 200) as i16).to_le_bytes())
             .collect();
         fs::write(&audio_path, wav_bytes(&pcm, 1, 2, 24_000)).unwrap();
-        Recording {
+        SavedAudio {
             audio_path,
             mime_type: "audio/wav".into(),
-            prompt: "Zoon".into(),
-            upload_mime_type: if upload_parts.is_empty() {
-                ""
-            } else {
-                "audio/flac"
-            }
-            .into(),
-            upload_parts,
+            microphone: true,
             parts_path: Some(dir.join("parts.json")),
         }
+    }
+
+    /// The files in `dir`: only the recording once its upload parts are
+    /// deleted.
+    fn files(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
     }
 
     fn single_flac(dir: &Path, bytes: &[u8], end: u64) -> Vec<UploadPart> {
@@ -1408,35 +1461,33 @@ mod tests {
     #[tokio::test]
     async fn a_dictations_single_upload_part_is_sent_in_place_of_the_saved_wav() {
         let dir = TempDir::new();
-        let recording = recording(&dir.0, single_flac(&dir.0, b"fLaC", 48_000));
+        let recording = recording(&dir.0);
         let transcriber = transcriber(FakeApi::transcribing(ok(&["Hello."])));
 
         let text = transcriber
-            .transcribe_recording(&recording, &|_, _| {})
+            .transcribe_recording(&recording, "Zoon", &|_, _| {})
             .await;
 
         assert_eq!(text.unwrap(), "Hello.");
-        assert_eq!(
-            *lock(&transcriber.api.sent),
-            [(
-                "audio/flac".to_string(),
-                "Zoon".to_string(),
-                Some(b"fLaC".to_vec())
-            )]
-        );
+        let sent = lock(&transcriber.api.sent);
+        assert_eq!(sent.len(), 1);
+        let (mime, prompt, upload) = &sent[0];
+        assert_eq!((mime.as_str(), prompt.as_str()), ("audio/flac", "Zoon"));
+        assert!(upload.as_ref().unwrap().starts_with(b"fLaC"));
+        assert_eq!(files(&dir.0), ["audio.wav"]);
     }
 
     #[tokio::test]
     async fn a_refused_single_upload_part_falls_back_to_the_saved_wav_once() {
         let dir = TempDir::new();
-        let recording = recording(&dir.0, single_flac(&dir.0, b"fLaC", 48_000));
+        let recording = recording(&dir.0);
         let transcriber = transcriber(FakeApi::transcribing(vec![
             Err(bad_request(None)),
             Ok("From WAV.".into()),
         ]));
 
         let text = transcriber
-            .transcribe_recording(&recording, &|_, _| {})
+            .transcribe_recording(&recording, "Zoon", &|_, _| {})
             .await;
 
         assert_eq!(text.unwrap(), "From WAV.");
@@ -1447,12 +1498,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["audio/flac", "audio/wav"]
         );
+        assert_eq!(files(&dir.0), ["audio.wav"]);
     }
 
     #[tokio::test]
     async fn other_upload_failures_are_reported_without_a_second_upload() {
         let dir = TempDir::new();
-        let recording = recording(&dir.0, single_flac(&dir.0, b"fLaC", 48_000));
+        let recording = recording(&dir.0);
         let transcriber = transcriber(FakeApi::transcribing(vec![Err(ApiError::Status {
             status: 401,
             code: Some("invalid_api_key".into()),
@@ -1461,7 +1513,7 @@ mod tests {
         })]));
 
         let error = transcriber
-            .transcribe_recording(&recording, &|_, _| {})
+            .transcribe_recording(&recording, "Zoon", &|_, _| {})
             .await
             .unwrap_err();
 
@@ -1470,6 +1522,8 @@ mod tests {
             "Error code: 401 - Incorrect API key provided"
         );
         assert_eq!(lock(&transcriber.api.sent).len(), 1);
+        // The upload part is deleted on an error too.
+        assert_eq!(files(&dir.0), ["audio.wav"]);
     }
 
     #[tokio::test]
@@ -1502,11 +1556,11 @@ mod tests {
             pcm_end: 48_000,
         }];
         for parts in [missing, empty, oversized, misplaced] {
-            let recording = recording(&dir.0, parts);
+            let recording = recording(&dir.0);
             let transcriber = transcriber(FakeApi::transcribing(ok(&["From WAV."])));
 
             let text = transcriber
-                .transcribe_recording(&recording, &|_, _| {})
+                .transcribe_with_uploads(&recording, "Zoon", &|_, _| {}, &parts)
                 .await;
 
             assert_eq!(text.unwrap(), "From WAV.");
@@ -1515,22 +1569,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_microphone_recordings_are_uploaded_as_flac() {
+        let dir = TempDir::new();
+        let imported = SavedAudio {
+            microphone: false,
+            ..recording(&dir.0)
+        };
+        let transcriber = transcriber(FakeApi::transcribing(ok(&["Imported WAV."])));
+
+        let text = transcriber
+            .transcribe_recording(&imported, "Zoon", &|_, _| {})
+            .await;
+
+        assert_eq!(text.unwrap(), "Imported WAV.");
+        assert_eq!(lock(&transcriber.api.sent)[0].0, "audio/wav");
+    }
+
+    #[tokio::test]
     async fn compressed_imports_go_straight_to_the_model() {
         let dir = TempDir::new();
         let path = dir.0.join("import.mp3");
         fs::write(&path, b"ID3 mp3 audio").unwrap();
         let transcriber = transcriber(FakeApi::transcribing(ok(&["Imported."])));
-        let recording = Recording {
+        let recording = SavedAudio {
             audio_path: path,
             mime_type: "audio/mpeg".into(),
-            prompt: String::new(),
-            upload_parts: Vec::new(),
-            upload_mime_type: String::new(),
+            microphone: false,
             parts_path: None,
         };
 
         let text = transcriber
-            .transcribe_recording(&recording, &|_, _| {})
+            .transcribe_recording(&recording, "", &|_, _| {})
             .await;
 
         assert_eq!(text.unwrap(), "Imported.");

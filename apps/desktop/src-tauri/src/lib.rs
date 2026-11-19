@@ -61,7 +61,8 @@ use tauri::{
 };
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
-use transcription_sessions::{FinalizeAudio, SavedAudio, Sessions, SESSION_EVENT};
+use transcriber::SavedAudio;
+use transcription_sessions::{FinalizeAudio, Sessions, SESSION_EVENT};
 use uuid::Uuid;
 
 /// How often the pill checks which monitor the cursor is on while it is
@@ -371,77 +372,25 @@ async fn recording_transcribe(
     close_active_recording(&state.recordings, &root, &recording_id)?;
     let metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
     let audio_path = root.join(&recording_id).join(&metadata.file_name);
-    let mut upload_parts = Vec::new();
-    if metadata.source == "microphone" {
+    let microphone = metadata.source == "microphone";
+    if microphone {
         // A recording the app did not finish (it stopped while recording)
-        // has a header up to a second behind its audio.
+        // has a header up to a second behind its audio. It is repaired
+        // before the session checks the recording for speech.
         recording_store::repair_wav_header(&audio_path, recording_store::MICROPHONE_SAMPLE_RATE)
             .map_err(|e| format!("Could not read saved recording: {e}"))?;
-        upload_parts = flac_upload_parts(audio_path.clone(), root.join(&recording_id)).await;
     }
     let audio = SavedAudio {
         audio_path,
         mime_type: metadata.mime_type,
-        upload_mime_type: if upload_parts.is_empty() {
-            String::new()
-        } else {
-            flac_upload::MIME_TYPE.to_string()
-        },
-        upload_parts: upload_parts.clone(),
+        microphone,
         // A long recording's finished parts are kept here, so a retry after
         // a failure sends only the rest. Removed once it completes.
         parts_path: Some(recording_parts_path(&root, &recording_id)),
     };
-    let result = sessions
+    sessions
         .finalize(&session_id, FinalizeAudio::Saved(audio))
-        .await;
-    for part in upload_parts {
-        let _ = fs::remove_file(part.path);
-    }
-    result
-}
-
-/// Writes the smaller, lossless FLAC parts of a microphone recording that are
-/// uploaded in place of its WAV, one request each. Empty when there are no
-/// parts: the WAV is then sent, as it is for the rest of a recording once
-/// the service refuses a part. They are written in `dir`, the recording's
-/// folder.
-///
-/// Logs how long the encoding took and the sizes before and after, so the
-/// wait it adds between stopping and the text appearing can be checked.
-async fn flac_upload_parts(wav_path: PathBuf, dir: PathBuf) -> Vec<flac_upload::UploadPart> {
-    let wav_bytes = fs::metadata(&wav_path).map(|m| m.len()).unwrap_or(0);
-    let started = Instant::now();
-    let written = tauri::async_runtime::spawn_blocking(move || {
-        flac_upload::write_upload_parts(&wav_path, &dir, audio_rules::max_upload_bytes())
-    })
-    .await;
-    let encode_ms = started.elapsed().as_millis();
-    match written {
-        Ok(Ok(parts)) => {
-            let flac_bytes: u64 = parts
-                .iter()
-                .filter_map(|part| fs::metadata(&part.path).ok())
-                .map(|m| m.len())
-                .sum();
-            debug_log_line(
-                "recording",
-                &format!(
-                    "FLAC upload parts: {} parts, encode_ms={encode_ms} wav_bytes={wav_bytes} flac_bytes={flac_bytes}",
-                    parts.len()
-                ),
-            );
-            parts
-        }
-        Ok(Err(error)) => {
-            debug_log_line("recording", &format!("FLAC upload parts failed: {error}"));
-            Vec::new()
-        }
-        Err(error) => {
-            debug_log_line("recording", &format!("FLAC upload parts stopped: {error}"));
-            Vec::new()
-        }
-    }
+        .await
 }
 
 #[tauri::command(async)]

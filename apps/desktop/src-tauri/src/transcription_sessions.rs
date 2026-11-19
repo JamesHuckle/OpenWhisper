@@ -19,7 +19,6 @@ use crate::audio_rules::{
     echoes_prompt, no_speech_reason, no_speech_reason_from_counters, pcm_peak, pcm_rate, rules,
 };
 use crate::debug_log::debug_log_line;
-use crate::flac_upload::UploadPart;
 use crate::models::{
     default_transcription_model, live_transcription_model, refine_model,
     session_transcription_model,
@@ -27,13 +26,12 @@ use crate::models::{
 use crate::openai_api::{HttpApi, DEFAULT_BASE_URL};
 use crate::realtime::{DeltaHandler, RealtimeStream, FINAL_TIMEOUT};
 use crate::transcriber::{
-    is_short_clean_transcript, PolishSettings, Recording, Transcriber,
+    is_short_clean_transcript, PolishSettings, SavedAudio, Transcriber,
     DEFAULT_POLISH_REASONING_EFFORT,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -69,21 +67,12 @@ pub struct SessionSettings {
     pub standard_only: bool,
 }
 
-/// The saved recording a session is transcribed from, always with Standard
-/// transcription. Nothing here is changed or removed.
-pub struct SavedAudio {
-    pub audio_path: PathBuf,
-    pub mime_type: String,
-    pub upload_parts: Vec<UploadPart>,
-    pub upload_mime_type: String,
-    pub parts_path: Option<PathBuf>,
-}
-
 pub enum FinalizeAudio {
     /// The chunks a Live session was sent, in this raw PCM type.
     Live {
         mime_type: String,
     },
+    /// The saved recording, always transcribed with Standard transcription.
     Saved(SavedAudio),
 }
 
@@ -517,16 +506,8 @@ impl Sessions {
                         json!({ "type": "partial", "text": format!("Transcribing part {current} of {total}...") }),
                     );
                 };
-                let recording = Recording {
-                    audio_path: saved.audio_path,
-                    mime_type: saved.mime_type,
-                    prompt: session.prompt.clone(),
-                    upload_parts: saved.upload_parts,
-                    upload_mime_type: saved.upload_mime_type,
-                    parts_path: saved.parts_path,
-                };
                 transcriber
-                    .transcribe_recording(&recording, &on_progress)
+                    .transcribe_recording(&saved, &session.prompt, &on_progress)
                     .await
                     .map_err(|error| error.to_string())
             }
@@ -673,8 +654,12 @@ mod tests {
     use super::*;
     use crate::openai_api::new_http_client;
     use crate::openai_api::test_server::{Reply, TestServer};
+    use crate::audio_rules::max_upload_bytes;
     use crate::realtime::test_server::{completed, delta, RealtimeServer, Script};
+    use crate::recording_store::wav_header;
     use crate::wav_file::wav_bytes;
+    use std::io::{Seek, SeekFrom, Write};
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     const PROMPT: &str = "Glossary: OpenWhisper, Tauri, Kotlin";
@@ -759,8 +744,7 @@ mod tests {
                     FinalizeAudio::Saved(SavedAudio {
                         audio_path: path,
                         mime_type: "audio/wav".into(),
-                        upload_parts: Vec::new(),
-                        upload_mime_type: String::new(),
+                        microphone: false,
                         parts_path: None,
                     }),
                 )
@@ -958,16 +942,19 @@ mod tests {
             TestServer::start(vec![Reply::transcript("One."), Reply::transcript("Two.")]).await;
         let h = harness(&server.base_url);
         let id = h.start("gpt-transcribe", false, "").await;
-        let path = h.wav(1.0, 6_000);
-        let flac = |n: u64, start: u64, end: u64| {
-            let part = h.dir.join(format!("audio.part-{n}.flac"));
-            std::fs::write(&part, b"fLaC").unwrap();
-            UploadPart {
-                path: part,
-                pcm_start: start,
-                pcm_end: end,
-            }
-        };
+        // A saved WAV too large for one request, with speech at the start
+        // of each part. Sparse, so it costs no disk space.
+        let path = h.dir.join("long.wav");
+        let pcm_bytes = max_upload_bytes() + 48_000;
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&wav_header(pcm_bytes as u32, 1, 2, 24_000))
+            .unwrap();
+        file.set_len(44 + pcm_bytes).unwrap();
+        for offset in [0, pcm_bytes - 48_000] {
+            file.seek(SeekFrom::Start(44 + offset)).unwrap();
+            file.write_all(&tone(1.0, 6_000)).unwrap();
+        }
+        drop(file);
 
         h.sessions
             .finalize(
@@ -975,8 +962,7 @@ mod tests {
                 FinalizeAudio::Saved(SavedAudio {
                     audio_path: path,
                     mime_type: "audio/wav".into(),
-                    upload_parts: vec![flac(1, 0, 24_000), flac(2, 24_000, 48_000)],
-                    upload_mime_type: "audio/flac".into(),
+                    microphone: false,
                     parts_path: Some(h.dir.join("parts.json")),
                 }),
             )
@@ -1020,8 +1006,7 @@ mod tests {
                     FinalizeAudio::Saved(SavedAudio {
                         audio_path: path,
                         mime_type: "audio/wav".into(),
-                        upload_parts: Vec::new(),
-                        upload_mime_type: String::new(),
+                        microphone: false,
                         parts_path: None,
                     }),
                 )
@@ -1064,8 +1049,7 @@ mod tests {
                     FinalizeAudio::Saved(SavedAudio {
                         audio_path: path,
                         mime_type: "audio/wav".into(),
-                        upload_parts: Vec::new(),
-                        upload_mime_type: String::new(),
+                        microphone: false,
                         parts_path: None,
                     }),
                 )

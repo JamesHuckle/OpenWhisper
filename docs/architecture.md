@@ -90,8 +90,8 @@ WhisperFlow is split into two runtime layers, in one process:
    pasted over the Live draft. A Live session handed its saved file is also
    transcribed with the Standard model. For standard transcription the shell
    closes the WAV file and the transcriber reads it from disk in parts
-   (`recording_transcribe`). For a microphone recording the shell first
-   encodes the WAV once as lossless FLAC (`src-tauri/src/flac_upload.rs`,
+   (`recording_transcribe`). For a microphone recording the transcriber
+   first encodes the WAV once as lossless FLAC (`src-tauri/src/flac_upload.rs`,
    about half the bytes for speech), split into parts that each fit one
    upload, with the byte range of the WAV each holds. The log records how
    long it took (`encode_ms`, about 60 ms per minute of audio in an ignored
@@ -99,8 +99,8 @@ WhisperFlow is split into two runtime layers, in one process:
    checks the WAV for silence and uploads the parts,
    one request each; a long recording's later parts are prompted with the
    text before them. When the service refuses a FLAC part the rest of the
-   recording goes as WAV parts. The shell deletes the FLAC parts when the
-   request finishes. A recording sent in parts has each finished part saved
+   recording goes as WAV parts. The transcriber deletes the FLAC parts when
+   it returns, fails or is cancelled. A recording sent in parts has each finished part saved
    in `parts.json` beside it (`parts_path`), so a retry after a failure sends
    only the parts that did not finish (the same file and key the Python
    worker used, so a retry begun before still sends only the rest). A silent part (the same silence level
