@@ -64,30 +64,6 @@ use tauri_plugin_opener::OpenerExt;
 use transcription_sessions::{FinalizeAudio, SavedAudio, Sessions, SESSION_EVENT};
 use uuid::Uuid;
 
-#[cfg(target_os = "windows")]
-fn primary_overlay_anchor() -> Option<OverlayAnchor> {
-    overlay_positioner::primary_monitor_anchor().map(|(monitor_id, center_x, bottom_y, dpi)| {
-        OverlayAnchor {
-            monitor_id,
-            center_x,
-            bottom_y,
-            dpi,
-        }
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn cursor_overlay_anchor() -> Option<OverlayAnchor> {
-    overlay_positioner::cursor_monitor_anchor().map(|(monitor_id, center_x, bottom_y, dpi)| {
-        OverlayAnchor {
-            monitor_id,
-            center_x,
-            bottom_y,
-            dpi,
-        }
-    })
-}
-
 /// How often the pill checks which monitor the cursor is on while it is
 /// moving to another one.
 #[cfg(target_os = "windows")]
@@ -141,7 +117,9 @@ fn resolve_overlay_anchor(state: &Arc<AppState>) -> Result<Option<OverlayAnchor>
 
     #[cfg(target_os = "windows")]
     if guard.is_none() {
-        if let Some(anchor) = cursor_overlay_anchor().or_else(primary_overlay_anchor) {
+        if let Some(anchor) = overlay_positioner::cursor_monitor_anchor()
+            .or_else(overlay_positioner::primary_monitor_anchor)
+        {
             *guard = Some(anchor);
         }
     }
@@ -1287,7 +1265,7 @@ pub fn run() {
 
                         monitor_transition.reset();
                         // Follow the cursor until the pill is on its monitor.
-                        while let Some(cursor_anchor) = cursor_overlay_anchor() {
+                        while let Some(cursor_anchor) = overlay_positioner::cursor_monitor_anchor() {
                             let current_anchor = monitor_handle
                                 .state::<Arc<AppState>>()
                                 .overlay_anchor

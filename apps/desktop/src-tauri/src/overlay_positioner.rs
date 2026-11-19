@@ -1,129 +1,69 @@
 //! Finds the monitor under the cursor and places the pill window with Win32
 //! calls (Windows only). The placement maths is in `overlay_geometry.rs`.
+//! Callers pass and get window and monitor handles as `isize`; they become
+//! `HWND` and `HMONITOR` only here.
 
-use crate::overlay_geometry::{overlay_bottom_anchor, PlacementVisibility, Position, Size};
+use crate::overlay_geometry::{
+    overlay_bottom_anchor, OverlayAnchor, PlacementVisibility, Position, Size,
+};
+use std::ffi::c_void;
 use std::mem::size_of;
+use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONULL,
+    MONITOR_DEFAULTTOPRIMARY, MONITOR_FROM_FLAGS,
+};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorPos, GetWindowRect, SetWindowPos, HWND_TOPMOST, MONITORINFOF_PRIMARY,
+    SET_WINDOW_POS_FLAGS, SWP_DEFERERASE, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+    SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+};
 
-const MONITOR_DEFAULTTOPRIMARY: u32 = 1;
-const MONITOR_DEFAULTTONULL: u32 = 0;
-const MDT_EFFECTIVE_DPI: u32 = 0;
-const HWND_TOPMOST: isize = -1;
-const SWP_NOSIZE: u32 = 0x0001;
-const SWP_NOMOVE: u32 = 0x0002;
-const SWP_NOZORDER: u32 = 0x0004;
-const SWP_NOREDRAW: u32 = 0x0008;
-const SWP_NOACTIVATE: u32 = 0x0010;
-const SWP_SHOWWINDOW: u32 = 0x0040;
-const SWP_HIDEWINDOW: u32 = 0x0080;
-const SWP_NOCOPYBITS: u32 = 0x0100;
-const SWP_NOOWNERZORDER: u32 = 0x0200;
-const SWP_DEFERERASE: u32 = 0x2000;
-
-#[repr(C)]
-struct Point {
-    x: i32,
-    y: i32,
+fn to_hwnd(handle: isize) -> HWND {
+    HWND(handle as *mut c_void)
 }
 
-#[repr(C)]
-struct Rect {
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
-}
-
-#[repr(C)]
-struct MonitorInfo {
-    cb_size: u32,
-    rc_monitor: Rect,
-    rc_work: Rect,
-    dw_flags: u32,
-}
-
-#[link(name = "user32")]
-extern "system" {
-    fn MonitorFromPoint(point: Point, dw_flags: u32) -> isize;
-    fn GetMonitorInfoW(h_monitor: isize, lpmi: *mut MonitorInfo) -> i32;
-    fn GetCursorPos(lp_point: *mut Point) -> i32;
-    fn GetDpiForWindow(hwnd: isize) -> u32;
-    fn GetWindowRect(hwnd: isize, rect: *mut Rect) -> i32;
-    fn SetWindowPos(
-        hwnd: isize,
-        insert_after: isize,
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-        flags: u32,
-    ) -> i32;
-}
-
-#[link(name = "shcore")]
-extern "system" {
-    fn GetDpiForMonitor(
-        h_monitor: isize,
-        dpi_type: u32,
-        dpi_x: *mut u32,
-        dpi_y: *mut u32,
-    ) -> i32;
-}
-
-fn monitor_anchor_at(point: Point, fallback: u32) -> Option<(isize, i32, i32, u32)> {
+fn monitor_anchor_at(point: POINT, fallback: MONITOR_FROM_FLAGS) -> Option<OverlayAnchor> {
     let monitor = unsafe { MonitorFromPoint(point, fallback) };
-    if monitor == 0 {
+    if monitor.0.is_null() {
         return None;
     }
 
-    let mut info = MonitorInfo {
-        cb_size: size_of::<MonitorInfo>() as u32,
-        rc_monitor: Rect {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        },
-        rc_work: Rect {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        },
-        dw_flags: 0,
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
     };
-
-    if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
         return None;
     }
 
     let mut dpi_x = 96;
     let mut dpi_y = 96;
-    if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) } != 0 {
+    if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }.is_err() {
         dpi_x = 96;
     }
 
-    Some((
-        monitor,
-        (info.rc_work.left + info.rc_work.right) / 2,
-        overlay_bottom_anchor(
-            info.rc_monitor.bottom,
-            info.rc_work.bottom,
-            info.dw_flags & 1 != 0,
+    Some(OverlayAnchor {
+        monitor_id: monitor.0 as isize,
+        center_x: (info.rcWork.left + info.rcWork.right) / 2,
+        bottom_y: overlay_bottom_anchor(
+            info.rcMonitor.bottom,
+            info.rcWork.bottom,
+            info.dwFlags & MONITORINFOF_PRIMARY != 0,
             dpi_x,
         ),
-        dpi_x,
-    ))
+        dpi: dpi_x,
+    })
 }
 
-pub fn primary_monitor_anchor() -> Option<(isize, i32, i32, u32)> {
-    monitor_anchor_at(Point { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY)
+pub fn primary_monitor_anchor() -> Option<OverlayAnchor> {
+    monitor_anchor_at(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY)
 }
 
-pub fn cursor_monitor_anchor() -> Option<(isize, i32, i32, u32)> {
-    let mut cursor = Point { x: 0, y: 0 };
-    if unsafe { GetCursorPos(&mut cursor) } == 0 {
-        return None;
-    }
+pub fn cursor_monitor_anchor() -> Option<OverlayAnchor> {
+    let mut cursor = POINT::default();
+    unsafe { GetCursorPos(&mut cursor) }.ok()?;
     // A cursor crossing a physical gap between displays belongs to no
     // monitor yet. Keep the committed placement until it is truly on one.
     monitor_anchor_at(cursor, MONITOR_DEFAULTTONULL)
@@ -132,7 +72,7 @@ pub fn cursor_monitor_anchor() -> Option<(isize, i32, i32, u32)> {
 /// The monitor under a screen point, or 0 between displays. One cheap call,
 /// so the mouse hook can make it on every cursor move.
 pub fn monitor_at(x: i32, y: i32) -> isize {
-    unsafe { MonitorFromPoint(Point { x, y }, MONITOR_DEFAULTTONULL) }
+    unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL) }.0 as isize
 }
 
 pub fn set_window_placement(
@@ -142,29 +82,25 @@ pub fn set_window_placement(
     visibility: PlacementVisibility,
 ) -> Result<(), String> {
     let visibility_flags = match visibility {
-        PlacementVisibility::Keep => 0,
+        PlacementVisibility::Keep => SET_WINDOW_POS_FLAGS(0),
         PlacementVisibility::HideWithoutRedraw => {
             SWP_HIDEWINDOW | SWP_NOREDRAW | SWP_NOCOPYBITS | SWP_DEFERERASE
         }
         PlacementVisibility::Show => SWP_SHOWWINDOW,
     };
     let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | visibility_flags;
-    let succeeded = unsafe {
+    unsafe {
         SetWindowPos(
-            hwnd,
-            0,
+            to_hwnd(hwnd),
+            None,
             position.x,
             position.y,
             size.width as i32,
             size.height as i32,
             flags,
         )
-    };
-    if succeeded == 0 {
-        Err("SetWindowPos failed while committing overlay placement".to_string())
-    } else {
-        Ok(())
     }
+    .map_err(|_| "SetWindowPos failed while committing overlay placement".to_string())
 }
 
 /// Re-insert the overlay at the very top of the always-on-top band.
@@ -178,31 +114,25 @@ pub fn set_window_placement(
 /// whenever the pill is shown or updated while visible. SWP_NOACTIVATE
 /// keeps it from stealing keyboard focus from the user's real window.
 pub fn reassert_topmost(hwnd: isize) {
-    unsafe {
+    let _ = unsafe {
         SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
+            to_hwnd(hwnd),
+            Some(HWND_TOPMOST),
             0,
             0,
             0,
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-        );
-    }
+        )
+    };
 }
 
 pub fn window_placement(
     hwnd: isize,
 ) -> Option<(Position, Size, u32)> {
-    let mut rect = Rect {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
-        return None;
-    }
+    let hwnd = to_hwnd(hwnd);
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
     Some((
         Position::new(rect.left, rect.top),
         Size::new(
