@@ -114,10 +114,12 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
   const toasts: string[] = [];
   const failures: { message: string; recordingSaved: boolean }[] = [];
   const remembered: string[] = [];
+  // The model the menu has selected; a test may change it between recordings.
+  const config = { model };
   const dictation = createDictationController({
     invoke: app.invoke,
     capture: mic.capture,
-    settings: async () => ({ hasOpenaiApiKey: true, transcriptionModel: model }),
+    settings: async () => ({ hasOpenaiApiKey: true, transcriptionModel: config.model }),
     apiKeyKnownMissing: () => false,
     setState: (next) => states.push(next),
     showToast: (message) => toasts.push(message),
@@ -132,7 +134,7 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
     closeMenu: () => undefined,
     log: () => undefined,
   });
-  return { app, mic, dictation, states, toasts, failures, remembered };
+  return { app, mic, dictation, states, toasts, failures, remembered, config };
 }
 
 async function settle() {
@@ -477,6 +479,30 @@ describe("dictation controller", () => {
     expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
       { recordingId: "rec-2", sessionId: "s-2" },
     ]);
+  });
+
+  it("never types a Standard recording into the field when a cancelled Live start opens late", async () => {
+    const { app, dictation, config } = setup(LIVE_TRANSCRIPTION_MODEL);
+    app.hold("worker_start_session");
+    void dictation.toggleRecording();
+    await settle();
+    await dictation.cancelTranscription();
+
+    config.model = DEFAULT_TRANSCRIPTION_MODEL;
+    app.answers.recording_begin = { id: "rec-2" };
+    const second = dictation.pressToTalkStart();
+    await settle();
+    // The cancelled Live start opens only now, while the Standard one is starting.
+    app.release("worker_start_session", { session_id: "s-1" });
+    await settle();
+    app.release("worker_start_session", { session_id: "s-2" });
+    await second;
+    await settle();
+    expect(dictation.state).toBe("recording");
+
+    await dictation.receiveSessionEvent({ session_id: "s-2", event: { type: "partial", text: "Hi" } });
+    await settle();
+    expect(app.commands()).not.toContain("type_to_target");
   });
 
   it("finalizes once, after the last samples are saved, when the session opens during a stop", async () => {

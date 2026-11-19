@@ -235,6 +235,10 @@ export function createDictationController(deps: DictationDeps) {
       pendingAudioBytes = 0;
       sessionFailure = "";
       shouldPasteFinalTranscript = true;
+      // Set from this start's own session; kept only once the start is still
+      // current, so a cancelled start that answers late never marks a newer
+      // recording Live.
+      let liveSession = false;
 
       const result = await startCaptureFirst({
         lockPasteTarget: () => invoke("capture_paste_target"),
@@ -293,7 +297,7 @@ export function createDictationController(deps: DictationDeps) {
               const session = (await invoke("worker_start_session", {
                 profileId: "default",
               })) as { session_id: string };
-              sessionWasLive = true;
+              liveSession = true;
               return session;
             } catch (error) {
               if (cancelCount !== cancelsBefore) throw error;
@@ -322,6 +326,7 @@ export function createDictationController(deps: DictationDeps) {
         return;
       }
       currentSessionId = result.session_id;
+      sessionWasLive = liveSession;
       audioQueue.attachSession(currentSessionId);
       finalTranscript = "";
       liveTranscript = "";
