@@ -24,6 +24,9 @@ pub const PARTS_FILE_NAME: &str = "parts.json";
 /// The error of a recording the app stopped during, set by [`recover_interrupted`].
 pub const RECORDING_INTERRUPTED_MESSAGE: &str =
     "Recording stopped when OpenWhisper closed. Its audio is saved; press Transcribe.";
+/// The error of such a recording whose audio file could not be read.
+pub const RECORDING_AUDIO_LOST_MESSAGE: &str =
+    "Recording stopped when OpenWhisper closed, and its audio could not be read.";
 /// The error of a transcription the app stopped during (Android's wording).
 pub const TRANSCRIPTION_INTERRUPTED_MESSAGE: &str =
     "Transcription stopped when OpenWhisper closed. \
@@ -134,27 +137,34 @@ pub fn finish_recording(
 /// first, and the finished parts of a transcription are kept. Run once at
 /// start-up, before the window can start a recording or a transcription.
 pub fn recover_interrupted(root: &std::path::Path) -> Result<()> {
+    // A recording whose metadata cannot be written does not stop the others.
+    let mut first_error = None;
     for mut metadata in list_recording_metadata(root)? {
         match metadata.status.as_str() {
             "recording" => {
                 let audio_path = root.join(&metadata.id).join(&metadata.file_name);
-                // An unreadable file is still marked failed: transcribing it
-                // then says why.
-                if let Ok(bytes) = recording_store::repair_wav_header(
+                // An unreadable file is still marked failed, without the
+                // advice to transcribe it.
+                metadata.error = match recording_store::repair_wav_header(
                     &audio_path,
                     recording_store::MICROPHONE_SAMPLE_RATE,
                 ) {
-                    metadata.bytes = bytes;
-                }
-                metadata.error = RECORDING_INTERRUPTED_MESSAGE.to_string();
+                    Ok(bytes) => {
+                        metadata.bytes = bytes;
+                        RECORDING_INTERRUPTED_MESSAGE.to_string()
+                    }
+                    Err(_) => RECORDING_AUDIO_LOST_MESSAGE.to_string(),
+                };
             }
             "transcribing" => metadata.error = TRANSCRIPTION_INTERRUPTED_MESSAGE.to_string(),
             _ => continue,
         }
         metadata.status = "failed".to_string();
-        write_recording_metadata(root, &metadata)?;
+        if let Err(error) = write_recording_metadata(root, &metadata) {
+            first_error.get_or_insert(error);
+        }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
 }
 
 pub fn prune_recordings(root: &std::path::Path, keep: usize) -> Result<()> {
@@ -475,11 +485,44 @@ mod tests {
         assert!(parts.exists(), "a retry sends only the parts that did not finish");
         let lost = read_recording_metadata(&root, "lost").unwrap();
         assert_eq!(lost.status, "failed");
+        assert_eq!(lost.error, RECORDING_AUDIO_LOST_MESSAGE);
         assert_eq!(lost.bytes, 44);
         assert_eq!(fs::read(recording_metadata_path(&root, "done")).unwrap(), done_details);
         // Running it again changes nothing more.
         recover_interrupted(&root).unwrap();
         assert_eq!(read_recording_metadata(&root, "crashed").unwrap().status, "failed");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_recording_whose_metadata_cannot_be_written_does_not_stop_the_older_ones() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("openwhisper-recover-test-{}", Uuid::new_v4()));
+        for (id, created_at_ms) in [("newest", 2), ("older", 1)] {
+            fs::create_dir_all(root.join(id)).unwrap();
+            let metadata = RecordingMetadata {
+                id: id.to_string(),
+                created_at_ms,
+                name: id.to_string(),
+                source: "microphone".to_string(),
+                mime_type: "audio/wav".to_string(),
+                file_name: "audio.wav".to_string(),
+                status: "transcribing".to_string(),
+                bytes: 44,
+                transcript: String::new(),
+                error: String::new(),
+            };
+            write_recording_metadata(&root, &metadata).unwrap();
+        }
+        let locked = root.join("newest");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = recover_interrupted(&root);
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(read_recording_metadata(&root, "older").unwrap().status, "failed");
         fs::remove_dir_all(root).unwrap();
     }
 
