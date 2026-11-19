@@ -55,6 +55,8 @@ class DictationCoordinator(
         if (state !is DictationState.Finalizing) return
         onTranscriptReady(text)
         transition(DictationState.ReadyToInsert(text))
+        // The render callback may have cancelled the session; then nothing is inserted.
+        if (state !is DictationState.ReadyToInsert) return
         val captured = session
         if (captured == null) {
             transition(DictationState.Failed("Captured editor session was lost"))

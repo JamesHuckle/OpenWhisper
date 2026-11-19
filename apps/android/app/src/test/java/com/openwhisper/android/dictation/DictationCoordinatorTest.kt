@@ -124,6 +124,26 @@ class DictationCoordinatorTest {
     }
 
     @Test
+    fun cancellingWhileReadyToInsertDoesNotCommit() {
+        val backend = FakeDictationBackend()
+        val editor = FakeEditorSessionPort()
+        val states = mutableListOf<DictationState>()
+        lateinit var coordinator: DictationCoordinator
+        coordinator = DictationCoordinator(backend, editor, { state ->
+            states += state
+            if (state is DictationState.ReadyToInsert) coordinator.cancel()
+        })
+
+        coordinator.onMicPressed()
+        coordinator.onMicPressed()
+        backend.listener?.onFinal("cancelled words")
+
+        assertEquals(0, editor.commitCount)
+        assertEquals(DictationState.Idle, states.last())
+        assertEquals(DictationState.Idle, coordinator.currentState)
+    }
+
+    @Test
     fun lateFinalTranscriptCannotCorruptIdleState() {
         val backend = FakeDictationBackend()
         val editor = FakeEditorSessionPort()
