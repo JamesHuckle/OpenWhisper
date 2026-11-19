@@ -279,6 +279,47 @@ mod tests {
     }
 
     #[test]
+    fn the_microphone_header_is_the_standard_44_bytes() {
+        let expected = [
+            &b"RIFF"[..],
+            &40_u32.to_le_bytes(),
+            b"WAVEfmt ",
+            &16_u32.to_le_bytes(),
+            &1_u16.to_le_bytes(),
+            &1_u16.to_le_bytes(),
+            &24_000_u32.to_le_bytes(),
+            &48_000_u32.to_le_bytes(),
+            &2_u16.to_le_bytes(),
+            &16_u16.to_le_bytes(),
+            b"data",
+            &4_u32.to_le_bytes(),
+        ]
+        .concat();
+        assert_eq!(wav_header(4, 24_000).to_vec(), expected);
+    }
+
+    #[test]
+    fn imported_files_are_stored_under_one_extension_per_type() {
+        for (name, stored) in [
+            ("a.wav", "wav"),
+            ("a.MP3", "mp3"),
+            ("a.mpeg", "mp3"),
+            ("a.mpga", "mp3"),
+            ("a.m4a", "m4a"),
+            ("a.mp4", "mp4"),
+            ("a.ogg", "ogg"),
+            ("a.webm", "webm"),
+            ("Imported audio", "webm"),
+        ] {
+            assert_eq!(
+                safe_extension(name, mime_type_for_file_name(name)),
+                stored,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn imported_files_are_named_by_their_extension() {
         assert_eq!(mime_type_for_file_name("Memo.WAV"), "audio/wav");
         assert_eq!(mime_type_for_file_name("talk.mp3"), "audio/mpeg");

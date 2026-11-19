@@ -173,6 +173,18 @@ mod tests {
     }
 
     #[test]
+    fn a_built_wav_is_its_header_then_its_audio() {
+        let mono = wav_bytes(&[1, 0, 2, 0], 1, 2, 24_000);
+        let header = crate::recording_store::wav_header(4, 24_000);
+        assert_eq!(mono, [&header[..], &[1, 0, 2, 0]].concat());
+
+        let stereo = wav_bytes(&[0; 8], 2, 2, 16_000);
+        assert_eq!(u32::from_le_bytes(stereo[28..32].try_into().unwrap()), 64_000);
+        assert_eq!(u16::from_le_bytes(stereo[32..34].try_into().unwrap()), 4);
+        assert_eq!(u16::from_le_bytes(stereo[34..36].try_into().unwrap()), 16);
+    }
+
+    #[test]
     fn a_header_that_promises_more_than_the_file_holds_is_cut_to_whole_frames() {
         let mut wav = wav_bytes(&[0; 10], 1, 2, 24_000);
         // An unfinished recording: the header says far more, a byte is cut off.

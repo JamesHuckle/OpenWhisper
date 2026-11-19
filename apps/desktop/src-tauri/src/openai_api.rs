@@ -807,6 +807,25 @@ mod tests {
         assert_eq!(file.2, b"RIFFaudio");
     }
 
+    #[test]
+    fn uploads_are_named_by_their_audio_type() {
+        for (mime_type, extension) in [
+            ("audio/wav", ".wav"),
+            ("audio/x-wav", ".wav"),
+            ("audio/mpeg", ".mp3"),
+            ("audio/mp3", ".mp3"),
+            ("audio/x-m4a", ".m4a"),
+            ("audio/ogg", ".ogg"),
+            ("audio/flac", ".flac"),
+            ("audio/x-flac", ".flac"),
+            ("audio/webm", ".webm"),
+            ("audio/webm;codecs=opus", ".webm"),
+            ("audio/aiff", ".webm"),
+        ] {
+            assert_eq!(extension_for_mime(mime_type), extension, "{mime_type}");
+        }
+    }
+
     #[tokio::test]
     async fn flac_upload_is_named_as_flac_and_an_empty_prompt_is_left_out() {
         let server = TestServer::start(vec![Reply::json(200, json!({"text": "Plain."}))]).await;
