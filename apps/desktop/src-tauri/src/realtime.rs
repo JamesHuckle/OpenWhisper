@@ -99,8 +99,10 @@ impl RealtimeStream {
                 },
             },
         });
-        sink.send(Message::text(update.to_string()))
+        // Bounded, as a peer that stops reading would otherwise hold it for ever.
+        tokio::time::timeout(OPEN_TIMEOUT, sink.send(Message::text(update.to_string())))
             .await
+            .map_err(|_| "Realtime connection timed out".to_string())?
             .map_err(|error| format!("Realtime connection failed: {error}"))?;
 
         let (finish, outcome) = watch::channel(None);
@@ -144,10 +146,15 @@ impl RealtimeStream {
         if self.closed.load(Ordering::SeqCst) {
             return Err("Realtime transcription session is closed".into());
         }
-        let result = match self
-            .send(json!({ "type": "input_audio_buffer.commit" }))
-            .await
-        {
+        // The commit's send is bounded too: a peer that stops reading leaves it
+        // waiting on a full socket, and the saved-audio fallback never starts.
+        let commit = tokio::time::timeout(
+            timeout,
+            self.send(json!({ "type": "input_audio_buffer.commit" })),
+        )
+        .await
+        .unwrap_or_else(|_| Err("Realtime transcription timed out".into()));
+        let result = match commit {
             Ok(()) => {
                 let mut outcome = self.outcome.clone();
                 let waited =
@@ -530,6 +537,27 @@ mod tests {
 
         assert!(error.contains("closed"), "{error}");
         assert!(stream.append(&[1, 2]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_commit_that_cannot_be_sent_times_out() {
+        let server = RealtimeServer::start(vec![Script::default()]).await;
+        let (on_delta, _) = collecting();
+        let stream = RealtimeStream::connect(&server.base_url, "sk-test", "m", on_delta)
+            .await
+            .unwrap();
+        // Holds the socket, as a send stuck on a peer that stopped reading does.
+        let _stuck = stream.sink.lock().await;
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            stream.finalize(Duration::from_millis(100)),
+        )
+        .await
+        .expect("finalize returned")
+        .unwrap_err();
+
+        assert_eq!(error, "Realtime transcription timed out");
     }
 
     #[tokio::test]
