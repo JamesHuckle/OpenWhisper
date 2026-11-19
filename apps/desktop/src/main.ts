@@ -35,6 +35,7 @@ import {
   type WidgetState,
   type WorkerSessionEvent,
 } from "./dictation-controller";
+import { createSettingsSaver } from "./settings-save";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -298,16 +299,10 @@ let settingsLoaded = false;
 let storedKeyPreview = "";
 let showingStoredKeyPreview = false;
 let keyInputDirty = false;
-let keySaveInFlight = false;
 let keyRevealInFlight = false;
 let promptDirty = false;
-let promptSaveInFlight = false;
-let modelSaveInFlight = false;
 let refineDirty = false;
-let refineSaveInFlight = false;
 let showIdlePill = true;
-let showIdlePillSaveInFlight = false;
-let holdToTalkSaveInFlight = false;
 let manualOverlayReveal = false;
 let widgetHovered = false;
 let expandTimeoutId: number | null = null;
@@ -1237,21 +1232,20 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
   }
 }
 
-async function persistKeyInput() {
-  if (keySaveInFlight || !keyInputDirty) return;
+const { saveSettings, isSaving } = createSettingsSaver<AppSettings>({
+  save: (patch) => invoke<AppSettings>("app_save_settings", patch),
+  apply: applySettingsUi,
+  showToast,
+});
 
-  keySaveInFlight = true;
-  const key = menuKeyInput.value.trim();
-  try {
-    const updated = await invoke<AppSettings>("app_save_settings", { openaiApiKey: key });
-    applySettingsUi(updated, updated.hasOpenaiApiKey ? "Key saved" : "Key cleared");
-    showToast(updated.hasOpenaiApiKey ? "API key saved" : "API key cleared");
-  } catch (err) {
-    keyInputDirty = true;
-    showToast(err instanceof Error ? err.message : String(err));
-  } finally {
-    keySaveInFlight = false;
-  }
+async function persistKeyInput() {
+  if (!keyInputDirty) return;
+  await saveSettings({ openaiApiKey: menuKeyInput.value.trim() }, {
+    busy: "key",
+    label: (updated) => (updated.hasOpenaiApiKey ? "Key saved" : "Key cleared"),
+    done: (updated) => (updated.hasOpenaiApiKey ? "API key saved" : "API key cleared"),
+    onError: () => { keyInputDirty = true; },
+  });
 }
 
 async function revealStoredKeyForEdit() {
@@ -1295,58 +1289,30 @@ async function currentSettings(): Promise<AppSettings> {
   return appSettings ?? invoke<AppSettings>("app_get_settings");
 }
 
-menuShowIdlePillToggle.addEventListener("change", async () => {
-  if (showIdlePillSaveInFlight) return;
+menuShowIdlePillToggle.addEventListener("change", () =>
+  saveSettings({ showIdlePill: menuShowIdlePillToggle.checked }, {
+    busy: "showIdlePill",
+    done: (updated) => (updated.showIdlePill ? "Idle pill shown" : "Idle pill hidden"),
+    onError: loadSettings,
+  }),
+);
 
-  showIdlePillSaveInFlight = true;
-  try {
-    const updated = await invoke<AppSettings>("app_save_settings", {
-      showIdlePill: menuShowIdlePillToggle.checked,
-    });
-    applySettingsUi(updated);
-    showToast(updated.showIdlePill ? "Idle pill shown" : "Idle pill hidden");
-  } catch (err) {
-    showToast(err instanceof Error ? err.message : String(err));
-    await loadSettings();
-  } finally {
-    showIdlePillSaveInFlight = false;
-  }
-});
+menuHoldToTalkToggle.addEventListener("change", () =>
+  saveSettings({ holdToTalk: menuHoldToTalkToggle.checked }, {
+    busy: "holdToTalk",
+    done: (updated) => (updated.holdToTalk ? "Hold to talk enabled" : "Press to start and stop enabled"),
+    onError: loadSettings,
+  }),
+);
 
-menuHoldToTalkToggle.addEventListener("change", async () => {
-  if (holdToTalkSaveInFlight) return;
-
-  holdToTalkSaveInFlight = true;
-  try {
-    const updated = await invoke<AppSettings>("app_save_settings", {
-      holdToTalk: menuHoldToTalkToggle.checked,
-    });
-    applySettingsUi(updated);
-    showToast(updated.holdToTalk ? "Hold to talk enabled" : "Press to start and stop enabled");
-  } catch (err) {
-    showToast(err instanceof Error ? err.message : String(err));
-    await loadSettings();
-  } finally {
-    holdToTalkSaveInFlight = false;
-  }
-});
-
-menuModelSelect.addEventListener("change", async () => {
-  if (modelSaveInFlight) return;
+menuModelSelect.addEventListener("change", () => {
+  if (isSaving("model")) return;
   syncModelHint();
-  modelSaveInFlight = true;
-  try {
-    const updated = await invoke<AppSettings>("app_save_settings", {
-      transcriptionModel: menuModelSelect.value,
-    });
-    applySettingsUi(updated);
-    showToast("Transcription model saved");
-  } catch (err) {
-    showToast(err instanceof Error ? err.message : String(err));
-    await loadSettings();
-  } finally {
-    modelSaveInFlight = false;
-  }
+  return saveSettings({ transcriptionModel: menuModelSelect.value }, {
+    busy: "model",
+    done: () => "Transcription model saved",
+    onError: loadSettings,
+  });
 });
 
 async function ensureAutostartEnabled() {
@@ -1412,21 +1378,13 @@ menuKeyLink.addEventListener("click", async (event) => {
 // Settings (Transcription Prompt)
 // ---------------------------------------------------------------------------
 async function persistPromptInput() {
-  if (promptSaveInFlight || !promptDirty) return;
-
-  promptSaveInFlight = true;
-  const prompt = menuPromptInput.value;
-  try {
-    const updated = await invoke<AppSettings>("app_save_settings", { transcriptionPrompt: prompt });
-    promptDirty = false;
-    applySettingsUi(updated, updated.hasOpenaiApiKey ? "Key configured" : "Not configured");
-    showToast("Transcription prompt saved");
-  } catch (err) {
-    promptDirty = true;
-    showToast(err instanceof Error ? err.message : String(err));
-  } finally {
-    promptSaveInFlight = false;
-  }
+  if (!promptDirty) return;
+  await saveSettings({ transcriptionPrompt: menuPromptInput.value }, {
+    busy: "prompt",
+    done: () => "Transcription prompt saved",
+    saved: () => { promptDirty = false; },
+    onError: () => { promptDirty = true; },
+  });
 }
 
 menuPromptInput.addEventListener("input", () => {
@@ -1442,22 +1400,12 @@ menuPromptInput.addEventListener("blur", () => {
 // Settings (Refine)
 // ---------------------------------------------------------------------------
 async function persistRefineInput() {
-  if (refineSaveInFlight || !refineDirty) return;
-
-  refineSaveInFlight = true;
-  try {
-    const updated = await invoke<AppSettings>("app_save_settings", {
-      refineEnabled: menuRefineToggle.checked,
-      refinePrompt: menuRefinePromptInput.value,
-    });
-    refineDirty = false;
-    applySettingsUi(updated, updated.hasOpenaiApiKey ? "Key configured" : "Not configured");
-  } catch (err) {
-    refineDirty = true;
-    showToast(err instanceof Error ? err.message : String(err));
-  } finally {
-    refineSaveInFlight = false;
-  }
+  if (!refineDirty) return;
+  await saveSettings({ refineEnabled: menuRefineToggle.checked, refinePrompt: menuRefinePromptInput.value }, {
+    busy: "refine",
+    saved: () => { refineDirty = false; },
+    onError: () => { refineDirty = true; },
+  });
 }
 
 menuRefineToggle.addEventListener("change", () => {
