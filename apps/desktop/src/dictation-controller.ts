@@ -172,10 +172,12 @@ export function createDictationController(deps: DictationDeps) {
     if (streamAudioToWorker) audioQueue.append(combined.buffer);
   }
 
+  // True once the recording's metadata is written.
   async function finishCurrentRecording(status: string, transcript: string, error: string) {
     const recordingId = currentRecordingId;
-    if (!recordingId) return;
+    if (!recordingId) return false;
     currentRecordingId = null;
+    let saved = true;
     try {
       await invoke("recording_finish", {
         recordingId,
@@ -184,9 +186,11 @@ export function createDictationController(deps: DictationDeps) {
         error,
       });
     } catch (finishError) {
+      saved = false;
       log(`recording metadata update failed=${errorMessage(finishError)}`);
     }
     deps.recordingsChanged();
+    return saved;
   }
 
   async function handleTranscriptionFailure(error: unknown) {

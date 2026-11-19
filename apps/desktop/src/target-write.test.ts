@@ -33,6 +33,7 @@ describe("final transcript notices", () => {
 function delivery(options: {
   paste?: boolean;
   fail?: string;
+  saveFails?: boolean;
   storageThrows?: boolean;
   cancelWhileTyping?: boolean;
 }) {
@@ -51,7 +52,9 @@ function delivery(options: {
     paste: options.paste ?? true,
     owned: () => owner === "session-1",
     saveRecording: async (transcript) => {
+      if (options.saveFails) return false;
       saved.push({ status: "complete", transcript });
+      return true;
     },
     rememberLocally: (transcript) => {
       remembered = transcript;
@@ -95,6 +98,14 @@ describe("delivering the final transcript", () => {
     await expect(deliverFinalTranscript(run.steps)).resolves.toBeUndefined();
     expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
     expect(run.notices).toEqual(["Transcript saved; could not paste it. Copy it from the menu"]);
+    expectNoNewTranscription(run.commands);
+  });
+
+  it("never says the transcript was saved when saving it and pasting it both fail", async () => {
+    const run = delivery({ fail: "insert_final_text", saveFails: true });
+    await expect(deliverFinalTranscript(run.steps)).resolves.toBeUndefined();
+    expect(run.remembered()).toBe("Hello world");
+    expect(run.notices).toEqual(["Transcript not saved; could not paste it. Copy it from the menu now"]);
     expectNoNewTranscription(run.commands);
   });
 

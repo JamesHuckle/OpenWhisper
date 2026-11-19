@@ -42,8 +42,8 @@ export type FinalTranscriptDelivery = {
   paste: boolean;
   /** False once a cancel or a new recording takes the session over. */
   owned: () => boolean;
-  /** Saves the transcript with the recording, so the history card keeps it. */
-  saveRecording: (transcript: string) => Promise<void>;
+  /** Saves the transcript with the recording, so the history card keeps it; false when it could not. */
+  saveRecording: (transcript: string) => Promise<boolean>;
   /** Keeps the transcript as the last one (memory and localStorage). */
   rememberLocally: (transcript: string) => void;
   /** Resolves once live typing into the field has finished. */
@@ -61,7 +61,7 @@ export type FinalTranscriptDelivery = {
 export async function deliverFinalTranscript(steps: FinalTranscriptDelivery): Promise<void> {
   const { invoke, transcript, owned, notify, log } = steps;
   if (!owned()) return;
-  await steps.saveRecording(transcript);
+  const saved = await steps.saveRecording(transcript);
   try {
     steps.rememberLocally(transcript);
   } catch (error) {
@@ -79,10 +79,13 @@ export async function deliverFinalTranscript(steps: FinalTranscriptDelivery): Pr
     }
   } catch (error) {
     log(`final transcript delivery failed=${describe(error)}`);
+    // The menu copies the last transcript, kept in memory even when the
+    // recording's history card could not save it.
+    const step = steps.paste ? "paste" : "copy";
     notify(
-      steps.paste
-        ? "Transcript saved; could not paste it. Copy it from the menu"
-        : "Transcript saved; could not copy it. Copy it from the menu",
+      saved
+        ? `Transcript saved; could not ${step} it. Copy it from the menu`
+        : `Transcript not saved; could not ${step} it. Copy it from the menu now`,
       6000,
     );
   }
