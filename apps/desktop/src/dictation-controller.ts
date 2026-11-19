@@ -115,8 +115,13 @@ export function createDictationController(deps: DictationDeps) {
   // finishes the recording waits for them too, so they are saved and sent.
   let captureStopping: Promise<void> | null = null;
   // Audio captured before the backup file opened, kept by the number of the
-  // cancel that stopped its recording, so the backup still saves it once it opens.
-  const audioCancelledBeforeBackup = new Map<number, Uint8Array[]>();
+  // cancel that stopped its recording, so the backup still saves it once it
+  // opens. A stop still waiting for the microphone adds its last samples to
+  // the same parts, so the backup waits for it first.
+  const audioCancelledBeforeBackup = new Map<
+    number,
+    { parts: Uint8Array[]; stopping: Promise<void> | null }
+  >();
   let sessionFailure = "";
   let shouldPasteFinalTranscript = true;
   let pressToTalkHeld = false;
@@ -264,8 +269,10 @@ export function createDictationController(deps: DictationDeps) {
           if (cancelCount !== cancelsBefore) {
             // Cancelled while the file was opening; the cancel already tidied
             // up, and a new recording may have started since.
-            const audio = audioCancelledBeforeBackup.get(cancelsBefore + 1);
+            const cancelled = audioCancelledBeforeBackup.get(cancelsBefore + 1);
             audioCancelledBeforeBackup.delete(cancelsBefore + 1);
+            if (cancelled?.stopping) await cancelled.stopping.catch(() => undefined);
+            const audio = cancelled?.parts;
             if (audio?.length) {
               await sendAudioChunk(
                 invoke,
@@ -499,9 +506,12 @@ export function createDictationController(deps: DictationDeps) {
   async function cancelOnce() {
     cancelCount += 1;
     operationId += 1;
-    if (!currentRecordingId && pendingAudioParts.length > 0) {
+    if (!currentRecordingId && (pendingAudioParts.length > 0 || captureStopping)) {
       // The backup is still opening; it saves this audio once it opens.
-      audioCancelledBeforeBackup.set(cancelCount, pendingAudioParts);
+      audioCancelledBeforeBackup.set(cancelCount, {
+        parts: pendingAudioParts,
+        stopping: captureStopping,
+      });
     }
     // Audio still waiting for a full batch is saved with the recording, and
     // so are the microphone's last samples when a stop is waiting for them.

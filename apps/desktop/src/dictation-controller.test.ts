@@ -260,6 +260,30 @@ describe("dictation controller", () => {
     expect(app.commands()).not.toContain("worker_start_session");
   });
 
+  it("saves the microphone's last samples when cancelled during a stop while recording_begin is pending", async () => {
+    const { app, mic, dictation } = setup();
+    app.hold("recording_begin");
+    void dictation.toggleRecording();
+    await settle();
+    mic.hear(100, 7);
+
+    mic.holdStop();
+    const stopping = dictation.stopRecording();
+    const cancelling = dictation.cancelTranscription();
+    app.release("recording_begin");
+    await settle();
+    mic.hear(50, 8);
+    mic.finishStop();
+    await Promise.all([stopping, cancelling]);
+    await settle();
+
+    const saved = app.named("recording_append_chunk").map((call) => Array.from(call.args as Uint8Array));
+    expect(saved.flat()).toEqual([...Array(100).fill(7), ...Array(50).fill(8)]);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
+  });
+
   it("stops the session that was starting when cancelled while worker_start_session is pending", async () => {
     const { app, dictation } = setup();
     app.hold("worker_start_session");
