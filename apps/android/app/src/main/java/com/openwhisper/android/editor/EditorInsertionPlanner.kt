@@ -8,21 +8,13 @@ data class EditorSnapshot(
     val isSensitive: Boolean = false,
 )
 
-enum class EditorRejection {
-    PASSWORD,
-    SENSITIVE,
-}
-
 sealed interface InsertionPlan {
     data class SetText(val text: String, val cursor: Int) : InsertionPlan
-    data class Rejected(val reason: EditorRejection) : InsertionPlan
     data object NoOp : InsertionPlan
 }
 
 class EditorInsertionPlanner {
     fun plan(snapshot: EditorSnapshot, transcript: String): InsertionPlan {
-        if (snapshot.isPassword) return InsertionPlan.Rejected(EditorRejection.PASSWORD)
-        if (snapshot.isSensitive) return InsertionPlan.Rejected(EditorRejection.SENSITIVE)
         if (transcript.isBlank()) return InsertionPlan.NoOp
 
         val selectionIsValid = snapshot.selectionStart in 0..snapshot.text.length &&

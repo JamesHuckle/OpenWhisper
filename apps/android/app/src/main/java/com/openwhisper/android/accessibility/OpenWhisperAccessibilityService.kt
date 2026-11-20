@@ -33,8 +33,6 @@ import com.openwhisper.android.dictation.DictationState
 import com.openwhisper.android.dictation.SelectingDictationBackend
 import com.openwhisper.android.editor.EditorSessionController
 import com.openwhisper.android.editor.InputConnectionEditorProvider
-import com.openwhisper.android.editor.InputConnectionEditorSessionController
-import com.openwhisper.android.editor.RoutingEditorSessionPort
 import com.openwhisper.android.overlay.OverlayContext
 import com.openwhisper.android.overlay.OverlayDecision
 import com.openwhisper.android.overlay.OverlayKeyGeometry
@@ -77,20 +75,11 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             editorFor = editorProvider::focusedEditor,
             inputConnectionEditor = { accessibilityInputMethod?.currentEditor() },
         )
-        val accessibilityEditor = EditorSessionController(editorProvider)
-        val editorController = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            InputConnectionEditorSessionController(
-                provider = {
-                    if (editorProvider.focusedEditor() == null) {
-                        accessibilityInputMethod?.currentEditor()
-                    } else {
-                        null
-                    }
-                },
-            ).let { RoutingEditorSessionPort(it, accessibilityEditor) }
-        } else {
-            accessibilityEditor
-        }
+        // The input method exists only on Android 13 and newer; below that it stays null.
+        val editorController = EditorSessionController(
+            accessibility = editorProvider,
+            inputConnection = { accessibilityInputMethod?.currentEditor() },
+        )
         val recordingStore = RecordingStore(this)
         val liveBackend = BufferedDictationBackend(
             recorder = AndroidAudioRecorder(this, recordingStore) { level ->

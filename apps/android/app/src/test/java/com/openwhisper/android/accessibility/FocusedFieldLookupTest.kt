@@ -132,7 +132,7 @@ class FocusedFieldLookupTest {
     ) : InputConnectionEditor {
         override val stableId: String = "input"
 
-        override fun snapshot(): EditorSnapshot? =
+        override fun surroundingText(): EditorSnapshot? =
             throw AssertionError("The overlay must not copy the field's text")
 
         override fun commitText(text: String): Boolean = throw AssertionError("unexpected write")

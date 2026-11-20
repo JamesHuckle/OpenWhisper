@@ -58,26 +58,6 @@ class EditorInsertionPlannerTest {
     }
 
     @Test
-    fun rejectsPasswordFields() {
-        val result = planner.plan(
-            EditorSnapshot(text = "secret", selectionStart = 6, selectionEnd = 6, isPassword = true),
-            transcript = "do not insert",
-        )
-
-        assertEquals(InsertionPlan.Rejected(EditorRejection.PASSWORD), result)
-    }
-
-    @Test
-    fun rejectsPlatformSensitiveFields() {
-        val result = planner.plan(
-            EditorSnapshot(text = "", selectionStart = 0, selectionEnd = 0, isSensitive = true),
-            transcript = "do not insert",
-        )
-
-        assertEquals(InsertionPlan.Rejected(EditorRejection.SENSITIVE), result)
-    }
-
-    @Test
     fun emptyTranscriptsAreNoOps() {
         val result = planner.plan(EditorSnapshot("Hello", 5, 5), "  ")
         assertTrue(result is InsertionPlan.NoOp)

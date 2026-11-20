@@ -85,7 +85,7 @@ class OpenWhisperInputMethod(
         override val availability: EditorAvailability,
         private val connection: AccessibilityInputConnection,
     ) : InputConnectionEditor {
-        override fun snapshot(): EditorSnapshot? {
+        override fun surroundingText(): EditorSnapshot? {
             val surrounding = connection.getSurroundingText(
                 SURROUNDING_TEXT_LIMIT,
                 SURROUNDING_TEXT_LIMIT,
