@@ -31,7 +31,9 @@ test("hook allows the checked wrapper and blocks a direct codex launch", () => {
 });
 
 // A throwaway Git repository holding a copy of the launcher, with a stub
-// `codex` on PATH that records its arguments and the prompt it was sent.
+// `codex` on PATH that records its arguments and the prompt it was sent. The
+// stub is a Node script where npm installs Codex's, so on Windows the
+// launcher finds it behind codex.cmd as it does the real one.
 function sandbox(stubExit = 0) {
   const dir = mkdtempSync(join(tmpdir(), "codex-a2a-"));
   const root = join(dir, "repo");
@@ -41,14 +43,24 @@ function sandbox(stubExit = 0) {
   const bin = join(dir, "bin");
   mkdirSync(bin);
   const record = join(dir, "record");
-  writeFileSync(join(bin, "codex"), `#!/bin/sh
-printf '%s\\n' "$@" > "${record}.args"
-cat > "${record}.stdin"
-printf '%s' "$CURSOR_CODEX_A2A_DEPTH" > "${record}.depth"
-exit ${stubExit}
+  const stub = join(bin, "node_modules", "@openai", "codex", "bin", "codex.js");
+  mkdirSync(dirname(stub), { recursive: true });
+  writeFileSync(stub, `const { readFileSync, writeFileSync } = require("node:fs");
+const record = ${JSON.stringify(record)};
+writeFileSync(record + ".args", process.argv.slice(2).map(arg => arg + "\\n").join(""));
+writeFileSync(record + ".stdin", readFileSync(0));
+writeFileSync(record + ".depth", process.env.CURSOR_CODEX_A2A_DEPTH || "");
+process.exit(${stubExit});
 `);
-  chmodSync(join(bin, "codex"), 0o755);
-  const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CODEX_HOME: join(dir, "codex-home") };
+  if (process.platform === "win32") {
+    writeFileSync(join(bin, "codex.cmd"), `@"${process.execPath}" "${stub}" %*\r\n`);
+  } else {
+    writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${stub}" "$@"\n`);
+    chmodSync(join(bin, "codex"), 0o755);
+  }
+  // Windows spells it Path; one PATH entry keeps the stub first everywhere.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH"));
+  Object.assign(env, { PATH: `${bin}${delimiter}${process.env.PATH}`, CODEX_HOME: join(dir, "codex-home") });
   delete env.CURSOR_CODEX_A2A_DEPTH;
   delete env.CURSOR_CODEX_MODEL;
   const gitDir = spawnSync("git", ["-C", root, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).stdout.trim();
@@ -73,12 +85,12 @@ test("launcher runs codex exec with the pinned model, static catalog and prompt"
   assert.deepEqual(readFileSync(`${box.record}.args`, "utf8").trimEnd().split("\n"), [
     "exec", "--cd", box.root, "--sandbox", "read-only", "--color", "never",
     "--model", "gpt-5.6-sol", "--disable", "remote_models",
-    "-c", `model_catalog_json="${catalog}"`, "-"
+    "-c", `model_catalog_json="${catalog.replace(/\\/g, "/")}"`, "-"
   ]);
   assert.ok(existsSync(catalog));
   const prompt = readFileSync(`${box.record}.stdin`, "utf8");
   assert.match(prompt, /^You are the sole implementation agent for this task\.\n\nTASK\nSay hello\n/);
-  assert.match(prompt, new RegExp(`- Work only in: ${box.root}\n`));
+  assert.ok(prompt.includes(`- Work only in: ${box.root}\n`));
   assert.match(prompt, /STARTING GIT STATUS\n\?\? scripts\/\n$/);
   assert.equal(readFileSync(`${box.record}.depth`, "utf8"), "1");
   assert.ok(!existsSync(join(box.gitDir, "cursor-codex-a2a.lock")), "lock released");
