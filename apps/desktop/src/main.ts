@@ -374,7 +374,7 @@ const dictation = createDictationController({
     localStorage.setItem("ow_last_transcript", transcript);
   },
   recordingsChanged: () => void refreshRecordings(),
-  closeMenu,
+  closeMenu: () => void collapseOverlay(),
   log: logDebug,
 });
 
@@ -425,11 +425,7 @@ function syncWidgetFrame() {
 
 function syncApiKeyBubble() {
   const show = settingsLoaded && !hasOpenaiApiKey && dictation.state === "idle";
-  if (show) {
-    apiKeyBubble.classList.remove("hidden");
-  } else {
-    apiKeyBubble.classList.add("hidden");
-  }
+  apiKeyBubble.classList.toggle("hidden", !show);
 }
 
 function setWidgetHovered(next: boolean) {
@@ -532,7 +528,7 @@ function renderMicList() {
     el.addEventListener("click", () => {
       selectedMicId = dev.id;
       renderMicList();
-      closeMenu();
+      void collapseOverlay();
     });
     micList.appendChild(el);
   }
@@ -553,20 +549,9 @@ async function openMenu() {
   await applyOverlayLayout();
 }
 
-function closeMenu() {
-  void collapseOverlay();
-}
-
 async function collapseOverlay() {
   menuOpen = false;
-  if (expandTimeoutId !== null) {
-    clearTimeout(expandTimeoutId);
-    expandTimeoutId = null;
-  }
-  if (collapseTimeoutId !== null) {
-    clearTimeout(collapseTimeoutId);
-    collapseTimeoutId = null;
-  }
+  clearHoverTimers();
   setWidgetHovered(false);
   micMenu.classList.add("hidden");
   // A failure panel only lingers while its widget notice is still showing.
@@ -601,48 +586,46 @@ apiKeyBubble.addEventListener("keydown", (e) => {
   }
 });
 
-function handleWidgetClick(e: MouseEvent) {
-  if (menuOpen) {
-    closeMenu();
-    e.stopPropagation();
-    e.preventDefault();
-    return;
-  }
+/** Stops a recording or cancels a transcription; false when neither is running. */
+function stopOrCancel(): boolean {
+  if (dictation.state === "recording") void dictation.stopRecording();
+  else if (dictation.state === "transcribing") void dictation.cancelTranscription();
+  else return false;
+  return true;
+}
 
-  if (dictation.state === "recording" || dictation.state === "transcribing") {
-    e.stopPropagation();
-    e.preventDefault();
-    if (dictation.state === "recording") {
-      void dictation.stopRecording();
-    } else {
-      void dictation.cancelTranscription();
-    }
+function handleWidgetClick(e: MouseEvent) {
+  if (menuOpen) void collapseOverlay();
+  else if (!stopOrCancel()) {
+    if (btnMic.contains(e.target as Node) || btnDropdown.contains(e.target as Node)) return;
+    void dictation.toggleRecording();
     return;
   }
-  if (btnMic.contains(e.target as Node) || btnDropdown.contains(e.target as Node)) return;
-  void dictation.toggleRecording();
+  e.stopPropagation();
+  e.preventDefault();
 }
 
 function handleWidgetKeydown(e: KeyboardEvent) {
-  if (dictation.state === "recording" || dictation.state === "transcribing") {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      if (dictation.state === "recording") void dictation.stopRecording();
-      else {
-        void dictation.cancelTranscription();
-      }
-    }
+  if (e.key !== "Enter" && e.key !== " ") return;
+  if (stopOrCancel()) {
+    e.preventDefault();
     return;
   }
-  if ((e.key === "Enter" || e.key === " ") && !btnMic.contains(e.target as Node) && !btnDropdown.contains(e.target as Node)) {
-    e.preventDefault();
-    void dictation.toggleRecording();
-  }
+  if (btnMic.contains(e.target as Node) || btnDropdown.contains(e.target as Node)) return;
+  e.preventDefault();
+  void dictation.toggleRecording();
 }
 
 widget.addEventListener("click", handleWidgetClick, true);
 
 widget.addEventListener("keydown", handleWidgetKeydown);
+
+function clearHoverTimers() {
+  if (expandTimeoutId !== null) clearTimeout(expandTimeoutId);
+  if (collapseTimeoutId !== null) clearTimeout(collapseTimeoutId);
+  expandTimeoutId = null;
+  collapseTimeoutId = null;
+}
 
 function handleWidgetPointerEnter() {
   if (collapseTimeoutId !== null) {
@@ -660,14 +643,7 @@ function handleWidgetPointerLeave(event: PointerEvent) {
   if (event.relatedTarget instanceof Node && widget.contains(event.relatedTarget)) {
     return;
   }
-  if (expandTimeoutId !== null) {
-    clearTimeout(expandTimeoutId);
-    expandTimeoutId = null;
-  }
-  if (collapseTimeoutId !== null) {
-    clearTimeout(collapseTimeoutId);
-    collapseTimeoutId = null;
-  }
+  clearHoverTimers();
   if (!widgetHovered) return;
   collapseTimeoutId = window.setTimeout(() => {
     collapseTimeoutId = null;
@@ -680,12 +656,12 @@ widget.addEventListener("pointerleave", handleWidgetPointerLeave);
 
 document.addEventListener("click", (e) => {
   if (!micMenu.contains(e.target as Node) && !micMenu.classList.contains("hidden")) {
-    closeMenu();
+    void collapseOverlay();
   }
 });
 
 window.addEventListener("blur", () => {
-  if (menuOpen) closeMenu();
+  if (menuOpen) void collapseOverlay();
 });
 
 // ---------------------------------------------------------------------------
@@ -1241,15 +1217,13 @@ async function ensureAutostartEnabled() {
   }
 }
 
-menuKeyInput.addEventListener("focus", () => {
+function editStoredKey() {
   selectStoredKeyPreview();
   void revealStoredKeyForEdit();
-});
+}
 
-menuKeyInput.addEventListener("click", () => {
-  selectStoredKeyPreview();
-  void revealStoredKeyForEdit();
-});
+menuKeyInput.addEventListener("focus", editStoredKey);
+menuKeyInput.addEventListener("click", editStoredKey);
 
 menuKeyInput.addEventListener("beforeinput", () => {
   if (showingStoredKeyPreview) {
@@ -1306,10 +1280,7 @@ menuPromptInput.addEventListener("input", () => {
   promptDirty = true;
 });
 
-menuPromptInput.addEventListener("blur", () => {
-  if (!promptDirty) return;
-  void persistPromptInput();
-});
+menuPromptInput.addEventListener("blur", () => void persistPromptInput());
 
 // ---------------------------------------------------------------------------
 // Settings (Refine)
@@ -1333,10 +1304,7 @@ menuRefinePromptInput.addEventListener("input", () => {
   refineDirty = true;
 });
 
-menuRefinePromptInput.addEventListener("blur", () => {
-  if (!refineDirty) return;
-  void persistRefineInput();
-});
+menuRefinePromptInput.addEventListener("blur", () => void persistRefineInput());
 
 // ---------------------------------------------------------------------------
 // Foreground app name: read when the menu opens, then sent by Rust only when
