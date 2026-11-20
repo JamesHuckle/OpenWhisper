@@ -102,8 +102,7 @@ WhisperFlow is split into two runtime layers, in one process:
    recording goes as WAV parts. The transcriber deletes the FLAC parts when
    it returns, fails or is cancelled. A recording sent in parts has each finished part saved
    in `parts.json` beside it (`parts_path`), so a retry after a failure sends
-   only the parts that did not finish (the same file and key the Python
-   worker used, so a retry begun before still sends only the rest). A silent part (the same silence level
+   only the parts that did not finish. A silent part (the same silence level
    as the whole-recording check) is never uploaded and is saved as finished
    and empty, and a part whose text only repeats its prompt is kept with no
    text, as on Android. The shell deletes that file once the transcription completes

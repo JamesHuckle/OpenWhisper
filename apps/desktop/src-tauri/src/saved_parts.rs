@@ -9,8 +9,6 @@
 //!
 //! The desktop names the file (`parts.json` in the recording's folder) and
 //! deletes it when the transcription completes or the recording is pruned.
-//! The format and key are the ones the Python worker used before, so a retry
-//! of a recording that worker began still sends only the rest.
 //!
 //! This file needs no Tauri, so its tests run in `core-tests`.
 
@@ -28,7 +26,8 @@ use std::time::UNIX_EPOCH;
 /// had text.
 /// 3: the desktop's FLAC upload parts set the boundaries, and a part that
 /// only repeats its prompt is saved with no text.
-pub const CHUNKING_VERSION: u32 = 3;
+/// 4: the key is a hash of the inputs as a JSON array.
+pub const CHUNKING_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedPart {
@@ -59,46 +58,20 @@ pub fn parts_key(audio_path: &Path, model: &str, prompt: &str) -> io::Result<Str
 }
 
 /// The key for audio of `audio_bytes` last changed at `modified_ns`
-/// (nanoseconds since 1970). It hashes the same text Python's
-/// `json.dumps(..., sort_keys=True)` wrote, so keys saved before still match.
+/// (nanoseconds since 1970): a SHA-256 hash of every input, in hex.
 fn parts_key_for(audio_bytes: u64, modified_ns: u128, model: &str, prompt: &str) -> String {
-    let material = format!(
-        "{{\"audio_bytes\": {audio_bytes}, \"audio_modified_ns\": {modified_ns}, \
-         \"model\": {}, \"prompt\": {}, \"version\": {CHUNKING_VERSION}}}",
-        ascii_json_string(model),
-        ascii_json_string(prompt),
-    );
-    Sha256::digest(material.as_bytes())
+    let material = serde_json::to_vec(&(
+        audio_bytes,
+        modified_ns.to_string(),
+        model,
+        prompt,
+        CHUNKING_VERSION,
+    ))
+    .expect("numbers and strings always serialize");
+    Sha256::digest(material)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-/// A JSON string with every character outside printable ASCII escaped, as
-/// Python's json module writes it.
-fn ascii_json_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            ' '..='~' => out.push(c),
-            _ => {
-                let mut units = [0_u16; 2];
-                for unit in c.encode_utf16(&mut units) {
-                    out.push_str(&format!("\\u{unit:04x}"));
-                }
-            }
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// The parts saved for one key. Without a path nothing is read or saved.
@@ -192,21 +165,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_key_matches_the_one_the_python_worker_saved() {
-        // From Python: hashlib.sha256(json.dumps({...}, sort_keys=True).encode()).
+    fn the_same_audio_and_settings_always_get_the_same_key() {
+        let prompt = "Glossary: Zoon \u{2014} caf\u{e9} \u{1f600}\n\"q\"\t\\";
+        let key = parts_key_for(1234, 1_700_000_000_123_456_789, "gpt-transcribe", prompt);
         assert_eq!(
-            parts_key_for(
-                1234,
-                1_700_000_000_123_456_789,
-                "gpt-transcribe",
-                "Glossary: Zoon \u{2014} caf\u{e9} \u{1f600}\n\"q\"\t\\ \u{1}\u{7f}",
-            ),
-            "79a750850f3db85c1182b43e823d7bb2805ef0738b9e9559cc93a13400db67cf"
+            key,
+            parts_key_for(1234, 1_700_000_000_123_456_789, "gpt-transcribe", prompt)
         );
+        assert_eq!(key.len(), 64);
+        assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
     #[test]
-    fn another_model_or_prompt_gets_its_own_key() {
+    fn another_size_time_model_or_prompt_gets_its_own_key() {
         let key = parts_key_for(10, 20, "gpt-transcribe", "Zoon");
         assert_ne!(key, parts_key_for(10, 20, "gpt-transcribe-next", "Zoon"));
         assert_ne!(
@@ -214,6 +185,7 @@ mod tests {
             parts_key_for(10, 20, "gpt-transcribe", "Zoon Robotics")
         );
         assert_ne!(key, parts_key_for(10, 21, "gpt-transcribe", "Zoon"));
+        assert_ne!(key, parts_key_for(11, 20, "gpt-transcribe", "Zoon"));
     }
 
     #[test]
@@ -242,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_the_python_worker_wrote_is_read() {
+    fn a_file_with_spaced_json_and_a_silent_part_is_read() {
         let path =
             std::env::temp_dir().join(format!("openwhisper-parts-{}.json", uuid::Uuid::new_v4()));
         fs::write(
