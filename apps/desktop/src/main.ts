@@ -119,21 +119,12 @@ app.innerHTML = `
     <div id="widget" tabindex="0" role="button" aria-label="Click to start or stop transcription">
       <div class="widget-surface" aria-hidden="true"></div>
 
-      <span class="meter meter-wave-bars" aria-hidden="true">
+      <span class="meter" aria-hidden="true">
         <span class="meter-baseline" aria-hidden="true"></span>
         <svg class="meter-idle-wave" viewBox="0 0 76 28" aria-hidden="true">
           <path class="meter-idle-wave-path" d="M0,14 C6,11 12,17 18,14 C24,11 30,17 36,14 C42,11 48,17 54,14 C60,11 66,17 72,14 C74,12 76,14" fill="none" stroke="currentColor" stroke-width="0.9" stroke-linecap="round" />
         </svg>
         <canvas id="meter-canvas" class="meter-canvas" width="48" height="28"></canvas>
-        <span class="meter-idle-bars">
-          <span class="wave-bar" data-bar="0"></span>
-          <span class="wave-bar" data-bar="1"></span>
-          <span class="wave-bar" data-bar="2"></span>
-          <span class="wave-bar" data-bar="3"></span>
-          <span class="wave-bar" data-bar="4"></span>
-          <span class="wave-bar" data-bar="5"></span>
-          <span class="wave-bar" data-bar="6"></span>
-        </span>
       </span>
 
       <button id="btn-stop" class="stop-btn" type="button" title="Stop recording" aria-hidden="true">
@@ -265,7 +256,6 @@ app.innerHTML = `
 const apiKeyBubble = document.getElementById("api-key-bubble")!;
 const widget = document.getElementById("widget")!;
 const meterCanvas = document.getElementById("meter-canvas") as HTMLCanvasElement;
-const waveBars = document.querySelectorAll<HTMLElement>(".wave-bar");
 const btnMic = document.getElementById("btn-mic") as HTMLButtonElement;
 const btnDropdown = document.getElementById("btn-dropdown") as HTMLButtonElement;
 const micMenu = document.getElementById("mic-menu")!;
@@ -351,13 +341,12 @@ const dictation = createDictationController({
       },
     });
   },
-  stopMeter(waiting) {
+  stopMeter() {
     if (meterStop) {
       meterStop();
       meterStop = null;
       delete widget.dataset.silent;
     }
-    if (waiting) setWaveBarLevels(Array(VOLUME_BAR_COUNT).fill(0.5));
   },
   showTranscript(text, final) {
     widget.dataset.liveTranscript = text;
@@ -682,18 +671,8 @@ function setState(next: WidgetState) {
 }
 
 // ---------------------------------------------------------------------------
-// Meter — scrolling waveform (recording) + idle bars (transcribing)
+// Meter
 // ---------------------------------------------------------------------------
-const VOLUME_BAR_COUNT = 7;
-
-function setWaveBarLevels(levels: number[]) {
-  waveBars.forEach((bar, i) => {
-    const level = levels[i] ?? 0.15;
-    const clamped = Math.max(0.15, Math.min(level, 1));
-    bar.style.setProperty("--wave-level", clamped.toFixed(3));
-  });
-}
-
 // The scrolling waveform while recording; new bars enter on the right.
 const METER_BAR_WIDTH = 3;
 const METER_COLOR = "#9ef0c9";

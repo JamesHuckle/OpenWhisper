@@ -52,8 +52,8 @@ export type DictationDeps = {
   clearNotice: () => void;
   /** Capture runs: start the waveform and the silence check. */
   startMeter: () => void;
-  /** Stops them; waiting is true when the pill now waits for the transcript. */
-  stopMeter: (waiting: boolean) => void;
+  /** Stops them. */
+  stopMeter: () => void;
   /** Shows the transcript so far on the pill; final is true for a finished piece. */
   showTranscript: (text: string, final: boolean) => void;
   clearTranscript: () => void;
@@ -414,7 +414,7 @@ export function createDictationController(deps: DictationDeps) {
     log(`stopRecording enter state=${state} session=${currentSessionId ?? "none"}`);
     if (state !== "recording") return;
     setState("transcribing");
-    deps.stopMeter(true);
+    deps.stopMeter();
     const cancelsBefore = cancelCount;
 
     const stopping = (async () => {
@@ -655,7 +655,7 @@ export function createDictationController(deps: DictationDeps) {
   function cleanup() {
     log(`cleanup state=${state} session=${currentSessionId ?? "none"}`);
     sessionWasLive = false;
-    deps.stopMeter(false);
+    deps.stopMeter();
     capture.discard();
     currentSessionId = null;
     audioQueue.reset();
