@@ -36,9 +36,13 @@ const isWsl = !isWindows && (
 const environment = isWindows ? "native Windows" : isWsl ? "WSL2" : "Linux/macOS";
 
 // A Windows Node found on the WSL PATH under /mnt/<drive>/ would install and
-// run the Windows Codex against this Linux checkout.
-if (process.platform === "linux" && /^\/mnt\/[a-z]\//i.test(process.execPath)) {
-  console.error(`Refusing Windows Node ${process.execPath}; install Node natively inside WSL.`);
+// run the Windows Codex against this Linux checkout. Started from WSL, that
+// node.exe reports win32 and sees the checkout through \\wsl$ or \\wsl.localhost.
+if (
+  (process.platform === "linux" && /^\/mnt\/[a-z]\//i.test(process.execPath)) ||
+  (isWindows && /^\\\\wsl(?:\$|\.localhost)\\/i.test(repoRoot))
+) {
+  console.error(`Refusing Windows Node ${process.execPath} for the WSL checkout ${repoRoot}; install Node natively inside WSL.`);
   process.exit(11);
 }
 
