@@ -310,18 +310,24 @@ impl<A: OpenAiApi> Transcriber<A> {
                 mut end,
                 upload,
             } = parts[index].clone();
+            // A part finished on an earlier try is looked up before its audio
+            // is read, so a retry reads only the parts still to send.
+            let mut done = saved.get(index, start, end).map(|part| part.text.clone());
             let mut frames = Vec::new();
-            if upload.is_none() {
+            if done.is_none() && upload.is_none() {
                 frames = read_audio(path.to_path_buf(), format, start, end).await?;
                 if frames.is_empty() {
                     break;
                 }
+                // A read that ended early (the file shrank after its format
+                // was read) is looked up again with the range it read.
                 end = start + frames.len() as u64;
+                done = saved.get(index, start, end).map(|part| part.text.clone());
             }
-            if let Some(done) = saved.get(index, start, end) {
-                // Finished on an earlier try: its text is reused, and builds
-                // the next part's prompt as before.
-                transcripts.push(done.text.clone());
+            if let Some(text) = done {
+                // Its text is reused, and builds the next part's prompt as
+                // before.
+                transcripts.push(text);
                 index += 1;
                 continue;
             }
@@ -661,6 +667,8 @@ async fn read_file(path: PathBuf) -> io::Result<Vec<u8>> {
 
 /// The WAV's audio from byte `start` to `end` (or its end).
 async fn read_audio(path: PathBuf, format: WavFormat, start: u64, end: u64) -> io::Result<Vec<u8>> {
+    #[cfg(test)]
+    lock(&tests::AUDIO_READS).push((path.clone(), start, end));
     blocking(move || {
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(format.data_offset + start))?;
@@ -864,6 +872,9 @@ mod tests {
 
     const SPEECH: i16 = 8_000;
 
+    /// Every WAV byte range `read_audio` read, with its file.
+    pub(super) static AUDIO_READS: Mutex<Vec<(PathBuf, u64, u64)>> = Mutex::new(Vec::new());
+
     fn part_bytes() -> u64 {
         (max_upload_bytes() - 128) / 2 * 2
     }
@@ -1030,6 +1041,8 @@ mod tests {
         prompts: Vec<String>,
         sent: Vec<(String, Option<Vec<u8>>)>,
         progress: Vec<(usize, usize)>,
+        /// The WAV byte ranges read, in order.
+        reads: Vec<(u64, u64)>,
     }
 
     /// Transcribes `path` with its parts saved beside it, and FLAC upload
@@ -1043,6 +1056,8 @@ mod tests {
         let count = replies.len();
         let transcriber = transcriber(FakeApi::transcribing(replies));
         let progress = Mutex::new(Vec::new());
+        // Each test has its own folder, so reads of `path` are this run's.
+        let reads_before = audio_reads(path).len();
         let result = transcriber
             .transcribe_file(
                 path,
@@ -1067,7 +1082,17 @@ mod tests {
                 .map(|(mime, _, flac)| (mime, flac))
                 .collect(),
             progress,
+            reads: audio_reads(path).split_off(reads_before),
         }
+    }
+
+    /// The byte ranges read from `path`'s audio.
+    fn audio_reads(path: &Path) -> Vec<(u64, u64)> {
+        lock(&AUDIO_READS)
+            .iter()
+            .filter(|(read, _, _)| read == path)
+            .map(|&(_, start, end)| (start, end))
+            .collect()
     }
 
     fn ok(texts: &[&str]) -> Vec<Result<String, ApiError>> {
@@ -1352,6 +1377,11 @@ mod tests {
             retry.prompts,
             ["Zoon\nPrevious segment transcript: Second part."]
         );
+        // Only the last part's audio is read and uploaded again.
+        let audio_bytes = fs::metadata(&path).unwrap().len() - 44;
+        assert_eq!(failed.reads.len(), 3);
+        assert_eq!(retry.reads, [(2 * part_bytes(), audio_bytes)]);
+        assert_eq!(retry.sent.len(), 1);
     }
 
     #[tokio::test]
@@ -1381,6 +1411,8 @@ mod tests {
         );
         assert_eq!(retry.result.unwrap(), "One. Two. Three.");
         assert!(retry.prompts.is_empty());
+        // Every part is reused without reading its audio.
+        assert!(retry.reads.is_empty());
     }
 
     #[tokio::test]
