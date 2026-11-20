@@ -801,6 +801,28 @@ describe("dictation controller", () => {
       expect(failures).toEqual([]);
       expect(dictation.state).toBe("idle");
     });
+
+    it("leaves the next recording alone when cancelled while its failure is saved", async () => {
+      const { app, mic, dictation, failures } = await liveDictationStopped();
+      app.fail("worker_finalize_session_audio", new Error("Session is already finalizing"));
+      app.fail("recording_transcribe", new Error("Could not read saved recording"));
+      app.hold("recording_finish");
+      // The stop waits for the held failure save.
+      void dictation.toggleRecording();
+      await settle();
+      expect(app.named("recording_finish")).toHaveLength(1);
+
+      await dictation.cancelTranscription();
+      app.answers.recording_begin = { id: "rec-2" };
+      app.answers.worker_start_session = { session_id: "s-3" };
+      await startRecording(dictation);
+      app.release("recording_finish");
+      await settle();
+
+      expect(failures).toEqual([]);
+      expect(dictation.state).toBe("recording");
+      expect(mic.capture.isActive()).toBe(true);
+    });
   });
 
   it("keeps recording for Standard when the Live connection cannot open", async () => {

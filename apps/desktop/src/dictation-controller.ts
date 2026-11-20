@@ -244,19 +244,25 @@ export function createDictationController(deps: DictationDeps) {
     return saved;
   }
 
-  async function handleTranscriptionFailure(error: unknown) {
+  // False once `current` says a cancel or a newer recording took over while
+  // this waited; then it stops, leaving the controller to that one.
+  async function handleTranscriptionFailure(error: unknown, current: () => boolean = () => true) {
     if (capture.isActive()) await capture.stop();
+    if (!current()) return false;
     flushAudioBatch();
     await backupTail;
+    if (!current()) return false;
     const message = errorMessage(error);
     const recordingId = currentRecordingId;
     if (recordingId) {
       lastFailedRecordingId = recordingId;
       await finishCurrentRecording("failed", "", message);
+      if (!current()) return false;
     }
     // Failures never open the menu or steal the flow: the pill briefly shows
     // a short notice in place, and the raw audio stays one click away.
     deps.showFailure(message, recordingId !== null);
+    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -510,7 +516,7 @@ export function createDictationController(deps: DictationDeps) {
       log(`standard fallback error=${errorMessage(fallbackError)}`);
       // A cancel already tidied up; its failure is expected.
       if (cancelCount !== cancelsBefore) return;
-      await handleTranscriptionFailure(fallbackError);
+      if (!(await handleTranscriptionFailure(fallbackError, () => cancelCount === cancelsBefore))) return;
       cleanup();
       setState("idle");
     }
@@ -625,8 +631,7 @@ export function createDictationController(deps: DictationDeps) {
       return;
     }
     storedAudioStarting = false;
-    await handleTranscriptionFailure(error);
-    if (op !== operationId) return;
+    if (!(await handleTranscriptionFailure(error, () => op === operationId))) return;
     cleanup();
     setState("idle");
   }
