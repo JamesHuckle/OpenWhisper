@@ -15,6 +15,7 @@ use crate::foreground_app::ForegroundApp;
 use crate::overlay_geometry::cursor_entered_new_monitor;
 use crate::overlay_positioner;
 use crate::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
+use crate::sync::lock;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
@@ -188,11 +189,7 @@ pub fn capture_target() {
         live_stopped: None,
         input_seen: USER_INPUT_COUNT.load(Ordering::SeqCst),
     };
-    *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
-}
-
-fn lock_foreground_app() -> std::sync::MutexGuard<'static, ForegroundApp> {
-    FOREGROUND_APP.lock().unwrap_or_else(|e| e.into_inner())
+    *lock(&SESSION) = Some(session);
 }
 
 /// Returns the executable name (without `.exe`) of the tracked foreground
@@ -204,14 +201,14 @@ pub fn foreground_app_name() -> Option<String> {
     }
     let mut pid: u32 = 0;
     unsafe { GetWindowThreadProcessId(to_hwnd(hwnd), Some(&mut pid)) };
-    lock_foreground_app().name_for(pid, process_name)
+    lock(&FOREGROUND_APP).name_for(pid, process_name)
 }
 
 /// The foreground program's name when it changed since the last call,
 /// for the settings menu.
 pub fn foreground_app_change() -> Option<Option<String>> {
     let name = foreground_app_name();
-    lock_foreground_app().report(name)
+    lock(&FOREGROUND_APP).report(name)
 }
 
 fn process_name(pid: u32) -> Option<String> {
@@ -352,13 +349,9 @@ fn observe(session: &PasteSession) -> (Observation, u64) {
     (observation, input_count)
 }
 
-fn lock_session() -> std::sync::MutexGuard<'static, Option<PasteSession>> {
-    SESSION.lock().unwrap_or_else(|e| e.into_inner())
-}
-
 /// Type one live piece of the transcript into the locked target.
 pub fn type_live(text: &str) -> WriteOutcome {
-    let mut guard = lock_session();
+    let mut guard = lock(&SESSION);
     let Some(session) = guard.as_mut() else {
         return WriteOutcome::Stopped(Blocked::NoTarget);
     };
@@ -391,7 +384,7 @@ pub fn type_live(text: &str) -> WriteOutcome {
 
 /// Write the final transcript and end the recording's target lock.
 pub fn insert_final(text: &str) -> Result<WriteOutcome, String> {
-    let Some(session) = lock_session().take() else {
+    let Some(session) = lock(&SESSION).take() else {
         return copy_instead(text, Blocked::NoTarget);
     };
     let (observation, _) = observe(&session);

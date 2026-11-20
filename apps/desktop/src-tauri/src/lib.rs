@@ -23,6 +23,7 @@ mod recording_store;
 mod recordings;
 mod saved_parts;
 mod settings;
+mod sync;
 // Writes dictated text into the field focused when recording began.
 #[cfg(target_os = "windows")]
 mod text_inserter;
@@ -36,23 +37,23 @@ use debug_log::debug_log_line;
 use models::{is_supported_transcription_model, migrate_transcription_model};
 use overlay_geometry::{
     move_overlay_hidden, overlay_placement, settle_hidden, MonitorTransitionDebouncer,
-    OverlayAnchor, OverlayLayoutSpec, OverlayRevealIntent, PlacementVisibility,
+    OverlayAnchor, OverlayLayoutSpec, OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
 };
 use recording_store::PcmWavWriter;
 use recordings::{
-    close_active_recording, finish_recording, import_recording, list_recording_metadata,
-    lock_recordings, now_ms, read_recording_metadata, recording_parts_path, recover_interrupted,
-    write_recording_metadata, ActiveRecording, RecordingMetadata, RecordingStartResponse,
+    close_active_recording, finish_recording, import_recording, list_recording_metadata, now_ms,
+    read_recording_metadata, recording_parts_path, recover_interrupted, write_recording_metadata,
+    ActiveRecording, RecordingMetadata, RecordingStartResponse,
 };
 use serde::{Deserialize, Serialize};
 use settings::{frontend_settings_from, session_settings, AppSettings, FrontendSettings};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use std::borrow::Cow;
+use sync::lock;
 use tauri::{
     ipc::{InvokeBody, Request},
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -88,33 +89,16 @@ struct AppState {
     settings: std::sync::Mutex<AppSettings>,
     overlay_anchor: std::sync::Mutex<Option<OverlayAnchor>>,
     overlay_layout: std::sync::Mutex<Option<OverlayLayoutSpec>>,
-    overlay_layout_locked: AtomicBool,
+    // Held while the pill is placed. A page layout waits for it; a monitor
+    // move skips its turn and tries again.
+    placing: tokio::sync::Mutex<()>,
     // Microphone recordings in progress, by recording id. Each keeps its
     // file open until the recording is transcribed or finished.
     recordings: std::sync::Mutex<HashMap<String, ActiveRecording>>,
 }
 
-struct OverlayLayoutGuard<'a>(&'a AtomicBool);
-
-impl<'a> OverlayLayoutGuard<'a> {
-    fn try_acquire(flag: &'a AtomicBool) -> Option<Self> {
-        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .ok()
-            .map(|_| Self(flag))
-    }
-}
-
-impl Drop for OverlayLayoutGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
-}
-
-fn resolve_overlay_anchor(state: &Arc<AppState>) -> Result<Option<OverlayAnchor>, String> {
-    let mut guard = state
-        .overlay_anchor
-        .lock()
-        .map_err(|_| "Failed to lock overlay anchor".to_string())?;
+fn resolve_overlay_anchor(state: &AppState) -> Option<OverlayAnchor> {
+    let mut guard = lock(&state.overlay_anchor);
 
     #[cfg(target_os = "windows")]
     if guard.is_none() {
@@ -125,32 +109,29 @@ fn resolve_overlay_anchor(state: &Arc<AppState>) -> Result<Option<OverlayAnchor>
         }
     }
 
-    Ok(*guard)
+    *guard
+}
+
+/// The pill's monitor, and where the pill goes on it, once the page has
+/// committed a layout.
+fn current_placement(state: &AppState) -> Option<(OverlayAnchor, OverlayPlacement)> {
+    let anchor = resolve_overlay_anchor(state)?;
+    let layout = (*lock(&state.overlay_layout))?;
+    Some((anchor, overlay_placement(anchor, layout)))
 }
 
 #[cfg(target_os = "windows")]
 fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Result<bool, String> {
     let state = app.state::<Arc<AppState>>().inner().clone();
-    let Some(_layout_guard) = OverlayLayoutGuard::try_acquire(&state.overlay_layout_locked) else {
+    let Ok(_placing) = state.placing.try_lock() else {
         return Ok(false);
     };
 
-    let previous = {
-        let current = state
-            .overlay_anchor
-            .lock()
-            .map_err(|_| "Failed to lock overlay anchor".to_string())?;
-        if *current == Some(anchor) {
-            return Ok(true);
-        }
-        *current
-    };
-
-    let layout = *state
-        .overlay_layout
-        .lock()
-        .map_err(|_| "Failed to lock overlay layout".to_string())?;
-    let Some(layout) = layout else {
+    let previous = *lock(&state.overlay_anchor);
+    if previous == Some(anchor) {
+        return Ok(true);
+    }
+    let Some(layout) = *lock(&state.overlay_layout) else {
         return Ok(false);
     };
     let Some(window) = app.get_webview_window("main") else {
@@ -193,11 +174,7 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
         ),
     );
 
-    let mut current = state
-        .overlay_anchor
-        .lock()
-        .map_err(|_| "Failed to lock overlay anchor".to_string())?;
-    *current = Some(anchor);
+    *lock(&state.overlay_anchor) = Some(anchor);
     Ok(true)
 }
 
@@ -207,19 +184,12 @@ fn position_main_window_before_reveal(app: &AppHandle) -> Result<bool, String> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(false);
     };
-    let Some(anchor) = resolve_overlay_anchor(&state)? else {
-        return Ok(false);
-    };
-    let layout = *state
-        .overlay_layout
-        .lock()
-        .map_err(|_| "Failed to lock overlay layout".to_string())?;
-    let Some(layout) = layout else {
+    let Some((_, placement)) = current_placement(&state) else {
         return Ok(false);
     };
     overlay_positioner::set_window_placement(
         window.hwnd().map_err(|e| e.to_string())?.0 as isize,
-        overlay_placement(anchor, layout),
+        placement,
         PlacementVisibility::Keep,
     )?;
     Ok(true)
@@ -253,7 +223,7 @@ fn recording_begin(
     let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
     // One microphone recording runs at a time. Close any the UI left open
     // (for example after a reload) so their files are complete.
-    let left_open: Vec<String> = lock_recordings(&state.recordings)?.keys().cloned().collect();
+    let left_open: Vec<String> = lock(&state.recordings).keys().cloned().collect();
     for recording_id in left_open {
         close_active_recording(&state.recordings, &root, &recording_id)?;
     }
@@ -279,7 +249,7 @@ fn recording_begin(
         error: String::new(),
     };
     write_recording_metadata(&root, &metadata).map_err(|e| e.to_string())?;
-    lock_recordings(&state.recordings)?.insert(id.clone(), ActiveRecording { writer, metadata });
+    lock(&state.recordings).insert(id.clone(), ActiveRecording { writer, metadata });
     // Finishing or importing a recording prunes old ones, not starting it.
     Ok(RecordingStartResponse { id })
 }
@@ -316,7 +286,7 @@ fn recording_append_chunk(
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let (recording_id, chunk) = audio_chunk_request(&request, "recording-id")?;
-    let mut recordings = lock_recordings(&state.recordings)?;
+    let mut recordings = lock(&state.recordings);
     let active = recordings
         .get_mut(recording_id)
         .ok_or_else(|| "This recording is no longer being saved".to_string())?;
@@ -455,21 +425,13 @@ fn transcription(state: &AppState) -> Result<&Sessions, String> {
 
 #[tauri::command]
 async fn app_get_settings(state: State<'_, Arc<AppState>>) -> Result<FrontendSettings, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|_| "Failed to lock settings".to_string())?
-        .clone();
+    let settings = lock(&state.settings).clone();
     Ok(frontend_settings_from(&settings))
 }
 
 #[tauri::command]
 async fn app_get_openai_api_key(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|_| "Failed to lock settings".to_string())?
-        .clone();
+    let settings = lock(&state.settings).clone();
     Ok(settings.openai_api_key)
 }
 
@@ -488,14 +450,10 @@ async fn app_save_settings(
     // One save at a time, from reading the settings to storing them, so two
     // saves never undo each other's change or API key.
     static SAVING_SETTINGS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _saving = SAVING_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+    let _saving = lock(&SAVING_SETTINGS);
     let mut previous_key = None;
     let updated = {
-        let mut current = state
-            .settings
-            .lock()
-            .map_err(|_| "Failed to lock settings".to_string())?
-            .clone();
+        let mut current = lock(&state.settings).clone();
         if let Some(model) = transcription_model {
             if !is_supported_transcription_model(&model) {
                 return Err(format!("Unsupported transcription model: {model}"));
@@ -539,13 +497,7 @@ async fn app_save_settings(
         return Err(err.to_string());
     }
 
-    {
-        let mut settings = state
-            .settings
-            .lock()
-            .map_err(|_| "Failed to lock settings".to_string())?;
-        *settings = updated.clone();
-    }
+    *lock(&state.settings) = updated.clone();
 
     #[cfg(target_os = "windows")]
     text_inserter::set_hold_to_talk_enabled(updated.hold_to_talk);
@@ -565,13 +517,7 @@ async fn worker_start_session(
 ) -> Result<SessionStartResponse, String> {
     // The session keeps the settings saved at this moment, so a saved change
     // applies to the next dictation.
-    let mut settings = {
-        let s = state
-            .settings
-            .lock()
-            .map_err(|_| "Failed to lock settings".to_string())?;
-        session_settings(&s, &profile_id)
-    };
+    let mut settings = session_settings(&lock(&state.settings), &profile_id);
     // Saved audio, and a Live dictation whose connection failed, are
     // transcribed from the file with Standard; no Live connection is opened.
     settings.standard_only = standard_only.unwrap_or(false);
@@ -729,25 +675,14 @@ async fn overlay_apply_layout(
 
     #[cfg(target_os = "windows")]
     {
-        let _layout_guard = loop {
-            if let Some(guard) = OverlayLayoutGuard::try_acquire(&app_state.overlay_layout_locked) {
-                break guard;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        };
-        let layout = OverlayLayoutSpec {
+        let _placing = app_state.placing.lock().await;
+        *lock(&app_state.overlay_layout) = Some(OverlayLayoutSpec {
             width,
             height,
             anchor_offset_y,
-        };
-        *app_state
-            .overlay_layout
-            .lock()
-            .map_err(|_| "Failed to lock overlay layout".to_string())? = Some(layout);
-        let anchor = resolve_overlay_anchor(&app_state)?;
+        });
 
-        if let Some(anchor) = anchor {
-            let placement = overlay_placement(anchor, layout);
+        if let Some((anchor, placement)) = current_placement(&app_state) {
             let was_visible = window.is_visible().map_err(|e| e.to_string())?;
             let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
             debug_log_line(
@@ -935,13 +870,7 @@ fn make_tray_icon() -> tauri::image::Image<'static> {
 
 fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
     if matches!(intent, OverlayRevealIntent::Passive) {
-        let show_idle_pill = app
-            .state::<Arc<AppState>>()
-            .settings
-            .lock()
-            .map(|settings| settings.show_idle_pill)
-            .unwrap_or(true);
-        if !show_idle_pill {
+        if !lock(&app.state::<Arc<AppState>>().settings).show_idle_pill {
             debug_log_line("window", "passive reveal skipped while idle pill is hidden");
             return;
         }
@@ -977,14 +906,6 @@ fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
     }
 }
 
-fn reveal_main_window(app: &AppHandle) {
-    reveal_window(app, OverlayRevealIntent::Interactive);
-}
-
-fn reveal_overlay_window(app: &AppHandle) {
-    reveal_window(app, OverlayRevealIntent::Passive);
-}
-
 fn setup_tray(app: &tauri::App) -> Result<()> {
     let show_i = MenuItem::with_id(app, "show", "Show Pill", true, None::<&str>)
         .map_err(|e| anyhow!("{e}"))?;
@@ -1003,11 +924,11 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => reveal_main_window(app),
+            "show" => reveal_window(app, OverlayRevealIntent::Interactive),
             "record" => {
                 #[cfg(target_os = "windows")]
                 text_inserter::track_foreground();
-                reveal_main_window(app);
+                reveal_window(app, OverlayRevealIntent::Interactive);
                 let _ = app.emit("toggle-recording", ());
             }
             "quit" => app.exit(0),
@@ -1021,7 +942,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
             } = event
             {
                 let app = tray.app_handle();
-                reveal_main_window(&app);
+                reveal_window(&app, OverlayRevealIntent::Interactive);
             }
         })
         .build(app)
@@ -1036,7 +957,7 @@ pub fn run() {
         settings: std::sync::Mutex::new(AppSettings::default()),
         overlay_anchor: std::sync::Mutex::new(None),
         overlay_layout: std::sync::Mutex::new(None),
-        overlay_layout_locked: AtomicBool::new(false),
+        placing: tokio::sync::Mutex::new(()),
         recordings: std::sync::Mutex::new(HashMap::new()),
     });
 
@@ -1059,7 +980,7 @@ pub fn run() {
             match event {
                 WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
-                    reveal_overlay_window(&window.app_handle());
+                    reveal_window(&window.app_handle(), OverlayRevealIntent::Passive);
                 }
                 WindowEvent::Focused(false) => {
                     if std::env::var_os("OPENWHISPER_UI_TEST").is_none() {
@@ -1092,12 +1013,7 @@ pub fn run() {
             let loaded = load_settings_and_api_key(app.handle());
             #[cfg(target_os = "windows")]
             text_inserter::set_hold_to_talk_enabled(loaded.hold_to_talk);
-            let state = app.state::<Arc<AppState>>();
-            let mut settings = state
-                .settings
-                .lock()
-                .map_err(|_| anyhow!("Failed to lock settings during setup"))?;
-            *settings = loaded;
+            *lock(&app.state::<Arc<AppState>>().settings) = loaded;
 
             if let Err(e) = setup_tray(app) {
                 debug_log_line("tray", &format!("Failed to create tray icon: {e}"));
@@ -1149,7 +1065,7 @@ pub fn run() {
                         if should_start {
                             debug_log_line("shortcut", "emit press-to-talk-start");
                             text_inserter::track_foreground();
-                            reveal_overlay_window(&shortcut_handle);
+                            reveal_window(&shortcut_handle, OverlayRevealIntent::Passive);
                             let _ = shortcut_handle.emit("press-to-talk-start", ());
                         }
                         if should_stop {
@@ -1159,7 +1075,7 @@ pub fn run() {
                         if should_toggle {
                             debug_log_line("shortcut", "emit toggle-recording");
                             text_inserter::track_foreground();
-                            reveal_overlay_window(&shortcut_handle);
+                            reveal_window(&shortcut_handle, OverlayRevealIntent::Passive);
                             let _ = shortcut_handle.emit("toggle-recording", ());
                         }
                         if let Some(name) = text_inserter::foreground_app_change() {
@@ -1191,12 +1107,8 @@ pub fn run() {
                         monitor_transition.reset();
                         // Follow the cursor until the pill is on its monitor.
                         while let Some(cursor_anchor) = overlay_positioner::cursor_monitor_anchor() {
-                            let current_anchor = monitor_handle
-                                .state::<Arc<AppState>>()
-                                .overlay_anchor
-                                .lock()
-                                .ok()
-                                .and_then(|guard| *guard);
+                            let current_anchor =
+                                *lock(&monitor_handle.state::<Arc<AppState>>().overlay_anchor);
                             if current_anchor == Some(cursor_anchor) {
                                 break;
                             }

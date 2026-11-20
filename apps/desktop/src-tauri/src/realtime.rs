@@ -5,6 +5,7 @@
 //! This file needs no Tauri, so its tests run in `core-tests`.
 
 use crate::openai_api::ensure_crypto_provider;
+use crate::sync::lock;
 use base64::Engine;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
@@ -185,7 +186,7 @@ impl RealtimeStream {
             *outcome = Some(Err("Realtime transcription session is closed".into()));
             true
         });
-        if let Some(reader) = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(reader) = lock(&self.reader).take() {
             reader.abort();
         }
         // Closing politely needs the sink, which a send may still hold; it

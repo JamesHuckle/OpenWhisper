@@ -22,6 +22,7 @@ use crate::debug_log::debug_log_line;
 use crate::models::{default_transcription_model, live_transcription_model, refine_model};
 use crate::openai_api::{HttpApi, DEFAULT_BASE_URL};
 use crate::realtime::{DeltaHandler, RealtimeStream, FINAL_TIMEOUT};
+use crate::sync::lock;
 use crate::transcriber::{
     is_short_clean_transcript, PolishSettings, SavedAudio, Transcriber,
     DEFAULT_POLISH_REASONING_EFFORT,
@@ -29,7 +30,7 @@ use crate::transcriber::{
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -118,12 +119,6 @@ pub struct Sessions {
     live_rotate_bytes: u64,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     emit: EventSink,
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn env_or(name: &str, fallback: &str) -> String {

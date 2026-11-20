@@ -15,6 +15,7 @@ use crate::debug_log::debug_log_line;
 use crate::flac_upload::{self, UploadPart};
 use crate::openai_api::{ApiError, OpenAiApi};
 use crate::saved_parts::{parts_key, SavedPart, SavedParts};
+use crate::sync::lock;
 use crate::wav_file::{read_wav_format, wav_bytes, WavFormat};
 use futures_util::future::try_join_all;
 use regex::Regex;
@@ -606,12 +607,6 @@ async fn flac_upload_parts(wav_path: &Path) -> UploadFiles {
             UploadFiles::default()
         }
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn is_wav(mime_type: &str) -> bool {

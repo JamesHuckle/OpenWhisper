@@ -9,6 +9,7 @@
 //! backup instead. A `.tmp` left by a crash is never read and is overwritten
 //! by the next save.
 
+use crate::sync::lock;
 use anyhow::{anyhow, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -49,7 +50,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 /// backup. A previous file that does not read back as `T` never replaces a
 /// good backup.
 pub fn write_json_atomic<T: Serialize + DeserializeOwned>(path: &Path, value: &T) -> Result<()> {
-    let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    let _saving = lock(&SAVING);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -72,7 +73,7 @@ pub fn write_json_atomic<T: Serialize + DeserializeOwned>(path: &Path, value: &T
 /// Makes the backup a copy of the file as it is now, for when the previous
 /// version holds something that must not stay on disk.
 pub fn refresh_backup(path: &Path) -> Result<()> {
-    let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    let _saving = lock(&SAVING);
     fs::copy(path, backup_path(path))?;
     Ok(())
 }

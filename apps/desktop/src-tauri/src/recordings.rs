@@ -11,6 +11,7 @@
 
 use crate::json_file;
 use crate::recording_store::{self, PcmWavWriter};
+use crate::sync::lock;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -184,14 +185,6 @@ pub fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
-pub fn lock_recordings(
-    recordings: &std::sync::Mutex<HashMap<String, ActiveRecording>>,
-) -> Result<std::sync::MutexGuard<'_, HashMap<String, ActiveRecording>>, String> {
-    recordings
-        .lock()
-        .map_err(|_| "Failed to lock recordings".to_string())
-}
-
 /// Writes the final header and size of a recording still being written, and
 /// closes its file. Does nothing for a recording that is not open.
 pub fn close_active_recording(
@@ -199,7 +192,7 @@ pub fn close_active_recording(
     root: &std::path::Path,
     recording_id: &str,
 ) -> Result<(), String> {
-    let Some(active) = lock_recordings(recordings)?.remove(recording_id) else {
+    let Some(active) = lock(recordings).remove(recording_id) else {
         return Ok(());
     };
     let mut metadata = active.metadata;

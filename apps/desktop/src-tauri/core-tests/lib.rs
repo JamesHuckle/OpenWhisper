@@ -35,6 +35,8 @@ mod recordings;
 mod saved_parts;
 #[path = "../src/settings.rs"]
 mod settings;
+#[path = "../src/sync.rs"]
+mod sync;
 #[path = "../src/transcriber.rs"]
 mod transcriber;
 #[path = "../src/transcription_sessions.rs"]
