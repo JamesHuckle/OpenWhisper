@@ -206,8 +206,8 @@ pub fn move_overlay_hidden(
 /// Commits `target` hidden and without redraw, then checks it up to 12
 /// times, `wait`ing before each check and committing it hidden again
 /// whenever Windows moved it, until two checks in a row find it in place.
-/// Returns how many times it was committed again, or `None` if the window
-/// is still off `target` at the end; each caller words that error itself.
+/// Returns how many times it was committed again, or `None` if two checks in
+/// a row never found it in place; each caller words that error itself.
 pub fn settle_hidden(
     target: OverlayPlacement,
     mut commit: impl FnMut(OverlayPlacement, PlacementVisibility) -> Result<(), String>,
@@ -230,7 +230,8 @@ pub fn settle_hidden(
             commit(target, PlacementVisibility::HideWithoutRedraw)?;
         }
     }
-    Ok(matches(target)?.then_some(correction_count))
+    // One last match after Windows moved it again is not settled yet.
+    Ok((stable_samples >= 2 && matches(target)?).then_some(correction_count))
 }
 
 /// Whether showing the pill may take keyboard focus.
@@ -509,6 +510,7 @@ mod tests {
         // left hidden, and the retry then treated it as hidden on purpose.
         let failures = [
             (usize::MAX, None, "Windows did not settle the overlay at its committed DPI placement"),
+            (12, None, "Windows did not settle the overlay at its committed DPI placement"),
             (0, Some(FakeFailure::Hide), "SetWindowPos failed (Hide)"),
             (0, Some(FakeFailure::Check), "GetWindowRect failed while verifying overlay placement"),
         ];
@@ -585,6 +587,17 @@ mod tests {
         assert_eq!(settled, Ok(Some(3)));
         assert_eq!(commits, vec![PlacementVisibility::HideWithoutRedraw; 4]);
         assert_eq!(waits, 5);
+    }
+
+    #[test]
+    fn settling_fails_when_the_window_only_matches_after_the_last_check() {
+        // Bug: twelve moved checks, then one match after the last commit,
+        // counted as settled without the two matching checks in a row.
+        let (settled, commits, waits) = settle_fake(12);
+
+        assert_eq!(settled, Ok(None));
+        assert_eq!(commits, vec![PlacementVisibility::HideWithoutRedraw; 13]);
+        assert_eq!(waits, 12);
     }
 
     #[test]
