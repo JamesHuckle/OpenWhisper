@@ -72,28 +72,63 @@ describe("saveSettings", () => {
     expect(calls).toContain("toast no settings file");
   });
 
-  it("ignores a change to a field that is still saving, but saves other fields", async () => {
-    let finish!: (settings: Settings) => void;
+  it("saves the newest change made while a field is saving once that save ends, and shows only its answer", async () => {
+    const finishes: ((settings: Settings) => void)[] = [];
     const save = vi.fn(
       (patch: Record<string, unknown>) =>
-        "transcriptionPrompt" in patch
-          ? new Promise<Settings>((resolve) => (finish = resolve))
+        "holdToTalk" in patch
+          ? new Promise<Settings>((resolve) => finishes.push(resolve))
           : Promise.resolve({ hasOpenaiApiKey: true, holdToTalk: true }),
     );
-    const { saveSettings, isSaving } = setup(save);
+    const { calls, saveSettings, isSaving } = setup(save);
+    const options = { busy: "holdToTalk", saved: () => calls.push("saved") };
 
-    const first = saveSettings({ transcriptionPrompt: "a" }, { busy: "prompt" });
-    expect(isSaving("prompt")).toBe(true);
-    await saveSettings({ transcriptionPrompt: "b" }, { busy: "prompt" });
-    await saveSettings({ holdToTalk: true }, { busy: "holdToTalk" });
-    finish({ hasOpenaiApiKey: true, holdToTalk: true });
+    const first = saveSettings({ holdToTalk: true }, options);
+    expect(isSaving("holdToTalk")).toBe(true);
+    await saveSettings({ holdToTalk: false }, options);
+    await saveSettings({ holdToTalk: true }, options);
+    await saveSettings({ refinePrompt: "x" }, { busy: "refine" });
+    expect(save.mock.calls.map(([patch]) => patch)).toEqual([{ holdToTalk: true }, { refinePrompt: "x" }]);
+
+    finishes[0]({ hasOpenaiApiKey: true, holdToTalk: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(save.mock.calls.map(([patch]) => patch)).toEqual([
+      { holdToTalk: true },
+      { refinePrompt: "x" },
+      { holdToTalk: true },
+    ]);
+    // Only the refine save was applied so far; the older holdToTalk answer was not.
+    expect(calls.filter((call) => call.startsWith("apply") || call === "saved")).toEqual(["apply true undefined"]);
+
+    finishes[1]({ hasOpenaiApiKey: true, holdToTalk: true });
+    await first;
+    expect(calls.filter((call) => call.startsWith("apply") || call === "saved")).toEqual([
+      "apply true undefined",
+      "saved",
+      "apply true undefined",
+    ]);
+    expect(isSaving("holdToTalk")).toBe(false);
+  });
+
+  it("skips onError for a failed save when a newer change is waiting, and saves that change", async () => {
+    let fail!: (error: unknown) => void;
+    const save = vi
+      .fn<(patch: Record<string, unknown>) => Promise<Settings>>()
+      .mockImplementationOnce(() => new Promise<Settings>((_, reject) => (fail = reject)))
+      .mockResolvedValue({ hasOpenaiApiKey: true, holdToTalk: false });
+    const { calls, saveSettings } = setup(save);
+    const options = { busy: "holdToTalk", onError: () => calls.push("onError") };
+
+    const first = saveSettings({ holdToTalk: true }, options);
+    await saveSettings({ holdToTalk: false }, options);
+    fail(new Error("disk full"));
     await first;
 
-    expect(save.mock.calls.map(([patch]) => patch)).toEqual([{ transcriptionPrompt: "a" }, { holdToTalk: true }]);
-    expect(isSaving("prompt")).toBe(false);
-    const next = saveSettings({ transcriptionPrompt: "c" }, { busy: "prompt" });
-    expect(save).toHaveBeenCalledTimes(3);
-    finish({ hasOpenaiApiKey: true, holdToTalk: true });
-    await next;
+    expect(calls).toEqual([
+      'save {"holdToTalk":true}',
+      "toast disk full",
+      'save {"holdToTalk":false}',
+      "apply false undefined",
+    ]);
   });
 });

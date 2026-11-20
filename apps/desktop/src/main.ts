@@ -1148,7 +1148,7 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
   }
 }
 
-const { saveSettings, isSaving } = createSettingsSaver<AppSettings>({
+const { saveSettings } = createSettingsSaver<AppSettings>({
   save: (patch) => invoke<AppSettings>("app_save_settings", patch),
   apply: applySettingsUi,
   showToast,
@@ -1222,7 +1222,6 @@ menuHoldToTalkToggle.addEventListener("change", () =>
 );
 
 menuModelSelect.addEventListener("change", () => {
-  if (isSaving("model")) return;
   syncModelHint();
   return saveSettings({ transcriptionModel: menuModelSelect.value }, {
     busy: "model",

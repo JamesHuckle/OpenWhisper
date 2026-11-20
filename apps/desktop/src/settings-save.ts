@@ -1,6 +1,6 @@
 // Saves settings changes from the menu: one way for every field. Each field
-// has its own busy key, so a change made while that field is still saving is
-// ignored, and other fields still save.
+// has its own busy key. A change made while that field is still saving waits
+// and is saved next (only the newest one), and other fields still save.
 
 /** How one save reports back. */
 export type SaveOptions<S> = {
@@ -25,22 +25,35 @@ export type SettingsSaveDeps<S> = {
 
 export function createSettingsSaver<S>(deps: SettingsSaveDeps<S>) {
   const busy = new Set<string>();
+  // The newest change made to a field while it was saving, saved next.
+  const pending = new Map<string, { patch: Record<string, unknown>; options: SaveOptions<S> }>();
 
-  async function saveSettings(patch: Record<string, unknown>, options: SaveOptions<S>) {
-    if (busy.has(options.busy)) return;
+  async function saveSettings(patch: Record<string, unknown>, options: SaveOptions<S>): Promise<void> {
+    if (busy.has(options.busy)) {
+      pending.set(options.busy, { patch, options });
+      return;
+    }
 
     busy.add(options.busy);
     try {
       const updated = await deps.save(patch);
-      options.saved?.();
-      deps.apply(updated, options.label?.(updated));
-      const message = options.done?.(updated);
-      if (message) deps.showToast(message);
+      // A newer change is saved next; this older answer must not undo it on the page.
+      if (!pending.has(options.busy)) {
+        options.saved?.();
+        deps.apply(updated, options.label?.(updated));
+        const message = options.done?.(updated);
+        if (message) deps.showToast(message);
+      }
     } catch (err) {
       deps.showToast(err instanceof Error ? err.message : String(err));
-      await options.onError?.();
+      if (!pending.has(options.busy)) await options.onError?.();
     } finally {
       busy.delete(options.busy);
+    }
+    const next = pending.get(options.busy);
+    if (next) {
+      pending.delete(options.busy);
+      await saveSettings(next.patch, next.options);
     }
   }
 
