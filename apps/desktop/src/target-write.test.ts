@@ -38,6 +38,8 @@ function delivery(options: {
   cancelWhileTyping?: boolean;
 }) {
   const commands: string[] = [];
+  // Every save and command in the order they ran.
+  const order: string[] = [];
   const saved: { status: string; transcript: string }[] = [];
   const notices: string[] = [];
   let owner = "session-1";
@@ -45,6 +47,7 @@ function delivery(options: {
   const steps: FinalTranscriptDelivery = {
     invoke: async (command) => {
       commands.push(command);
+      order.push(command);
       if (command === options.fail) throw new Error(`${command} failed`);
       return command === "insert_final_text" ? { outcome: "pasted", reason: null } : null;
     },
@@ -52,6 +55,7 @@ function delivery(options: {
     paste: options.paste ?? true,
     owned: () => owner === "session-1",
     saveRecording: async (transcript) => {
+      order.push("saveRecording");
       if (options.saveFails) return false;
       saved.push({ status: "complete", transcript });
       return true;
@@ -66,7 +70,7 @@ function delivery(options: {
     notify: (message) => notices.push(message),
     log: () => {},
   };
-  return { steps, commands, saved, notices, remembered: () => remembered };
+  return { steps, commands, order, saved, notices, remembered: () => remembered };
 }
 
 // No step may ask the worker or the service for a new transcription.
@@ -80,8 +84,16 @@ describe("delivering the final transcript", () => {
     const run = delivery({});
     await deliverFinalTranscript(run.steps);
     expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
-    expect(run.commands).toEqual(["insert_final_text"]);
+    expect(run.order).toEqual(["saveRecording", "insert_final_text"]);
     expect(run.notices).toEqual(["Transcribed and pasted"]);
+  });
+
+  it("saves the transcript before copying it", async () => {
+    const run = delivery({ paste: false });
+    await deliverFinalTranscript(run.steps);
+    expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
+    expect(run.order).toEqual(["saveRecording", "copy_to_clipboard"]);
+    expect(run.notices).toEqual(["Transcript copied to clipboard"]);
   });
 
   it("keeps the transcript when the clipboard copy fails", async () => {
