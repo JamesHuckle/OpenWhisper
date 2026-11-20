@@ -218,11 +218,9 @@ export function createDictationController(deps: DictationDeps) {
     if (streamAudioToWorker) audioQueue.append(combined.buffer);
   }
 
-  // True once the recording's metadata is written.
-  async function finishCurrentRecording(status: string, transcript: string, error: string) {
-    const recordingId = currentRecordingId;
-    if (!recordingId) return false;
-    currentRecordingId = null;
+  // Writes a recording's final metadata; true once it is written. A failure
+  // is only logged, and the recordings list is refreshed either way.
+  async function finishRecording(recordingId: string, status: string, transcript: string, error: string) {
     let saved = true;
     try {
       await invoke("recording_finish", {
@@ -237,6 +235,14 @@ export function createDictationController(deps: DictationDeps) {
     }
     deps.recordingsChanged();
     return saved;
+  }
+
+  // True once the recording's metadata is written.
+  async function finishCurrentRecording(status: string, transcript: string, error: string) {
+    const recordingId = currentRecordingId;
+    if (!recordingId) return false;
+    currentRecordingId = null;
+    return finishRecording(recordingId, status, transcript, error);
   }
 
   // False once `current` says a cancel or a newer recording took over while
@@ -258,6 +264,14 @@ export function createDictationController(deps: DictationDeps) {
     // a short notice in place, and the raw audio stays one click away.
     deps.showFailure(message, recordingId !== null);
     return true;
+  }
+
+  // Reports a failure and returns the pill to idle, unless `current` says a
+  // cancel or a newer recording took over meanwhile.
+  async function failAndReset(error: unknown, current: () => boolean = () => true) {
+    if (!(await handleTranscriptionFailure(error, current))) return;
+    cleanup();
+    setState("idle");
   }
 
   // -------------------------------------------------------------------------
@@ -339,15 +353,7 @@ export function createDictationController(deps: DictationDeps) {
                 log(`recording append failed=${errorMessage(error)}`);
               });
             }
-            await invoke("recording_finish", {
-              recordingId: backup.id,
-              status: "cancelled",
-              transcript: "",
-              error: "Cancelled by user",
-            }).catch((error) => {
-              log(`recording metadata update failed=${errorMessage(error)}`);
-            });
-            deps.recordingsChanged();
+            await finishRecording(backup.id, "cancelled", "", "Cancelled by user");
             return false;
           }
           currentRecordingId = backup.id;
@@ -402,12 +408,7 @@ export function createDictationController(deps: DictationDeps) {
       // A cancel already tidied this recording up, and the microphone and
       // backup may now be a newer recording's.
       if (cancelCount !== cancelsBefore || op !== operationId) return;
-      if (capture.isActive()) await capture.stop();
-      flushAudioBatch();
-      await backupTail;
-      await handleTranscriptionFailure(err);
-      cleanup();
-      setState("idle");
+      await failAndReset(err);
     }
   }
 
@@ -472,9 +473,7 @@ export function createDictationController(deps: DictationDeps) {
       // it is stopped.
       await stopSession(sessionId);
       if (currentSessionId !== sessionId) return;
-      await handleTranscriptionFailure(err);
-      cleanup();
-      setState("idle");
+      await failAndReset(err);
     }
   }
 
@@ -511,9 +510,7 @@ export function createDictationController(deps: DictationDeps) {
       log(`standard fallback error=${errorMessage(fallbackError)}`);
       // A cancel already tidied up; its failure is expected.
       if (cancelCount !== cancelsBefore) return;
-      if (!(await handleTranscriptionFailure(fallbackError, () => cancelCount === cancelsBefore))) return;
-      cleanup();
-      setState("idle");
+      await failAndReset(fallbackError, () => cancelCount === cancelsBefore);
     }
   }
 
@@ -562,11 +559,16 @@ export function createDictationController(deps: DictationDeps) {
   // -------------------------------------------------------------------------
   // Saved audio: imported files and retries
   // -------------------------------------------------------------------------
+  // Imports and retries wait for the controller; true when it is busy, after
+  // telling the user so.
+  function refuseWhileBusy(): boolean {
+    if (state === "idle" && !storedAudioStarting) return false;
+    deps.showToast("Finish the current recording first");
+    return true;
+  }
+
   async function transcribeImportedFile() {
-    if (state !== "idle" || storedAudioStarting) {
-      deps.showToast("Finish the current recording first");
-      return;
-    }
+    if (refuseWhileBusy()) return;
     // Set once the import reserves the controller; until then it owns none of
     // the current recording's state.
     let op: number | null = null;
@@ -579,10 +581,7 @@ export function createDictationController(deps: DictationDeps) {
       // from disk; the audio never passes through this window.
       const stored = (await invoke("recording_import")) as { id: string } | null;
       if (!stored) return;
-      if (currentState() !== "idle" || storedAudioStarting) {
-        deps.showToast("Finish the current recording first");
-        return;
-      }
+      if (refuseWhileBusy()) return;
       storedAudioStarting = true;
       op = ++operationId;
       await transcribeStoredAudio(stored.id, "file-import", op);
@@ -601,10 +600,7 @@ export function createDictationController(deps: DictationDeps) {
   }
 
   async function retranscribeRecording(recordingId: string) {
-    if (state !== "idle" || storedAudioStarting) {
-      deps.showToast("Finish the current recording first");
-      return;
-    }
+    if (refuseWhileBusy()) return;
     storedAudioStarting = true;
     const op = ++operationId;
     try {
@@ -626,9 +622,7 @@ export function createDictationController(deps: DictationDeps) {
       return;
     }
     storedAudioStarting = false;
-    if (!(await handleTranscriptionFailure(error, () => op === operationId))) return;
-    cleanup();
-    setState("idle");
+    await failAndReset(error, () => op === operationId);
   }
 
   async function transcribeStoredAudio(recordingId: string, profileId: string, op: number) {
@@ -695,9 +689,7 @@ export function createDictationController(deps: DictationDeps) {
       const text = errorMessage(error, "Could not finish the transcription");
       log(`session event failed=${text}`);
       if (message.done && (state === "recording" || state === "transcribing")) {
-        await handleTranscriptionFailure(text);
-        cleanup();
-        setState("idle");
+        await failAndReset(text);
       }
     }
   }
