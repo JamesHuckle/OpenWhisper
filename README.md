@@ -172,7 +172,7 @@ This repository holds:
 
 1. Create environment file:
    - `cp .env.example .env`
-   - `OPENAI_API_KEY` is optional in development. In the desktop app, users can paste their key in Settings.
+   - The OpenAI API key is not read from `.env`: paste it in the desktop app's Settings.
 2. Install desktop dependencies:
    - `cd apps/desktop`
    - `npm install`

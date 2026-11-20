@@ -124,9 +124,8 @@ One-way data flow rule:
 The window calls five commands; they kept the names they had when a Python
 worker did the work:
 
-- `worker_start_session { profileId }` returns `{ session_id }`. An
-  unsupported model is refused; an empty saved key falls back to the
-  `OPENAI_API_KEY` environment variable.
+- `worker_start_session { profileId }` returns `{ session_id }`, using the
+  saved key and model.
 - `worker_append_audio_chunk` (raw bytes, `session-id` header) sends Live
   audio.
 - `worker_finalize_session_audio { sessionId, mimeType }` finishes a Live
@@ -227,10 +226,8 @@ and app-specific adapters.
 
 ### Desktop
 
-Environment variables, read by the app when a dictation names no key or
-model (no key saved in the settings, as in some development runs):
-- `OPENAI_API_KEY`: used when no key is saved
-- `OPENWHISPER_MODEL`: optional override (default: `gpt-transcribe`)
+The API key and transcription model come only from the app's settings.
+Optional environment variables:
 - `OPENWHISPER_POLISH_MODEL`, `OPENWHISPER_POLISH_REASONING`: optional
   tidy model and reasoning effort (default `gpt-5-nano`, `minimal`)
 

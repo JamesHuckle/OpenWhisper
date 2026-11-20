@@ -52,23 +52,6 @@ pub fn refine_model() -> &'static str {
     &shared().refine_model
 }
 
-/// The model a dictation uses: a saved name from before the gpt-transcribe
-/// family moves to its replacement, and a model the app does not offer is
-/// refused.
-pub fn session_transcription_model(model: &str) -> Result<String, String> {
-    let model = model.trim();
-    let model = shared()
-        .legacy_transcription_models
-        .get(model)
-        .map(String::as_str)
-        .unwrap_or(model);
-    if is_supported_transcription_model(model) {
-        Ok(model.to_string())
-    } else {
-        Err(format!("Unsupported transcription model: {model}"))
-    }
-}
-
 /// Settings saved before the gpt-transcribe family move to its replacement;
 /// any other model the app no longer offers falls back to the default.
 pub fn migrate_transcription_model(model: &str) -> String {
@@ -96,18 +79,9 @@ mod tests {
     }
 
     #[test]
-    fn a_dictation_uses_an_offered_model_or_is_refused() {
+    fn the_shared_list_names_the_live_and_tidy_models() {
         assert_eq!(live_transcription_model(), "gpt-live-transcribe");
         assert_eq!(refine_model(), "gpt-5-nano");
-        assert_eq!(session_transcription_model("gpt-transcribe").unwrap(), "gpt-transcribe");
-        assert_eq!(
-            session_transcription_model("gpt-realtime-transcribe").unwrap(),
-            "gpt-live-transcribe"
-        );
-        assert_eq!(
-            session_transcription_model("whisper-1").unwrap_err(),
-            "Unsupported transcription model: whisper-1"
-        );
     }
 
     #[test]

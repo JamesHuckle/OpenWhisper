@@ -98,7 +98,6 @@ pub fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
 
 /// The settings one dictation uses: the key and model as well as the
 /// prompts, read when it starts, so a later save applies to the next one.
-/// An empty key falls back to the `OPENAI_API_KEY` environment variable.
 pub fn session_settings(settings: &AppSettings, profile_id: &str) -> SessionSettings {
     SessionSettings {
         profile_id: profile_id.to_string(),

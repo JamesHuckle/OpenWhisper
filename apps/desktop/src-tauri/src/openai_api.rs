@@ -125,7 +125,7 @@ impl fmt::Display for ApiError {
             } => write!(f, "Error code: {status} - {message}"),
             ApiError::Connection(detail) => write!(f, "Connection error: {detail}"),
             ApiError::Timeout => write!(f, "Request timed out."),
-            ApiError::MissingKey => write!(f, "OPENAI_API_KEY is not set"),
+            ApiError::MissingKey => write!(f, "Add your OpenAI API key in settings"),
             ApiError::Unexpected(detail) => write!(f, "Unexpected answer from OpenAI: {detail}"),
         }
     }
@@ -1027,6 +1027,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error, ApiError::MissingKey);
+        assert_eq!(error.to_string(), "Add your OpenAI API key in settings");
         assert!(server.received().is_empty());
     }
 

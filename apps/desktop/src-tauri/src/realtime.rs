@@ -70,7 +70,7 @@ impl RealtimeStream {
         ensure_crypto_provider();
         let api_key = api_key.trim();
         if api_key.is_empty() {
-            return Err("OPENAI_API_KEY is not set".into());
+            return Err("Add your OpenAI API key in settings".into());
         }
         let mut request = realtime_url(base_url)
             .into_client_request()
@@ -567,6 +567,6 @@ mod tests {
             .await
             .err()
             .unwrap();
-        assert_eq!(error, "OPENAI_API_KEY is not set");
+        assert_eq!(error, "Add your OpenAI API key in settings");
     }
 }

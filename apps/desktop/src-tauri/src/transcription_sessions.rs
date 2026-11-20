@@ -19,10 +19,7 @@ use crate::audio_rules::{
     echoes_prompt, no_speech_reason, no_speech_reason_from_counters, pcm_peak, pcm_rate, rules,
 };
 use crate::debug_log::debug_log_line;
-use crate::models::{
-    default_transcription_model, live_transcription_model, refine_model,
-    session_transcription_model,
-};
+use crate::models::{default_transcription_model, live_transcription_model, refine_model};
 use crate::openai_api::{HttpApi, DEFAULT_BASE_URL};
 use crate::realtime::{DeltaHandler, RealtimeStream, FINAL_TIMEOUT};
 use crate::transcriber::{
@@ -54,9 +51,10 @@ const APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionSettings {
     pub profile_id: String,
-    /// Empty falls back to the `OPENAI_API_KEY` environment variable.
+    /// The saved key; the window starts no dictation without one.
     pub openai_api_key: String,
-    /// Empty falls back to `OPENWHISPER_MODEL`, then the default model.
+    /// The saved model, already moved off old names and checked when the
+    /// settings were loaded or saved.
     pub transcription_model: String,
     pub prompt: String,
     pub refine_enabled: bool,
@@ -246,21 +244,10 @@ impl Sessions {
     /// Starts a dictation and returns its session id. A Live dictation
     /// connects at once, so the first words are heard.
     pub async fn start(&self, settings: SessionSettings) -> Result<String, String> {
-        let requested = if settings.transcription_model.trim().is_empty() {
-            env_or("OPENWHISPER_MODEL", &default_transcription_model())
-        } else {
-            settings.transcription_model.clone()
-        };
-        let mut model =
-            session_transcription_model(&requested).map_err(|error| bad_request(&error))?;
+        let mut model = settings.transcription_model;
         if settings.standard_only && model == live_transcription_model() {
             model = default_transcription_model();
         }
-        let api_key = env_or("OPENAI_API_KEY", "");
-        let api_key = match settings.openai_api_key.trim() {
-            "" => api_key,
-            saved => saved.to_string(),
-        };
         // Never log the key, the prompts or the dictated text.
         debug_log_line(
             "transcriber",
@@ -279,7 +266,7 @@ impl Sessions {
             prompt: settings.prompt,
             refine_enabled: settings.refine_enabled,
             refine_prompt: settings.refine_prompt,
-            api_key,
+            api_key: settings.openai_api_key,
             live: model == live_transcription_model(),
             model,
             cancel: CancellationToken::new(),
@@ -1089,7 +1076,7 @@ mod tests {
             .sessions
             .start(SessionSettings {
                 openai_api_key: "sk-new".into(),
-                transcription_model: "gpt-4o-transcribe".into(),
+                transcription_model: "gpt-transcribe".into(),
                 ..SessionSettings::default()
             })
             .await
@@ -1101,29 +1088,9 @@ mod tests {
         let received = server.received();
         assert_eq!(received[0].authorization, "Bearer sk-test");
         assert_eq!(received[1].authorization, "Bearer sk-new");
-        // A model saved before gpt-transcribe moves to its replacement.
         assert_eq!(
             received[1].field("model").as_deref(),
             Some("gpt-transcribe")
-        );
-    }
-
-    #[tokio::test]
-    async fn an_unknown_model_is_refused() {
-        let h = harness("http://127.0.0.1:9/v1");
-        let error = h
-            .sessions
-            .start(SessionSettings {
-                openai_api_key: "sk-secret-key".into(),
-                transcription_model: "whisper-1".into(),
-                ..SessionSettings::default()
-            })
-            .await
-            .unwrap_err();
-
-        assert_eq!(
-            error,
-            "bad_request: Unsupported transcription model: whisper-1"
         );
     }
 
