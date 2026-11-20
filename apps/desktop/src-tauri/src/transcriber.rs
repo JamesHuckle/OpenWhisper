@@ -169,9 +169,9 @@ impl<A: OpenAiApi> Transcriber<A> {
         on_progress: &(dyn Fn(usize, usize) + Send + Sync),
     ) -> Result<String, TranscribeError> {
         let uploads = if audio.microphone {
-            UploadFiles(flac_upload_parts(&audio.audio_path).await)
+            flac_upload_parts(&audio.audio_path).await
         } else {
-            UploadFiles(Vec::new())
+            UploadFiles::default()
         };
         self.transcribe_with_uploads(audio, prompt, on_progress, &uploads.0)
             .await
@@ -540,37 +540,53 @@ pub struct SavedAudio {
     pub parts_path: Option<PathBuf>,
 }
 
-/// The FLAC upload parts of one transcription, deleted when it returns,
-/// fails or is cancelled.
-struct UploadFiles(Vec<UploadPart>);
+/// The FLAC upload parts of one transcription, and the folder of its own
+/// they are written to, deleted when it returns, fails or is cancelled.
+#[derive(Default)]
+struct UploadFiles(Vec<UploadPart>, Option<PathBuf>);
 
 impl Drop for UploadFiles {
     fn drop(&mut self) {
         for part in &self.0 {
             let _ = fs::remove_file(&part.path);
         }
+        if let Some(dir) = &self.1 {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 }
 
 /// Writes the smaller, lossless FLAC parts of a microphone recording that are
-/// uploaded in place of its WAV, one request each, in the recording's
-/// folder. Empty when there are no parts: the WAV is then sent, as it is for
-/// the rest of a recording once the service refuses a part.
+/// uploaded in place of its WAV, one request each, in a new folder inside
+/// the recording's. Empty when there are no parts: the WAV is then sent, as
+/// it is for the rest of a recording once the service refuses a part.
+///
+/// The encoder owns its files until it hands them over, so a transcription
+/// cancelled while it encodes still has them deleted once it finishes, and a
+/// retry meanwhile writes to a folder of its own.
 ///
 /// Logs how long the encoding took and the sizes before and after, so the
 /// wait it adds between stopping and the text appearing can be checked.
-async fn flac_upload_parts(wav_path: &Path) -> Vec<UploadPart> {
+async fn flac_upload_parts(wav_path: &Path) -> UploadFiles {
     let wav_bytes = fs::metadata(wav_path).map(|m| m.len()).unwrap_or(0);
     let started = Instant::now();
     let path = wav_path.to_path_buf();
     let written = blocking(move || {
-        let dir = path.parent().unwrap_or(Path::new("."));
-        flac_upload::write_upload_parts(&path, dir, max_upload_bytes())
+        let dir = path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(format!("upload-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir)?;
+        let mut uploads = UploadFiles(Vec::new(), Some(dir));
+        let dir = uploads.1.as_deref().unwrap_or(Path::new("."));
+        uploads.0 = flac_upload::write_upload_parts(&path, dir, max_upload_bytes())?;
+        Ok(uploads)
     })
     .await;
     let encode_ms = started.elapsed().as_millis();
     match written {
-        Ok(parts) => {
+        Ok(uploads) => {
+            let parts = &uploads.0;
             let flac_bytes: u64 = parts
                 .iter()
                 .filter_map(|part| fs::metadata(&part.path).ok())
@@ -583,11 +599,11 @@ async fn flac_upload_parts(wav_path: &Path) -> Vec<UploadPart> {
                     parts.len()
                 ),
             );
-            parts
+            uploads
         }
         Err(error) => {
             debug_log_line("recording", &format!("FLAC upload parts failed: {error}"));
-            Vec::new()
+            UploadFiles::default()
         }
     }
 }
@@ -1456,6 +1472,22 @@ mod tests {
             pcm_start: 0,
             pcm_end: end,
         }]
+    }
+
+    #[test]
+    fn upload_parts_still_encoding_when_cancelled_are_deleted_once_written() {
+        let dir = TempDir::new();
+        let recording = recording(&dir.0);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        // Cancelled as soon as the encoder has started.
+        runtime.block_on(async {
+            let encoding = flac_upload_parts(&recording.audio_path);
+            let _ = tokio::time::timeout(std::time::Duration::ZERO, encoding).await;
+        });
+        // Dropping the runtime waits for the encoder to finish.
+        drop(runtime);
+
+        assert_eq!(files(&dir.0), ["audio.wav"]);
     }
 
     #[tokio::test]
