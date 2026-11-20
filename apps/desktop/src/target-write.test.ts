@@ -105,7 +105,7 @@ describe("delivering the final transcript", () => {
     const run = delivery({ fail: "insert_final_text", saveFails: true });
     await expect(deliverFinalTranscript(run.steps)).resolves.toBeUndefined();
     expect(run.remembered()).toBe("Hello world");
-    expect(run.notices).toEqual(["Transcript not saved; could not paste it. Copy it from the menu now"]);
+    expect(run.notices).toEqual(["Transcript not saved; could not paste it. Transcribe it again from the menu"]);
     expectNoNewTranscription(run.commands);
   });
 

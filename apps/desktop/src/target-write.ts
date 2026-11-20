@@ -79,13 +79,13 @@ export async function deliverFinalTranscript(steps: FinalTranscriptDelivery): Pr
     }
   } catch (error) {
     log(`final transcript delivery failed=${describe(error)}`);
-    // The menu copies the last transcript, kept in memory even when the
-    // recording's history card could not save it.
+    // A saved transcript has a Copy button on its recording in the menu. One
+    // that could not be saved has none; its recording shows Transcribe instead.
     const step = steps.paste ? "paste" : "copy";
     notify(
       saved
         ? `Transcript saved; could not ${step} it. Copy it from the menu`
-        : `Transcript not saved; could not ${step} it. Copy it from the menu now`,
+        : `Transcript not saved; could not ${step} it. Transcribe it again from the menu`,
       6000,
     );
   }
