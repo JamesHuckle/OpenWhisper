@@ -1355,6 +1355,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_recording_cut_short_is_reused_on_a_retry() {
+        let dir = TempDir::new();
+        let path = long_wav(&dir.0, &[SPEECH; 3]);
+        // The header claims more audio than the file holds, as after a crash
+        // mid-recording: the last part ends where the file does.
+        let audio_bytes = fs::metadata(&path).unwrap().len() - 44;
+        let mut file = File::options().write(true).open(&path).unwrap();
+        file.write_all(&crate::recording_store::wav_header(
+            (audio_bytes + 24_000) as u32,
+            1,
+            2,
+            24_000,
+        ))
+        .unwrap();
+        drop(file);
+
+        let run = transcribe_long(&path, ok(&["One.", "Two.", "Three."]), "Zoon", &[]).await;
+        let retry = transcribe_long(&path, ok(&[]), "Zoon", &[]).await;
+
+        assert_eq!(run.result.unwrap(), "One. Two. Three.");
+        assert_eq!(
+            saved_texts(&path)[2],
+            (2 * part_bytes(), audio_bytes, "Three.".into())
+        );
+        assert_eq!(retry.result.unwrap(), "One. Two. Three.");
+        assert!(retry.prompts.is_empty());
+    }
+
+    #[tokio::test]
     async fn an_empty_part_that_finished_is_not_sent_again() {
         let dir = TempDir::new();
         let path = long_wav(&dir.0, &[SPEECH; 3]);
