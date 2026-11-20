@@ -15,10 +15,39 @@ use crate::foreground_app::ForegroundApp;
 use crate::overlay_geometry::cursor_entered_new_monitor;
 use crate::overlay_positioner;
 use crate::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
+use std::ffi::c_void;
+use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use windows::core::{PCWSTR, PWSTR};
+use windows::Win32::Foundation::{CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, MAX_PATH, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Ole::{
+    CF_BITMAP, CF_DSPBITMAP, CF_DSPENHMETAFILE, CF_DSPMETAFILEPICT, CF_ENHMETAFILE, CF_GDIOBJLAST,
+    CF_METAFILEPICT, CF_OWNERDISPLAY, CF_PALETTE, CF_PRIVATEFIRST,
+};
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_BACK, VK_CONTROL,
+    VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    VK_SPACE, VK_V,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetMessageW,
+    GetWindowLongW, GetWindowThreadProcessId, IsWindow, SendMessageTimeoutW, SetForegroundWindow,
+    SetWindowsHookExW, WindowFromPoint, ES_PASSWORD, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND,
+    GUITHREADINFO, GWL_STYLE, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG,
+    MSLLHOOKSTRUCT, SMTO_ABORTIFHUNG, WH_KEYBOARD_LL, WH_MOUSE_LL, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEMOVE,
+    WM_NULL, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+};
 
 static TRACKED_HWND: AtomicIsize = AtomicIsize::new(0);
 static TRACKED_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -66,49 +95,6 @@ pub enum WriteOutcome {
     Copied(Blocked),
 }
 
-const INPUT_KEYBOARD: u32 = 1;
-const KEYEVENTF_KEYUP: u32 = 0x0002;
-const KEYEVENTF_UNICODE: u32 = 0x0004;
-const VK_BACK: u16 = 0x08;
-const VK_CONTROL: u16 = 0x11;
-const VK_V: u16 = 0x56;
-const VK_LCONTROL: u16 = 0xA2;
-const VK_RCONTROL: u16 = 0xA3;
-const VK_LMENU: i32 = 0xA4;
-const VK_RMENU: i32 = 0xA5;
-const VK_LWIN: i32 = 0x5B;
-const VK_RWIN: i32 = 0x5C;
-
-const WH_KEYBOARD_LL: i32 = 13;
-const WH_MOUSE_LL: i32 = 14;
-const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
-const EVENT_OBJECT_FOCUS: u32 = 0x8005;
-const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
-const WINEVENT_SKIPOWNPROCESS: u32 = 0x0002;
-const WM_NULL: u32 = 0x0000;
-const WM_KEYDOWN: u32 = 0x0100;
-const WM_KEYUP: u32 = 0x0101;
-const WM_SYSKEYDOWN: u32 = 0x0104;
-const WM_SYSKEYUP: u32 = 0x0105;
-const WM_MOUSEMOVE: u32 = 0x0200;
-const WM_LBUTTONDOWN: u32 = 0x0201;
-const WM_RBUTTONDOWN: u32 = 0x0204;
-const WM_MBUTTONDOWN: u32 = 0x0207;
-const WM_XBUTTONDOWN: u32 = 0x020B;
-const VK_SHIFT_CODE: u32 = 0x10;
-const VK_LSHIFT_CODE: u32 = 0xA0;
-const VK_RSHIFT_CODE: u32 = 0xA1;
-const VK_CONTROL_CODE: u32 = 0x11;
-const VK_LCONTROL_CODE: u32 = 0xA2;
-const VK_RCONTROL_CODE: u32 = 0xA3;
-const VK_SPACE: u32 = 0x20;
-const LLKHF_INJECTED: u32 = 0x10;
-const LLMHF_INJECTED: u32 = 0x01;
-const SMTO_ABORTIFHUNG: u32 = 0x0002;
-const GWL_STYLE: i32 = -16;
-const ES_PASSWORD: i32 = 0x0020;
-const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-const MAX_PATH: usize = 260;
 const DBG_CTRL_DOWN: u32 = 1 << 0;
 const DBG_CTRL_UP: u32 = 1 << 1;
 const DBG_SPACE_DOWN: u32 = 1 << 2;
@@ -118,160 +104,56 @@ const DBG_START_FLAG: u32 = 1 << 5;
 const DBG_STOP_BY_CTRL: u32 = 1 << 6;
 const DBG_STOP_BY_SPACE: u32 = 1 << 7;
 const DBG_TOGGLE_FLAG: u32 = 1 << 8;
+/// The name each debug bit has in the log, in log order.
+const DEBUG_EVENT_NAMES: [(u32, &str); 9] = [
+    (DBG_CTRL_DOWN, "ctrl_down"),
+    (DBG_CTRL_UP, "ctrl_up"),
+    (DBG_SPACE_DOWN, "space_down"),
+    (DBG_SPACE_REPEAT, "space_repeat"),
+    (DBG_SPACE_UP, "space_up"),
+    (DBG_START_FLAG, "start_flag"),
+    (DBG_STOP_BY_CTRL, "stop_flag_ctrl_up"),
+    (DBG_STOP_BY_SPACE, "stop_flag_space_up"),
+    (DBG_TOGGLE_FLAG, "toggle_flag"),
+];
 
 /// Ctrl+V is only queued: the target reads the clipboard when it handles
 /// the key, and browsers read it on another thread a moment later.
 const PASTE_HANDLED_TIMEOUT_MS: u32 = 1000;
 const PASTE_SETTLE: Duration = Duration::from_millis(300);
 const CLIPBOARD_OPEN_ATTEMPTS: usize = 10;
+/// A key press; Windows has no flag for it, only for the release.
+const KEY_DOWN: KEYBD_EVENT_FLAGS = KEYBD_EVENT_FLAGS(0);
 
-#[repr(C)]
-struct Rect {
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
+/// Handles are kept as `isize` (in atomics and the session); they become
+/// `HWND` and `HHOOK` only for a Windows call.
+fn to_hwnd(handle: isize) -> HWND {
+    HWND(handle as *mut c_void)
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Point {
-    x: i32,
-    y: i32,
+fn to_hhook(handle: isize) -> HHOOK {
+    HHOOK(handle as *mut c_void)
 }
 
-#[repr(C)]
-struct GuiThreadInfo {
-    cb_size: u32,
-    flags: u32,
-    hwnd_active: isize,
-    hwnd_focus: isize,
-    hwnd_capture: isize,
-    hwnd_menu_owner: isize,
-    hwnd_move_size: isize,
-    hwnd_caret: isize,
-    rc_caret: Rect,
-}
-
-#[repr(C)]
-struct KbdInput {
-    input_type: u32,
-    _pad0: u32,
-    w_vk: u16,
-    w_scan: u16,
-    dw_flags: u32,
-    time: u32,
-    _pad1: u32,
-    dw_extra_info: usize,
-    _union_pad: [u8; 8],
-}
-
-#[repr(C)]
-struct KbdLlHookStruct {
-    vk_code: u32,
-    scan_code: u32,
-    flags: u32,
-    time: u32,
-    dw_extra_info: usize,
-}
-
-#[repr(C)]
-struct MsLlHookStruct {
-    pt: Point,
-    mouse_data: u32,
-    flags: u32,
-    time: u32,
-    dw_extra_info: usize,
-}
-
-#[link(name = "user32")]
-extern "system" {
-    fn SendInput(c_inputs: u32, p_inputs: *const KbdInput, cb_size: i32) -> u32;
-    fn GetForegroundWindow() -> isize;
-    fn SetForegroundWindow(h_wnd: isize) -> i32;
-    fn SetFocus(h_wnd: isize) -> isize;
-    fn IsWindow(h_wnd: isize) -> i32;
-    fn GetGUIThreadInfo(id_thread: u32, pgui: *mut GuiThreadInfo) -> i32;
-    fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
-    fn GetWindowThreadProcessId(h_wnd: isize, lp_process_id: *mut u32) -> u32;
-    fn GetAsyncKeyState(v_key: i32) -> i16;
-    fn GetWindowLongW(h_wnd: isize, n_index: i32) -> i32;
-    fn GetClassNameW(h_wnd: isize, lp_class_name: *mut u16, n_max_count: i32) -> i32;
-    fn WindowFromPoint(point: Point) -> isize;
-    fn SendMessageTimeoutW(
-        h_wnd: isize,
-        msg: u32,
-        w_param: usize,
-        l_param: isize,
-        fu_flags: u32,
-        u_timeout: u32,
-        lpdw_result: *mut usize,
-    ) -> isize;
-    fn SetWindowsHookExW(
-        id_hook: i32,
-        lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize,
-        h_mod: isize,
-        dw_thread_id: u32,
-    ) -> isize;
-    fn CallNextHookEx(hhk: isize, n_code: i32, w_param: usize, l_param: isize) -> isize;
-    fn SetWinEventHook(
-        event_min: u32,
-        event_max: u32,
-        hmod_win_event_proc: isize,
-        pfn_win_event_proc: unsafe extern "system" fn(isize, u32, isize, i32, i32, u32, u32),
-        id_process: u32,
-        id_thread: u32,
-        dw_flags: u32,
-    ) -> isize;
-    fn GetMessageW(
-        lp_msg: *mut u64,
-        h_wnd: isize,
-        w_msg_filter_min: u32,
-        w_msg_filter_max: u32,
-    ) -> i32;
-    fn GetModuleHandleW(lp_module_name: *const u16) -> isize;
-}
-
-#[link(name = "kernel32")]
-extern "system" {
-    fn GetCurrentThreadId() -> u32;
-    fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> isize;
-    fn CloseHandle(h_object: isize) -> i32;
-    fn QueryFullProcessImageNameW(
-        h_process: isize,
-        dw_flags: u32,
-        lp_exe_name: *mut u16,
-        lpdw_size: *mut u32,
-    ) -> i32;
+fn foreground_window() -> isize {
+    unsafe { GetForegroundWindow() }.0 as isize
 }
 
 fn is_own_process(hwnd: isize) -> bool {
     let mut pid: u32 = 0;
-    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    unsafe { GetWindowThreadProcessId(to_hwnd(hwnd), Some(&mut pid)) };
     pid == std::process::id()
 }
 
 /// The control with keyboard focus inside `hwnd`'s UI thread, or 0.
 fn focused_control(hwnd: isize) -> isize {
-    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, std::ptr::null_mut()) };
-    let mut info = GuiThreadInfo {
-        cb_size: std::mem::size_of::<GuiThreadInfo>() as u32,
-        flags: 0,
-        hwnd_active: 0,
-        hwnd_focus: 0,
-        hwnd_capture: 0,
-        hwnd_menu_owner: 0,
-        hwnd_move_size: 0,
-        hwnd_caret: 0,
-        rc_caret: Rect {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        },
+    let thread_id = unsafe { GetWindowThreadProcessId(to_hwnd(hwnd), None) };
+    let mut info = GUITHREADINFO {
+        cbSize: size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
     };
-    if thread_id != 0 && unsafe { GetGUIThreadInfo(thread_id, &mut info) } != 0 {
-        info.hwnd_focus
+    if thread_id != 0 && unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_ok() {
+        info.hwndFocus.0 as isize
     } else {
         0
     }
@@ -287,7 +169,7 @@ fn wake_dispatcher() {
 /// whenever Windows reports a focus change (see `install_input_hooks`);
 /// it never changes the target locked for a recording.
 pub fn track_foreground() {
-    let hwnd = unsafe { GetForegroundWindow() };
+    let hwnd = foreground_window();
     if hwnd != 0 && !is_own_process(hwnd) {
         TRACKED_FOCUS_HWND.store(focused_control(hwnd), Ordering::Relaxed);
         if TRACKED_HWND.swap(hwnd, Ordering::Relaxed) != hwnd {
@@ -321,7 +203,7 @@ pub fn foreground_app_name() -> Option<String> {
         return None;
     }
     let mut pid: u32 = 0;
-    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    unsafe { GetWindowThreadProcessId(to_hwnd(hwnd), Some(&mut pid)) };
     lock_foreground_app().name_for(pid, process_name)
 }
 
@@ -333,15 +215,19 @@ pub fn foreground_app_change() -> Option<Option<String>> {
 }
 
 fn process_name(pid: u32) -> Option<String> {
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle == 0 {
-        return None;
-    }
-    let mut buf = [0u16; MAX_PATH];
-    let mut size = MAX_PATH as u32;
-    let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
-    unsafe { CloseHandle(handle) };
-    if ok == 0 || size == 0 {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut buf = [0u16; MAX_PATH as usize];
+    let mut size = MAX_PATH;
+    let read = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut size,
+        )
+    };
+    let _ = unsafe { CloseHandle(handle) };
+    if read.is_err() || size == 0 {
         return None;
     }
     let path = String::from_utf16_lossy(&buf[..size as usize]);
@@ -374,57 +260,33 @@ pub fn take_debug_events() -> u32 {
 }
 
 pub fn describe_debug_events(bits: u32) -> String {
-    let mut events = Vec::new();
-    if bits & DBG_CTRL_DOWN != 0 {
-        events.push("ctrl_down");
-    }
-    if bits & DBG_CTRL_UP != 0 {
-        events.push("ctrl_up");
-    }
-    if bits & DBG_SPACE_DOWN != 0 {
-        events.push("space_down");
-    }
-    if bits & DBG_SPACE_REPEAT != 0 {
-        events.push("space_repeat");
-    }
-    if bits & DBG_SPACE_UP != 0 {
-        events.push("space_up");
-    }
-    if bits & DBG_START_FLAG != 0 {
-        events.push("start_flag");
-    }
-    if bits & DBG_STOP_BY_CTRL != 0 {
-        events.push("stop_flag_ctrl_up");
-    }
-    if bits & DBG_STOP_BY_SPACE != 0 {
-        events.push("stop_flag_space_up");
-    }
-    if bits & DBG_TOGGLE_FLAG != 0 {
-        events.push("toggle_flag");
-    }
-    events.join(",")
+    DEBUG_EVENT_NAMES
+        .iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .map(|(_, name)| *name)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 // ----- Checking the locked target before a write -----
 
-fn key_held(vk: i32) -> bool {
-    let state = unsafe { GetAsyncKeyState(vk) };
+fn key_held(vk: VIRTUAL_KEY) -> bool {
+    let state = unsafe { GetAsyncKeyState(vk.0 as i32) };
     state < 0
 }
 
 fn restore_target_focus(session: &PasteSession) {
-    unsafe { SetForegroundWindow(session.hwnd) };
+    let _ = unsafe { SetForegroundWindow(to_hwnd(session.hwnd)) };
     let focus_hwnd = session.focus_hwnd;
-    if focus_hwnd != 0 && unsafe { IsWindow(focus_hwnd) } != 0 {
-        let target_thread =
-            unsafe { GetWindowThreadProcessId(session.hwnd, std::ptr::null_mut()) };
+    if focus_hwnd != 0 && unsafe { IsWindow(Some(to_hwnd(focus_hwnd))) }.as_bool() {
+        let target_thread = unsafe { GetWindowThreadProcessId(to_hwnd(session.hwnd), None) };
         let current_thread = unsafe { GetCurrentThreadId() };
         let attached = target_thread != 0
             && target_thread != current_thread
-            && unsafe { AttachThreadInput(current_thread, target_thread, 1) } != 0;
-        unsafe { SetFocus(focus_hwnd) };
+            && unsafe { AttachThreadInput(current_thread, target_thread, true) }.as_bool();
+        let _ = unsafe { SetFocus(Some(to_hwnd(focus_hwnd))) };
         if attached {
-            unsafe { AttachThreadInput(current_thread, target_thread, 0) };
+            let _ = unsafe { AttachThreadInput(current_thread, target_thread, false) };
         }
     }
     std::thread::sleep(Duration::from_millis(80));
@@ -433,24 +295,24 @@ fn restore_target_focus(session: &PasteSession) {
 /// The target keeps focus, or gets it back when the user only clicked
 /// OpenWhisper. Focus is never taken from another app the user moved to.
 fn bring_target_forward(session: &PasteSession) -> bool {
-    let foreground = unsafe { GetForegroundWindow() };
+    let foreground = foreground_window();
     if foreground == session.hwnd {
         return true;
     }
     if foreground != 0 && is_own_process(foreground) {
         restore_target_focus(session);
-        return unsafe { GetForegroundWindow() } == session.hwnd;
+        return foreground_window() == session.hwnd;
     }
     false
 }
 
 /// Classic Win32 edit controls mark password fields with `ES_PASSWORD`.
 fn is_win32_password_edit(hwnd: isize) -> bool {
-    if hwnd == 0 || unsafe { GetWindowLongW(hwnd, GWL_STYLE) } & ES_PASSWORD == 0 {
+    if hwnd == 0 || unsafe { GetWindowLongW(to_hwnd(hwnd), GWL_STYLE) } & ES_PASSWORD == 0 {
         return false;
     }
     let mut buf = [0u16; 64];
-    let len = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+    let len = unsafe { GetClassNameW(to_hwnd(hwnd), &mut buf) };
     if len <= 0 {
         return false;
     }
@@ -461,7 +323,8 @@ fn is_win32_password_edit(hwnd: isize) -> bool {
 /// Also returns the input count it checked against.
 fn observe(session: &PasteSession) -> (Observation, u64) {
     let input_count = USER_INPUT_COUNT.load(Ordering::SeqCst);
-    let target_alive = session.hwnd != 0 && unsafe { IsWindow(session.hwnd) } != 0;
+    let target_alive =
+        session.hwnd != 0 && unsafe { IsWindow(Some(to_hwnd(session.hwnd))) }.as_bool();
     let foreground_is_target = target_alive && bring_target_forward(session);
     let focus_now = if foreground_is_target {
         focused_control(session.hwnd)
@@ -595,17 +458,11 @@ fn copy_instead(text: &str, blocked: Blocked) -> Result<WriteOutcome, String> {
 // ----- Keystrokes -----
 
 /// True when Windows accepted every key.
-fn send_inputs(inputs: &[KbdInput]) -> bool {
+fn send_inputs(inputs: &[INPUT]) -> bool {
     if inputs.is_empty() {
         return true;
     }
-    let accepted = unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            std::mem::size_of::<KbdInput>() as i32,
-        )
-    };
+    let accepted = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
     accepted == inputs.len() as u32
 }
 
@@ -613,9 +470,9 @@ fn send_inputs(inputs: &[KbdInput]) -> bool {
 /// shortcuts and Backspace would delete whole words. Release Ctrl first;
 /// the keyboard hook ignores injected keys, so the gesture keeps working.
 fn release_held_ctrl() {
-    let inputs: Vec<KbdInput> = [VK_LCONTROL, VK_RCONTROL]
+    let inputs: Vec<INPUT> = [VK_LCONTROL, VK_RCONTROL]
         .into_iter()
-        .filter(|vk| key_held(*vk as i32))
+        .filter(|vk| key_held(*vk))
         .map(|vk| kbd(vk, KEYEVENTF_KEYUP))
         .collect();
     send_inputs(&inputs);
@@ -626,7 +483,7 @@ fn type_unicode(text: &str) -> bool {
     for chunk in units.chunks(64) {
         let mut inputs = Vec::with_capacity(chunk.len() * 2);
         for &unit in chunk {
-            inputs.push(unicode_key(unit, 0));
+            inputs.push(unicode_key(unit, KEY_DOWN));
             inputs.push(unicode_key(unit, KEYEVENTF_KEYUP));
         }
         if !send_inputs(&inputs) {
@@ -642,7 +499,7 @@ fn press_backspace(count: usize) -> bool {
         let chunk_size = remaining.min(128);
         let mut inputs = Vec::with_capacity(chunk_size * 2);
         for _ in 0..chunk_size {
-            inputs.push(kbd(VK_BACK, 0));
+            inputs.push(kbd(VK_BACK, KEY_DOWN));
             inputs.push(kbd(VK_BACK, KEYEVENTF_KEYUP));
         }
         if !send_inputs(&inputs) {
@@ -655,8 +512,8 @@ fn press_backspace(count: usize) -> bool {
 
 fn paste_shortcut() -> bool {
     send_inputs(&[
-        kbd(VK_CONTROL, 0),
-        kbd(VK_V, 0),
+        kbd(VK_CONTROL, KEY_DOWN),
+        kbd(VK_V, KEY_DOWN),
         kbd(VK_V, KEYEVENTF_KEYUP),
         kbd(VK_CONTROL, KEYEVENTF_KEYUP),
     ])
@@ -711,44 +568,35 @@ fn wait_until_pasted(target: isize) -> bool {
     let mut result = 0usize;
     let handled = unsafe {
         SendMessageTimeoutW(
-            target,
+            to_hwnd(target),
             WM_NULL,
-            0,
-            0,
+            WPARAM(0),
+            LPARAM(0),
             SMTO_ABORTIFHUNG,
             PASTE_HANDLED_TIMEOUT_MS,
-            &mut result,
+            Some(&mut result),
         )
     };
     std::thread::sleep(PASTE_SETTLE);
-    handled != 0
+    handled.0 != 0
 }
 
 /// Clipboard formats whose data is plain memory. Bitmaps, metafiles and
 /// palettes are GDI handles (their DIB forms are kept), and private
 /// formats hold handles only their owner understands.
 fn is_memory_format(format: u32) -> bool {
-    const CF_BITMAP: u32 = 2;
-    const CF_METAFILEPICT: u32 = 3;
-    const CF_PALETTE: u32 = 9;
-    const CF_ENHMETAFILE: u32 = 14;
-    const CF_OWNERDISPLAY: u32 = 0x80;
-    const CF_DSPBITMAP: u32 = 0x82;
-    const CF_DSPMETAFILEPICT: u32 = 0x83;
-    const CF_DSPENHMETAFILE: u32 = 0x8E;
-    const CF_PRIVATEFIRST: u32 = 0x200;
-    const CF_GDIOBJLAST: u32 = 0x3FF;
-    !matches!(
-        format,
-        CF_BITMAP
-            | CF_METAFILEPICT
-            | CF_PALETTE
-            | CF_ENHMETAFILE
-            | CF_OWNERDISPLAY
-            | CF_DSPBITMAP
-            | CF_DSPMETAFILEPICT
-            | CF_DSPENHMETAFILE
-    ) && !(CF_PRIVATEFIRST..=CF_GDIOBJLAST).contains(&format)
+    let handle_formats = [
+        CF_BITMAP,
+        CF_METAFILEPICT,
+        CF_PALETTE,
+        CF_ENHMETAFILE,
+        CF_OWNERDISPLAY,
+        CF_DSPBITMAP,
+        CF_DSPMETAFILEPICT,
+        CF_DSPENHMETAFILE,
+    ];
+    let private_formats = u32::from(CF_PRIVATEFIRST.0)..=u32::from(CF_GDIOBJLAST.0);
+    !handle_formats.iter().any(|cf| u32::from(cf.0) == format) && !private_formats.contains(&format)
 }
 
 /// Requires the clipboard to be open.
@@ -787,7 +635,7 @@ fn mark_clipboard_item(format_names: &[&str]) {
 // ----- Low-level keyboard and mouse hooks -----
 
 fn note_user_input() {
-    let foreground = unsafe { GetForegroundWindow() };
+    let foreground = foreground_window();
     if foreground == 0 || !is_own_process(foreground) {
         USER_INPUT_COUNT.fetch_add(1, Ordering::SeqCst);
     }
@@ -805,19 +653,21 @@ fn record_key_event(bit: u32) {
 // the Ctrl+Space gesture is active.
 unsafe extern "system" fn ll_keyboard_proc(
     n_code: i32,
-    w_param: usize,
-    l_param: isize,
-) -> isize {
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
     if n_code >= 0 {
-        let info = &*(l_param as *const KbdLlHookStruct);
+        let info = &*(l_param.0 as *const KBDLLHOOKSTRUCT);
 
-        if info.flags & LLKHF_INJECTED == 0 {
-            let msg = w_param as u32;
+        if !info.flags.contains(LLKHF_INJECTED) {
+            let msg = w_param.0 as u32;
+            // Virtual-key codes are 1 to 254.
+            let vk = VIRTUAL_KEY(info.vkCode as u16);
             let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
             let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
 
-            match info.vk_code {
-                VK_CONTROL_CODE | VK_LCONTROL_CODE | VK_RCONTROL_CODE => {
+            match vk {
+                VK_CONTROL | VK_LCONTROL | VK_RCONTROL => {
                     if down {
                         CTRL_HELD.store(true, Ordering::SeqCst);
                         record_key_event(DBG_CTRL_DOWN);
@@ -834,7 +684,7 @@ unsafe extern "system" fn ll_keyboard_proc(
                     // Check repeat first: if we're already in press-to-talk, subsequent downs are key repeat
                     if SPACE_SWALLOWED.load(Ordering::SeqCst) && down {
                         record_key_event(DBG_SPACE_REPEAT);
-                        return 1;
+                        return LRESULT(1);
                     }
 
                     if down && CTRL_HELD.load(Ordering::SeqCst) {
@@ -849,7 +699,7 @@ unsafe extern "system" fn ll_keyboard_proc(
                             TOGGLE_RECORDING.store(true, Ordering::SeqCst);
                             record_key_event(DBG_TOGGLE_FLAG);
                         }
-                        return 1;
+                        return LRESULT(1);
                     }
 
                     if SPACE_SWALLOWED.swap(false, Ordering::SeqCst) && up {
@@ -858,7 +708,7 @@ unsafe extern "system" fn ll_keyboard_proc(
                             PRESS_TO_TALK_STOP.store(true, Ordering::SeqCst);
                             record_key_event(DBG_STOP_BY_SPACE);
                         }
-                        return 1;
+                        return LRESULT(1);
                     }
                 }
                 _ => {}
@@ -867,13 +717,8 @@ unsafe extern "system" fn ll_keyboard_proc(
             // Ctrl and Shift alone never move the cursor; every other key
             // (including Space typed without Ctrl) may.
             let modifier_only = matches!(
-                info.vk_code,
-                VK_CONTROL_CODE
-                    | VK_LCONTROL_CODE
-                    | VK_RCONTROL_CODE
-                    | VK_SHIFT_CODE
-                    | VK_LSHIFT_CODE
-                    | VK_RSHIFT_CODE
+                vk,
+                VK_CONTROL | VK_LCONTROL | VK_RCONTROL | VK_SHIFT | VK_LSHIFT | VK_RSHIFT
             );
             if down && !modifier_only {
                 note_user_input();
@@ -881,18 +726,18 @@ unsafe extern "system" fn ll_keyboard_proc(
         }
     }
     CallNextHookEx(
-        HOOK_HANDLE.load(Ordering::Relaxed),
+        Some(to_hhook(HOOK_HANDLE.load(Ordering::Relaxed))),
         n_code,
         w_param,
         l_param,
     )
 }
 
-unsafe extern "system" fn ll_mouse_proc(n_code: i32, w_param: usize, l_param: isize) -> isize {
+unsafe extern "system" fn ll_mouse_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
     // Every cursor move passes through here: only find its monitor and wake
     // the pill's follower when that changes, so the hook stays fast.
-    if n_code >= 0 && w_param as u32 == WM_MOUSEMOVE {
-        let info = &*(l_param as *const MsLlHookStruct);
+    if n_code >= 0 && w_param.0 as u32 == WM_MOUSEMOVE {
+        let info = &*(l_param.0 as *const MSLLHOOKSTRUCT);
         let monitor = overlay_positioner::monitor_at(info.pt.x, info.pt.y);
         if cursor_entered_new_monitor(&LAST_CURSOR_MONITOR, monitor) {
             if let Some(wake) = MONITOR_WAKE.get() {
@@ -902,21 +747,21 @@ unsafe extern "system" fn ll_mouse_proc(n_code: i32, w_param: usize, l_param: is
     }
     if n_code >= 0
         && matches!(
-            w_param as u32,
+            w_param.0 as u32,
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
         )
     {
-        let info = &*(l_param as *const MsLlHookStruct);
+        let info = &*(l_param.0 as *const MSLLHOOKSTRUCT);
         // Clicks on the OpenWhisper pill do not move the target's cursor.
         if info.flags & LLMHF_INJECTED == 0 {
-            let clicked = WindowFromPoint(info.pt);
+            let clicked = WindowFromPoint(info.pt).0 as isize;
             if clicked == 0 || !is_own_process(clicked) {
                 USER_INPUT_COUNT.fetch_add(1, Ordering::SeqCst);
             }
         }
     }
     CallNextHookEx(
-        MOUSE_HOOK_HANDLE.load(Ordering::Relaxed),
+        Some(to_hhook(MOUSE_HOOK_HANDLE.load(Ordering::Relaxed))),
         n_code,
         w_param,
         l_param,
@@ -926,9 +771,9 @@ unsafe extern "system" fn ll_mouse_proc(n_code: i32, w_param: usize, l_param: is
 /// Windows calls this on this thread's message pump whenever another
 /// program's window comes to the front or a control in it takes focus.
 unsafe extern "system" fn focus_event_proc(
-    _hook: isize,
+    _hook: HWINEVENTHOOK,
     _event: u32,
-    _hwnd: isize,
+    _hwnd: HWND,
     _id_object: i32,
     _id_child: i32,
     _event_thread: u32,
@@ -945,18 +790,21 @@ unsafe extern "system" fn focus_event_proc(
 pub fn install_input_hooks(wake: Sender<()>, monitor_wake: Sender<()>) {
     let _ = DISPATCHER_WAKE.set(wake);
     let _ = MONITOR_WAKE.set(monitor_wake);
-    let h_mod = unsafe { GetModuleHandleW(std::ptr::null()) };
-    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, ll_keyboard_proc, h_mod, 0) };
-    HOOK_HANDLE.store(hook, Ordering::Relaxed);
-    let mouse_hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, ll_mouse_proc, h_mod, 0) };
-    MOUSE_HOOK_HANDLE.store(mouse_hook, Ordering::Relaxed);
+    let h_mod = unsafe { GetModuleHandleW(PCWSTR::null()) }
+        .ok()
+        .map(HINSTANCE::from);
+    // A hook that failed is stored as 0, which CallNextHookEx accepts.
+    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(ll_keyboard_proc), h_mod, 0) };
+    HOOK_HANDLE.store(hook.map_or(0, |h| h.0 as isize), Ordering::Relaxed);
+    let mouse_hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(ll_mouse_proc), h_mod, 0) };
+    MOUSE_HOOK_HANDLE.store(mouse_hook.map_or(0, |h| h.0 as isize), Ordering::Relaxed);
     for event in [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS] {
         unsafe {
             SetWinEventHook(
                 event,
                 event,
-                0,
-                focus_event_proc,
+                None,
+                Some(focus_event_proc),
                 0,
                 0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
@@ -965,36 +813,34 @@ pub fn install_input_hooks(wake: Sender<()>, monitor_wake: Sender<()>) {
     }
     track_foreground();
 
-    let mut msg_buf = [0u64; 8];
-    loop {
-        let ret = unsafe { GetMessageW(msg_buf.as_mut_ptr(), 0, 0, 0) };
-        if ret <= 0 {
-            break;
-        }
-    }
+    let mut msg = MSG::default();
+    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {}
 }
 
-fn kbd(vk: u16, flags: u32) -> KbdInput {
-    KbdInput {
-        input_type: INPUT_KEYBOARD,
-        _pad0: 0,
-        w_vk: vk,
-        w_scan: 0,
-        dw_flags: flags,
-        time: 0,
-        _pad1: 0,
-        dw_extra_info: 0,
-        _union_pad: [0; 8],
+fn kbd(vk: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                dwFlags: flags,
+                ..Default::default()
+            },
+        },
     }
 }
 
 /// A keystroke that types one UTF-16 code unit, whatever the keyboard layout.
-fn unicode_key(unit: u16, flags: u32) -> KbdInput {
-    KbdInput {
-        w_vk: 0,
-        w_scan: unit,
-        dw_flags: KEYEVENTF_UNICODE | flags,
-        ..kbd(0, 0)
+fn unicode_key(unit: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wScan: unit,
+                dwFlags: KEYEVENTF_UNICODE | flags,
+                ..Default::default()
+            },
+        },
     }
 }
 

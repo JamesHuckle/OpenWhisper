@@ -50,14 +50,19 @@ keyring = { version = "3", features = ["async-secret-service", "crypto-rust", "a
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = "5.4"
 keyring = { version = "3", features = ["windows-native"] }
-# UI Automation for the text writer, and the monitor, DPI and window calls
+# The text writer's keystrokes, hooks, focus, clipboard formats and UI
+# Automation (src/text_inserter.rs), and the monitor, DPI and window calls
 # that place the pill (src/overlay_positioner.rs).
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
     "Win32_UI_Accessibility",
     "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

@@ -38,7 +38,7 @@ WhisperFlow is split into two runtime layers, in one process:
      (`settings.rs`, `recordings.rs`, `overlay_geometry.rs` and the files
      named above), and `src-tauri/core-tests` runs their tests on any system.
      The Windows-only `text_inserter.rs` and `overlay_positioner.rs` make the
-     Win32 calls.
+     Win32 calls, all through the `windows` crate's types and functions.
    - transcription: the app calls OpenAI itself, as the Android app does;
      nothing runs beside it. `transcription_sessions.rs` holds each
      dictation's session, `transcriber.rs` sends a saved recording (in
