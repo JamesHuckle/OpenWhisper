@@ -382,12 +382,26 @@ where
 fn request_error(error: reqwest::Error) -> ApiError {
     if error.is_timeout() {
         ApiError::Timeout
-    } else if error.is_decode() {
+    } else if error.is_decode() && is_json_error(&error) {
         // A whole answer that is not JSON: sending again would not change it.
         ApiError::Unexpected(error.without_url().to_string())
     } else {
+        // Including an answer whose download broke off, which reqwest also
+        // calls a decode error: the next try may get all of it.
         ApiError::Connection(error.without_url().to_string())
     }
+}
+
+/// Whether the error comes from reading JSON, not from reading the body.
+fn is_json_error(error: &reqwest::Error) -> bool {
+    let mut source = std::error::Error::source(error);
+    while let Some(inner) = source {
+        if inner.is::<serde_json::Error>() {
+            return true;
+        }
+        source = inner.source();
+    }
+    false
 }
 
 /// The response when its status is a success, or the API's error.
@@ -588,6 +602,8 @@ pub mod test_server {
         pub delay: Duration,
         /// The `Retry-After` header, in seconds.
         pub retry_after: Option<u64>,
+        /// The connection closes before the whole announced body is sent.
+        pub cut_short: bool,
     }
 
     impl Reply {
@@ -601,6 +617,7 @@ pub mod test_server {
                 body: format!("data: {delta}\n\ndata: {done}\n\n"),
                 delay: Duration::ZERO,
                 retry_after: None,
+                cut_short: false,
             }
         }
 
@@ -634,6 +651,7 @@ pub mod test_server {
                 body: body.to_string(),
                 delay: Duration::ZERO,
                 retry_after: None,
+                cut_short: false,
             }
         }
 
@@ -649,6 +667,13 @@ pub mod test_server {
 
         pub fn retry_after(mut self, seconds: u64) -> Self {
             self.retry_after = Some(seconds);
+            self
+        }
+
+        /// The answer's head and the start of its body, then the connection
+        /// drops, as when a network fails mid-answer.
+        pub fn cut_short(mut self) -> Self {
+            self.cut_short = true;
             self
         }
     }
@@ -749,10 +774,10 @@ pub mod test_server {
                 "HTTP/1.1 {} Test\r\nContent-Type: {}\r\nContent-Length: {}\r\n{retry_after}\r\n{}",
                 reply.status,
                 reply.content_type,
-                reply.body.len(),
+                reply.body.len() + if reply.cut_short { 100 } else { 0 },
                 reply.body
             );
-            if socket.write_all(answer.as_bytes()).await.is_err() {
+            if socket.write_all(answer.as_bytes()).await.is_err() || reply.cut_short {
                 return;
             }
         }
@@ -898,6 +923,7 @@ mod tests {
                 .collect(),
             delay: std::time::Duration::ZERO,
             retry_after: None,
+            cut_short: false,
         }
     }
 
@@ -975,6 +1001,7 @@ mod tests {
             body: "<html>Gateway</html>".into(),
             delay: Duration::ZERO,
             retry_after: None,
+            cut_short: false,
         };
         let server =
             TestServer::start(vec![not_json.clone(), not_json, Reply::response("Unused.")]).await;
@@ -1038,6 +1065,40 @@ mod tests {
 
         assert_eq!(text, "Tidied.");
         assert_eq!(server.received().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_answer_cut_off_mid_download_is_tried_again() {
+        let partial_stream = Reply {
+            body: format!(
+                "data: {}\n\n",
+                json!({"type": "transcript.text.delta", "delta": "Hel"})
+            ),
+            ..Reply::transcript("unused")
+        };
+        let server = TestServer::start(vec![
+            Reply::response("Tidied.").cut_short(),
+            Reply::response("Tidied."),
+            Reply::json(200, json!({"text": "Hello."})).cut_short(),
+            Reply::json(200, json!({"text": "Hello."})),
+            partial_stream.cut_short(),
+            Reply::transcript("Hello again."),
+        ])
+        .await;
+        let api = api(&server, "sk-test");
+
+        let tidy = api.respond("gpt-5-nano", "Rules", "text", "minimal").await;
+        let whole = api
+            .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
+            .await;
+        let streamed = api
+            .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
+            .await;
+
+        assert_eq!(tidy, Ok("Tidied.".to_string()));
+        assert_eq!(whole, Ok("Hello.".to_string()));
+        assert_eq!(streamed, Ok("Hello again.".to_string()));
+        assert_eq!(server.received().len(), 6);
     }
 
     #[tokio::test]
