@@ -16,7 +16,7 @@ use flacenc::config;
 use flacenc::error::{Verified, Verify};
 use flacenc::source::{Context, Fill, FrameBuf};
 use std::fs::{self, File};
-use crate::wav_file::{read_up_to, read_wav_format};
+use crate::wav_file::{read_up_to, read_wav_format, WavFormat};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -63,13 +63,6 @@ pub fn write_upload_parts(
     result.map(|()| parts)
 }
 
-struct PcmWav {
-    channels: usize,
-    sample_rate: usize,
-    data_offset: u64,
-    data_bytes: u64,
-}
-
 /// The FLAC part being written: its file, and the length and checksum of
 /// its audio so far, for its STREAMINFO header.
 struct PartFile {
@@ -81,15 +74,16 @@ struct PartFile {
 }
 
 impl PartFile {
-    fn create(path: &Path, format: &PcmWav) -> io::Result<Self> {
-        let info = StreamInfo::new(format.sample_rate, format.channels, BITS_PER_SAMPLE)
+    fn create(path: &Path, format: &WavFormat) -> io::Result<Self> {
+        let channels = usize::from(format.channels);
+        let info = StreamInfo::new(format.sample_rate as usize, channels, BITS_PER_SAMPLE)
             .map_err(encode_error)?;
         let mut out = BufWriter::new(File::create(path)?);
         out.write_all(&[0; HEADER_BYTES])?;
         Ok(Self {
             out,
             info,
-            context: Context::new(BITS_PER_SAMPLE, format.channels),
+            context: Context::new(BITS_PER_SAMPLE, channels),
             frames: 0,
             written: HEADER_BYTES as u64,
         })
@@ -155,10 +149,11 @@ fn encode_parts(
     let config = config::Encoder::default()
         .into_verified()
         .map_err(|(_, error)| encode_error(error))?;
-    let mut framebuf = FrameBuf::with_size(format.channels, BLOCK_SIZE).map_err(encode_error)?;
+    let mut framebuf =
+        FrameBuf::with_size(usize::from(format.channels), BLOCK_SIZE).map_err(encode_error)?;
     let mut current: Option<PartFile> = None;
     let mut pcm_offset = 0_u64;
-    let sample_frame_bytes = format.channels * 2;
+    let sample_frame_bytes = format.frame_bytes() as usize;
     let mut block = vec![0_u8; BLOCK_SIZE * sample_frame_bytes];
     loop {
         let filled = read_up_to(&mut pcm, &mut block)?;
@@ -219,7 +214,7 @@ fn encode_parts(
 
 /// Finds the format and audio of a 16-bit PCM WAV file. Leaves `file` at an
 /// unspecified position.
-fn read_pcm16_format(file: &mut File) -> io::Result<PcmWav> {
+fn read_pcm16_format(file: &mut File) -> io::Result<WavFormat> {
     let format = read_wav_format(file)?;
     if format.sample_width != 2 {
         return Err(io::Error::new(
@@ -227,12 +222,7 @@ fn read_pcm16_format(file: &mut File) -> io::Result<PcmWav> {
             "Not a 16-bit PCM WAV file",
         ));
     }
-    Ok(PcmWav {
-        channels: usize::from(format.channels),
-        sample_rate: format.sample_rate as usize,
-        data_offset: format.data_offset,
-        data_bytes: format.data_bytes,
-    })
+    Ok(format)
 }
 
 fn encode_error(error: impl std::fmt::Display) -> io::Error {
