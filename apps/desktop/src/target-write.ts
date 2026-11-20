@@ -1,3 +1,4 @@
+import { errorMessage } from "./error-message";
 import type { Invoke } from "./recording-pipeline";
 
 /**
@@ -65,7 +66,7 @@ export async function deliverFinalTranscript(steps: FinalTranscriptDelivery): Pr
   try {
     steps.rememberLocally(transcript);
   } catch (error) {
-    log(`last transcript not stored=${describe(error)}`);
+    log(`last transcript not stored=${errorMessage(error, "unknown error")}`);
   }
   await steps.liveTypingDone();
   if (!owned()) return;
@@ -78,7 +79,7 @@ export async function deliverFinalTranscript(steps: FinalTranscriptDelivery): Pr
       notify(finalWriteNotice(write), write.outcome === "copied" ? 5000 : 2000);
     }
   } catch (error) {
-    log(`final transcript delivery failed=${describe(error)}`);
+    log(`final transcript delivery failed=${errorMessage(error, "unknown error")}`);
     // A saved transcript has a Copy button on its recording in the menu. One
     // that could not be saved has none; its recording shows Transcribe instead.
     const step = steps.paste ? "paste" : "copy";
@@ -89,8 +90,4 @@ export async function deliverFinalTranscript(steps: FinalTranscriptDelivery): Pr
       6000,
     );
   }
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

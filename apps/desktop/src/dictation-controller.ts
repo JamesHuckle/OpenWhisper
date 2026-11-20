@@ -1,4 +1,5 @@
 import audioRules from "../../../packages/protocol/audio-rules.json";
+import { errorMessage } from "./error-message";
 import { isLiveTranscription, type TranscriptionModel } from "./models";
 import { PCM_MIME_TYPE } from "./pcm-capture";
 import {
@@ -67,12 +68,6 @@ export type DictationDeps = {
 export type DictationController = ReturnType<typeof createDictationController>;
 
 const AUDIO_BATCH_BYTES = 16 * 1024;
-
-export function errorMessage(error: unknown, fallback = "Transcription failed"): string {
-  if (error instanceof Error && error.message.trim()) return error.message;
-  const message = String(error ?? "").trim();
-  return message || fallback;
-}
 
 /**
  * The dictation flow: starting and stopping a recording, its saved backup,

@@ -2,6 +2,8 @@
 // has its own busy key. A change made while that field is still saving waits
 // and is saved next (only the newest one), and other fields still save.
 
+import { errorMessage } from "./error-message";
+
 /** How one save reports back. */
 export type SaveOptions<S> = {
   /** The field's busy key. */
@@ -45,7 +47,7 @@ export function createSettingsSaver<S>(deps: SettingsSaveDeps<S>) {
         if (message) deps.showToast(message);
       }
     } catch (err) {
-      deps.showToast(err instanceof Error ? err.message : String(err));
+      deps.showToast(errorMessage(err, "Could not save settings"));
       if (!pending.has(options.busy)) await options.onError?.();
     } finally {
       busy.delete(options.busy);

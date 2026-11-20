@@ -30,11 +30,11 @@ import {
 import pcmCaptureWorkletUrl from "./pcm-capture.worklet?worker&url";
 import {
   createDictationController,
-  errorMessage,
   type AudioCapture,
   type WidgetState,
   type WorkerSessionEvent,
 } from "./dictation-controller";
+import { errorMessage } from "./error-message";
 import { createSettingsSaver } from "./settings-save";
 import { METER_SLICES, startMeter } from "./meter";
 import "./styles.css";
@@ -1184,7 +1184,7 @@ async function revealStoredKeyForEdit() {
     if (!keyInputDirty) {
       restoreStoredKeyPreview();
     }
-    showToast(err instanceof Error ? err.message : String(err));
+    showToast(errorMessage(err, "Could not read the API key"));
   } finally {
     keyRevealInFlight = false;
   }
@@ -1237,7 +1237,7 @@ async function ensureAutostartEnabled() {
       logDebug("autostart enabled");
     }
   } catch (err) {
-    logDebug(`autostart enable failed=${err instanceof Error ? err.message : String(err)}`);
+    logDebug(`autostart enable failed=${errorMessage(err, "unknown error")}`);
   }
 }
 
@@ -1285,7 +1285,7 @@ menuKeyLink.addEventListener("click", async (event) => {
   try {
     await invoke("open_api_keys_page");
   } catch (err) {
-    showToast(err instanceof Error ? err.message : String(err));
+    showToast(errorMessage(err, "Could not open the API keys page"));
   }
 });
 
