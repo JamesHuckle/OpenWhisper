@@ -19,7 +19,11 @@ const runHook = command => JSON.parse(
 
 test("hook allows the checked wrapper and blocks a direct codex launch", () => {
   assert.equal(runHook(wrapperCommand).permission, "allow");
-  assert.equal(runHook("node .\\scripts\\invoke-codex-agent.mjs -Task 'x'; codex exec").permission, "allow");
+  assert.equal(runHook("node .\\scripts\\invoke-codex-agent.mjs -Task 'x'").permission, "allow");
+  assert.equal(runHook("node .\\scripts\\invoke-codex-agent.mjs -Task 'x'; codex exec").permission, "deny");
+  assert.equal(runHook("node scripts/invoke-codex-agent.mjs --task x && codex exec -").permission, "deny");
+  assert.equal(runHook("echo scripts/invoke-codex-agent.mjs | codex exec -").permission, "deny");
+  assert.equal(runHook("node scripts/invoke-codex-agent.mjs --task 'a; codex exec' && git status").permission, "allow");
   assert.equal(runHook("bash ./scripts/invoke-codex-agent.sh --task x; codex exec -").permission, "deny");
   assert.equal(runHook("codex exec --sandbox workspace-write -").permission, "deny");
   assert.equal(runHook("npx codex exec -").permission, "deny");

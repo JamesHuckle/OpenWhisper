@@ -27,6 +27,14 @@ function isCheckedWrapper(command) {
   return /(?:^|[\s"'\\/])scripts[\\/]invoke-codex-agent\.mjs\b/i.test(command);
 }
 
+// Each command of a compound line (;, &&, ||, |, newline) is checked on its
+// own, so naming the wrapper in one never lets another launch Codex directly.
+function launchesCodexDirectly(command) {
+  return stripQuotedRegions(command)
+    .split(/[;&|\r\n]+/)
+    .some(part => isDirectCodex(part) && !isCheckedWrapper(part));
+}
+
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => { input += chunk; });
@@ -41,7 +49,7 @@ process.stdin.on("end", () => {
     const payload = JSON.parse(trimmed);
     const command = String(payload.command || "");
 
-    if (isDirectCodex(command) && !isCheckedWrapper(command)) {
+    if (launchesCodexDirectly(command)) {
       respond({
         continue: true,
         permission: "deny",
@@ -54,7 +62,7 @@ process.stdin.on("end", () => {
     respond({ continue: true, permission: "allow" });
   } catch (error) {
     const raw = String(input || "");
-    if (isDirectCodex(raw) && !isCheckedWrapper(raw)) {
+    if (launchesCodexDirectly(raw)) {
       respond({
         continue: true,
         permission: "deny",
