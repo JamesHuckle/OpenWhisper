@@ -24,6 +24,9 @@ out/
 # Build artifacts
 build/
 
+# Local run output (installer builds, proof runs)
+artifacts/
+
 # Built executables
 binaries/
 *.exe
