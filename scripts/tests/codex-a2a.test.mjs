@@ -106,6 +106,16 @@ test("launcher refuses bad arguments, nesting and a held lock", t => {
   assert.ok(!existsSync(`${box.record}.args`));
 });
 
+test("launcher releases the lock when the catalog folder cannot be created", t => {
+  const box = sandbox();
+  t.after(box.cleanup);
+  writeFileSync(join(box.gitDir, "cursor-codex-a2a"), "not a folder");
+  const result = box.run(["--task", "x"]);
+  assert.equal(result.status, 8, result.stderr);
+  assert.ok(!existsSync(join(box.gitDir, "cursor-codex-a2a.lock")), "lock released");
+  assert.ok(!existsSync(`${box.record}.args`));
+});
+
 test("launcher passes on the codex exit status", t => {
   const box = sandbox(7);
   t.after(box.cleanup);

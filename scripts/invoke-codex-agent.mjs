@@ -97,7 +97,12 @@ function main() {
   }
 
   const catalogPath = join(gitDir, "cursor-codex-a2a", "model-catalog.json");
-  mkdirSync(dirname(catalogPath), { recursive: true });
+  try {
+    mkdirSync(dirname(catalogPath), { recursive: true });
+  } catch (error) {
+    console.error(`Could not create ${dirname(catalogPath)}: ${error.message}`);
+    exit(8);
+  }
   const prepared = spawnSync(process.execPath, [join(scriptDir, "prepare-codex-static-catalog.mjs"), catalogPath, options.model], {
     stdio: ["ignore", "ignore", "inherit"]
   });
