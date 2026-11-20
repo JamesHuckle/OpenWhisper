@@ -1084,3 +1084,23 @@ mod uia {
             .flatten()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_events_are_named_in_bit_order() {
+        assert_eq!(describe_debug_events(0), "");
+        assert_eq!(describe_debug_events(DBG_SPACE_UP), "space_up");
+        assert_eq!(
+            describe_debug_events(DBG_TOGGLE_FLAG | DBG_CTRL_DOWN | DBG_STOP_BY_SPACE),
+            "ctrl_down,stop_flag_space_up,toggle_flag"
+        );
+        assert_eq!(
+            describe_debug_events(u32::MAX),
+            "ctrl_down,ctrl_up,space_down,space_repeat,space_up,start_flag,\
+             stop_flag_ctrl_up,stop_flag_space_up,toggle_flag"
+        );
+    }
+}
