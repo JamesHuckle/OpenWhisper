@@ -69,7 +69,6 @@ type RecordingMetadata = {
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let lastTranscript = localStorage.getItem("ow_last_transcript") ?? "";
 // The settings the menu shows. Every change passes through applySettingsUi,
 // so a recording reads them here instead of asking the app each time.
 let appSettings: AppSettings | null = null;
@@ -368,11 +367,6 @@ const dictation = createDictationController({
     widget.removeAttribute("data-live-transcript");
     widget.setAttribute("aria-label", "Click to start or stop transcription");
   },
-  rememberTranscript(transcript) {
-    lastTranscript = transcript;
-    syncWidgetFrame();
-    localStorage.setItem("ow_last_transcript", transcript);
-  },
   recordingsChanged: () => void refreshRecordings(),
   closeMenu: () => void collapseOverlay(),
   log: logDebug,
@@ -420,7 +414,6 @@ function syncWidgetFrame() {
   widget.dataset.hovered = String(widgetHovered);
   widget.dataset.menuOpen = String(menuOpen);
   widget.dataset.notice = String(noticeWidth > 0);
-  widget.dataset.hasLastTranscript = String(lastTranscript.length > 0);
 }
 
 function syncApiKeyBubble() {

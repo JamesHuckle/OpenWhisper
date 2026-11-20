@@ -113,7 +113,6 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
   const states: WidgetState[] = [];
   const toasts: string[] = [];
   const failures: { message: string; recordingSaved: boolean }[] = [];
-  const remembered: string[] = [];
   const logs: string[] = [];
   const changes = { recordings: 0 };
   // The model the menu has selected; a test may change it between recordings.
@@ -131,14 +130,13 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
     stopMeter: () => undefined,
     showTranscript: () => undefined,
     clearTranscript: () => undefined,
-    rememberTranscript: (transcript) => remembered.push(transcript),
     recordingsChanged: () => {
       changes.recordings += 1;
     },
     closeMenu: () => undefined,
     log: (message) => logs.push(message),
   });
-  return { app, mic, dictation, states, toasts, failures, remembered, logs, config, changes };
+  return { app, mic, dictation, states, toasts, failures, logs, config, changes };
 }
 
 async function settle() {
@@ -365,7 +363,7 @@ describe("dictation controller", () => {
   });
 
   it("pastes a dictation's final transcript through insert_final_text", async () => {
-    const { app, dictation, remembered } = setup();
+    const { app, dictation } = setup();
     await startRecording(dictation);
     await dictation.toggleRecording();
 
@@ -378,7 +376,6 @@ describe("dictation controller", () => {
     expect(app.named("recording_finish").map((call) => call.args)).toEqual([
       { recordingId: "rec-1", status: "complete", transcript: "Hello world", error: "" },
     ]);
-    expect(remembered).toEqual(["Hello world"]);
     expect(dictation.state).toBe("idle");
   });
 
@@ -689,7 +686,7 @@ describe("dictation controller", () => {
     }
 
     async function expectStandardTranscriptPasted(env: Awaited<ReturnType<typeof liveDictationStopped>>) {
-      const { app, dictation, failures, remembered } = env;
+      const { app, dictation, failures } = env;
       expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
         { profileId: "default" },
         { profileId: "default", standardOnly: true },
@@ -709,8 +706,7 @@ describe("dictation controller", () => {
       expect(app.named("recording_finish").map((call) => call.args)).toEqual([
         { recordingId: "rec-1", status: "complete", transcript: "Hello from Standard", error: "" },
       ]);
-      expect(remembered).toEqual(["Hello from Standard"]);
-      expect(failures).toEqual([]);
+        expect(failures).toEqual([]);
       expect(dictation.state).toBe("idle");
     }
 

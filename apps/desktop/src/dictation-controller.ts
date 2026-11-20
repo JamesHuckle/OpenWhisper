@@ -57,8 +57,6 @@ export type DictationDeps = {
   /** Shows the transcript so far on the pill; final is true for a finished piece. */
   showTranscript: (text: string, final: boolean) => void;
   clearTranscript: () => void;
-  /** Keeps a delivered transcript as the last one. */
-  rememberTranscript: (transcript: string) => void;
   /** A saved recording was added or changed. */
   recordingsChanged: () => void;
   closeMenu: () => void;
@@ -757,7 +755,6 @@ export function createDictationController(deps: DictationDeps) {
         paste: shouldPasteFinalTranscript,
         owned,
         saveRecording: (transcript) => finishCurrentRecording("complete", transcript, ""),
-        rememberLocally: deps.rememberTranscript,
         liveTypingDone: () => targetWriteQueue,
         notify: deps.showToast,
         log,

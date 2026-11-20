@@ -45,8 +45,6 @@ export type FinalTranscriptDelivery = {
   owned: () => boolean;
   /** Saves the transcript with the recording, so the history card keeps it; false when it could not. */
   saveRecording: (transcript: string) => Promise<boolean>;
-  /** Keeps the transcript as the last one (memory and localStorage). */
-  rememberLocally: (transcript: string) => void;
   /** Resolves once live typing into the field has finished. */
   liveTypingDone: () => Promise<unknown>;
   notify: (message: string, durationMs: number) => void;
@@ -63,11 +61,6 @@ export async function deliverFinalTranscript(steps: FinalTranscriptDelivery): Pr
   const { invoke, transcript, owned, notify, log } = steps;
   if (!owned()) return;
   const saved = await steps.saveRecording(transcript);
-  try {
-    steps.rememberLocally(transcript);
-  } catch (error) {
-    log(`last transcript not stored=${errorMessage(error, "unknown error")}`);
-  }
   await steps.liveTypingDone();
   if (!owned()) return;
   try {

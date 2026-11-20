@@ -34,7 +34,6 @@ function delivery(options: {
   paste?: boolean;
   fail?: string;
   saveFails?: boolean;
-  storageThrows?: boolean;
   cancelWhileTyping?: boolean;
 }) {
   const commands: string[] = [];
@@ -43,7 +42,6 @@ function delivery(options: {
   const saved: { status: string; transcript: string }[] = [];
   const notices: string[] = [];
   let owner = "session-1";
-  let remembered = "";
   const steps: FinalTranscriptDelivery = {
     invoke: async (command) => {
       commands.push(command);
@@ -60,17 +58,13 @@ function delivery(options: {
       saved.push({ status: "complete", transcript });
       return true;
     },
-    rememberLocally: (transcript) => {
-      remembered = transcript;
-      if (options.storageThrows) throw new Error("QuotaExceededError");
-    },
     liveTypingDone: async () => {
       if (options.cancelWhileTyping) owner = "cancelled";
     },
     notify: (message) => notices.push(message),
     log: () => {},
   };
-  return { steps, commands, order, saved, notices, remembered: () => remembered };
+  return { steps, commands, order, saved, notices };
 }
 
 // No step may ask the worker or the service for a new transcription.
@@ -100,7 +94,6 @@ describe("delivering the final transcript", () => {
     const run = delivery({ paste: false, fail: "copy_to_clipboard" });
     await expect(deliverFinalTranscript(run.steps)).resolves.toBeUndefined();
     expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
-    expect(run.remembered()).toBe("Hello world");
     expect(run.notices).toEqual(["Transcript saved; could not copy it. Copy it from the menu"]);
     expectNoNewTranscription(run.commands);
   });
@@ -116,16 +109,8 @@ describe("delivering the final transcript", () => {
   it("never says the transcript was saved when saving it and pasting it both fail", async () => {
     const run = delivery({ fail: "insert_final_text", saveFails: true });
     await expect(deliverFinalTranscript(run.steps)).resolves.toBeUndefined();
-    expect(run.remembered()).toBe("Hello world");
+    expect(run.saved).toEqual([]);
     expect(run.notices).toEqual(["Transcript not saved; could not paste it. Transcribe it again from the menu"]);
-    expectNoNewTranscription(run.commands);
-  });
-
-  it("still saves and pastes when localStorage throws", async () => {
-    const run = delivery({ storageThrows: true });
-    await expect(deliverFinalTranscript(run.steps)).resolves.toBeUndefined();
-    expect(run.saved).toEqual([{ status: "complete", transcript: "Hello world" }]);
-    expect(run.commands).toEqual(["insert_final_text"]);
     expectNoNewTranscription(run.commands);
   });
 
