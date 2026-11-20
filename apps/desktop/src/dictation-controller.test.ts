@@ -115,6 +115,7 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
   const failures: { message: string; recordingSaved: boolean }[] = [];
   const remembered: string[] = [];
   const logs: string[] = [];
+  const changes = { recordings: 0 };
   // The model the menu has selected; a test may change it between recordings.
   const config = { model };
   const dictation = createDictationController({
@@ -131,11 +132,13 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
     showTranscript: () => undefined,
     clearTranscript: () => undefined,
     rememberTranscript: (transcript) => remembered.push(transcript),
-    recordingsChanged: () => undefined,
+    recordingsChanged: () => {
+      changes.recordings += 1;
+    },
     closeMenu: () => undefined,
     log: (message) => logs.push(message),
   });
-  return { app, mic, dictation, states, toasts, failures, remembered, logs, config };
+  return { app, mic, dictation, states, toasts, failures, remembered, logs, config, changes };
 }
 
 async function settle() {
@@ -259,6 +262,42 @@ describe("dictation controller", () => {
       { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
     ]);
     expect(app.commands()).not.toContain("worker_start_session");
+  });
+
+  it("logs a cancelled backup whose metadata could not be saved and still lists it", async () => {
+    const { app, dictation, logs, changes } = setup();
+    app.hold("recording_begin");
+    void dictation.toggleRecording();
+    await settle();
+    await dictation.cancelTranscription();
+    const before = changes.recordings;
+
+    app.fail("recording_finish", new Error("Disk full"));
+    app.release("recording_begin");
+    await settle();
+
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
+    expect(logs).toContain("recording metadata update failed=Disk full");
+    expect(changes.recordings).toBe(before + 1);
+  });
+
+  it("fails a dictation whose session could not start and keeps its recording", async () => {
+    const { app, mic, dictation, failures, states } = setup();
+    app.fail("worker_start_session", new Error("Could not connect"));
+
+    await dictation.toggleRecording();
+    await settle();
+
+    expect(failures).toEqual([{ message: "Could not connect", recordingSaved: true }]);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "failed", transcript: "", error: "Could not connect" },
+    ]);
+    expect(dictation.lastFailedRecordingId).toBe("rec-1");
+    expect(mic.capture.isActive()).toBe(false);
+    expect(states.at(-1)).toBe("idle");
+    expect(dictation.state).toBe("idle");
   });
 
   it("saves the microphone's last samples when cancelled during a stop while recording_begin is pending", async () => {
@@ -1031,5 +1070,31 @@ describe("dictation controller", () => {
     expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
       { recordingId: "rec-9", sessionId: "s-1" },
     ]);
+  });
+  it("refuses an import while a dictation runs", async () => {
+    const { app, dictation, toasts } = setup();
+    await startRecording(dictation);
+
+    await dictation.transcribeImportedFile();
+
+    expect(toasts).toEqual(["Finish the current recording first"]);
+    expect(app.commands()).not.toContain("recording_import");
+    expect(dictation.state).toBe("recording");
+  });
+
+  it("refuses a picked file when a dictation started while the picker was open", async () => {
+    const { app, dictation, toasts, failures } = setup();
+    app.hold("recording_import");
+    const importing = dictation.transcribeImportedFile();
+    await settle();
+
+    await startRecording(dictation);
+    app.release("recording_import");
+    await importing;
+
+    expect(toasts).toEqual(["Finish the current recording first"]);
+    expect(failures).toEqual([]);
+    expect(app.commands()).not.toContain("recording_transcribe");
+    expect(dictation.state).toBe("recording");
   });
 });
