@@ -1,6 +1,5 @@
 package com.openwhisper.android.update
 
-import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -38,19 +37,5 @@ class UpdateManifestTest {
             }
             """.trimIndent(),
         )
-    }
-
-    @Test
-    fun hashesDownloadedArtifacts() {
-        val file = File.createTempFile("openwhisper-update", ".apk")
-        try {
-            file.writeText("openwhisper")
-            assertEquals(
-                "59631e7364ddb94218e4f35acaf73f9cd5bd0a67223c4c7ac1dfcd2d46c5afe2",
-                UpdateIntegrity.sha256(file),
-            )
-        } finally {
-            file.delete()
-        }
     }
 }

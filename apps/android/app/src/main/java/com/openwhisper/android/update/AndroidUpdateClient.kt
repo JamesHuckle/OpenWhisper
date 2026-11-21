@@ -3,6 +3,8 @@ package com.openwhisper.android.update
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.DigestInputStream
+import java.security.MessageDigest
 
 class AndroidUpdateClient {
     fun findUpdate(installedVersionCode: Int): UpdateManifest? {
@@ -29,7 +31,8 @@ class AndroidUpdateClient {
             requireSuccess(connection)
             val expectedLength = connection.contentLengthLong
             require(expectedLength <= 0 || expectedLength <= MAX_APK_BYTES) { "Update is too large" }
-            connection.inputStream.buffered().use { input ->
+            val digest = MessageDigest.getInstance("SHA-256")
+            DigestInputStream(connection.inputStream.buffered(), digest).use { input ->
                 temporary.outputStream().buffered().use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     var total = 0L
@@ -42,7 +45,7 @@ class AndroidUpdateClient {
                     }
                 }
             }
-            require(UpdateIntegrity.sha256(temporary) == update.sha256) {
+            require(digest.digest().joinToString("") { byte -> "%02x".format(byte) } == update.sha256) {
                 "Downloaded update failed its integrity check"
             }
             if (destination.exists()) destination.delete()
