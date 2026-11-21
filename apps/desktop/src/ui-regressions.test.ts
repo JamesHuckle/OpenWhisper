@@ -59,6 +59,19 @@ describe("desktop regression guards", () => {
     expect(main).toContain("return navigator.mediaDevices.getUserMedia({ audio: true });");
   });
 
+  it("asks the app for settings while the model is saving", () => {
+    // Bug (F3, 2026-11-21): Live, Standard, Live quickly left the page on Live
+    // while the app had saved Standard, so a recording streamed Live audio to a
+    // Standard session. settings-save.test.ts checks the field stays busy.
+    const main = read("src/main.ts");
+    const currentSettings = main.slice(
+      main.indexOf("async function currentSettings("),
+      main.indexOf("menuShowIdlePillToggle.addEventListener("),
+    );
+
+    expect(currentSettings).toContain('if (isSaving("model")) return invoke<AppSettings>("app_get_settings");');
+  });
+
   it("installs an update only after the user confirms it", () => {
     // The README promises Windows asks first; an update relaunches the app.
     const main = read("src/main.ts");

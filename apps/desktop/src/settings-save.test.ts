@@ -99,6 +99,9 @@ describe("saveSettings", () => {
     ]);
     // Only the refine save was applied so far; the older holdToTalk answer was not.
     expect(calls.filter((call) => call.startsWith("apply") || call === "saved")).toEqual(["apply true undefined"]);
+    // The field stays busy while the newer change saves, so a recording that
+    // starts now asks the app instead of trusting the page (main.ts currentSettings).
+    expect(isSaving("holdToTalk")).toBe(true);
 
     finishes[1]({ hasOpenaiApiKey: true, holdToTalk: true });
     await first;

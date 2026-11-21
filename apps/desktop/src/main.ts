@@ -1096,7 +1096,7 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
   }
 }
 
-const { saveSettings } = createSettingsSaver<AppSettings>({
+const { saveSettings, isSaving } = createSettingsSaver<AppSettings>({
   save: (patch) => invoke<AppSettings>("app_save_settings", patch),
   apply: applySettingsUi,
   showToast,
@@ -1150,6 +1150,9 @@ async function loadSettings() {
 }
 
 async function currentSettings(): Promise<AppSettings> {
+  // While the model saves, the page keeps an older answer back so it does not
+  // undo a newer choice; ask the app, so the recording uses the model it will.
+  if (isSaving("model")) return invoke<AppSettings>("app_get_settings");
   return appSettings ?? invoke<AppSettings>("app_get_settings");
 }
 
