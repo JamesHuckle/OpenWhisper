@@ -16,16 +16,17 @@ data class ScreenRect(
 
 data class OverlayContext(
     val keyboardBounds: ScreenRect?,
-    val hasEditableFocus: Boolean = false,
-    val isPassword: Boolean = false,
-    val isSensitive: Boolean = false,
     val displayBounds: ScreenRect = ScreenRect(0, 0, 1080, 2400),
     val controlWidthPx: Int = 64,
     val controlHeightPx: Int = 128,
     val marginPx: Int = 24,
     /** Dictation is recording or transcribing, so the control must stay reachable. */
     val dictationActive: Boolean = false,
-)
+) {
+    /** Where the control may sit; the overlay window drags and restores it within these too. */
+    val movementBounds =
+        OverlayMovementBounds.within(displayBounds, controlWidthPx, controlHeightPx, marginPx)
+}
 
 /** What the overlay needs to know about the field that has input focus. */
 data class FocusedField(
@@ -46,33 +47,16 @@ class OverlayPolicy {
      * Decides from [context] and the field that has focus, looking for the field only
      * while a keyboard is open. Without a keyboard the control is hidden, or floats
      * during dictation, whatever has focus; finding the field can walk every window's
-     * accessibility tree, so [focusedField] is not called then. The focus fields of
-     * [context] are replaced by what [focusedField] returns (null: no editable field).
+     * accessibility tree, so [focusedField] is not called then. A null field means no
+     * editable field has focus.
      */
     fun decide(context: OverlayContext, focusedField: () -> FocusedField?): OverlayDecision {
-        if (context.keyboardBounds == null) return decide(context)
-        val field = focusedField()
-        return decide(
-            context.copy(
-                hasEditableFocus = field != null,
-                isPassword = field?.isPassword == true,
-                isSensitive = field?.isSensitive == true,
-            ),
-        )
-    }
-
-    fun decide(context: OverlayContext): OverlayDecision {
         val keyboard = context.keyboardBounds
-        if (keyboard == null || !context.hasEditableFocus || context.isPassword || context.isSensitive) {
+        val field = keyboard?.let { focusedField() }
+        if (keyboard == null || field == null || field.isPassword || field.isSensitive) {
             return if (context.dictationActive) OverlayDecision.Float else OverlayDecision.Hidden
         }
 
-        val minX = context.displayBounds.left + context.marginPx
-        val maxX = (context.displayBounds.right - context.marginPx - context.controlWidthPx)
-            .coerceAtLeast(minX)
-        val minY = context.displayBounds.top + context.marginPx
-        val maxY = (context.displayBounds.bottom - context.marginPx - context.controlHeightPx)
-            .coerceAtLeast(minY)
         // Android IMEs do not expose individual key bounds. On conventional phone
         // layouts the A/home row is centered about 40% down the IME window, and the
         // staggered row leaves a small gutter immediately to its left.
@@ -80,12 +64,7 @@ class OverlayPolicy {
         val homeRowCenterY = keyboard.top + (keyboard.bottom - keyboard.top) * HOME_ROW_FRACTION
         val desiredY = (homeRowCenterY - context.controlHeightPx / 2f).toInt()
 
-        return OverlayDecision.Show(
-            ScreenPoint(
-                x = desiredX.coerceIn(minX, maxX),
-                y = desiredY.coerceIn(minY, maxY),
-            ),
-        )
+        return OverlayDecision.Show(context.movementBounds.clamp(ScreenPoint(desiredX, desiredY)))
     }
 
     private companion object {

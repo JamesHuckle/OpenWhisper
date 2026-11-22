@@ -22,7 +22,6 @@ import com.openwhisper.android.overlay.NormalizedOverlayPosition
 import com.openwhisper.android.overlay.OverlayKeyGeometry
 import com.openwhisper.android.overlay.OverlayMovementBounds
 import com.openwhisper.android.overlay.ScreenPoint
-import com.openwhisper.android.overlay.ScreenRect
 import kotlin.math.hypot
 
 class DictationOverlayWindow(
@@ -83,8 +82,7 @@ class DictationOverlayWindow(
     }
 
     /** Dock the key at its home position beside the open keyboard. */
-    fun show(position: ScreenPoint, displayBounds: ScreenRect): Boolean {
-        val bounds = boundsWithin(displayBounds)
+    fun show(position: ScreenPoint, bounds: OverlayMovementBounds): Boolean {
         if (floating) cancelTouch()
         floating = false
         floatingPosition = null
@@ -92,8 +90,7 @@ class DictationOverlayWindow(
     }
 
     /** Keep the key on screen while dictation runs with the keyboard closed. */
-    fun showFloating(displayBounds: ScreenRect): Boolean {
-        val bounds = boundsWithin(displayBounds)
+    fun showFloating(bounds: OverlayMovementBounds): Boolean {
         if (!floating) {
             // Float from wherever the key was docked, so it does not jump.
             floating = true
@@ -106,13 +103,6 @@ class DictationOverlayWindow(
         val position = floatingPosition?.resolve(bounds) ?: bounds.clamp(ScreenPoint(layout.x, layout.y))
         return place(position, bounds)
     }
-
-    private fun boundsWithin(displayBounds: ScreenRect) = OverlayMovementBounds.within(
-        displayBounds = displayBounds,
-        controlWidthPx = controlWidthPx,
-        controlHeightPx = controlHeightPx,
-        marginPx = context.dp(OverlayKeyGeometry.GUTTER_MARGIN_DP).coerceAtLeast(1),
-    )
 
     private fun place(position: ScreenPoint, bounds: OverlayMovementBounds): Boolean {
         movementBounds = bounds

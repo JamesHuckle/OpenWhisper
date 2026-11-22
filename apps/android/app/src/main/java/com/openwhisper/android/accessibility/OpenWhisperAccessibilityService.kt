@@ -31,6 +31,7 @@ import com.openwhisper.android.dictation.DeterministicDemoBackend
 import com.openwhisper.android.dictation.DictationCoordinator
 import com.openwhisper.android.dictation.DictationState
 import com.openwhisper.android.dictation.SelectingDictationBackend
+import com.openwhisper.android.dp
 import com.openwhisper.android.editor.EditorSessionController
 import com.openwhisper.android.editor.InputConnectionEditorProvider
 import com.openwhisper.android.overlay.OverlayContext
@@ -160,15 +161,12 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             .firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
             ?.let { window -> Rect().also(window::getBoundsInScreen) }
             ?.takeIf { it.width() > 0 && it.height() > 0 }
-        val display = displayBounds()
-        val density = resources.displayMetrics.density
         val context = OverlayContext(
             keyboardBounds = keyboard?.toScreenRect(),
-            displayBounds = display.toScreenRect(),
+            displayBounds = displayBounds().toScreenRect(),
             controlWidthPx = overlay.controlWidthPx,
             controlHeightPx = overlay.controlHeightPx,
-            marginPx = (OverlayKeyGeometry.GUTTER_MARGIN_DP * density).toInt()
-                .coerceAtLeast(1),
+            marginPx = dp(OverlayKeyGeometry.GUTTER_MARGIN_DP).coerceAtLeast(1),
             dictationActive = coordinator.currentState.let {
                 it is DictationState.Listening ||
                     it is DictationState.Finalizing ||
@@ -186,10 +184,10 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                 overlay.hide()
             }
             is OverlayDecision.Show -> {
-                if (!overlay.show(decision.topLeft, display.toScreenRect())) scheduleRefresh(250)
+                if (!overlay.show(decision.topLeft, context.movementBounds)) scheduleRefresh(250)
             }
             OverlayDecision.Float -> {
-                if (!overlay.showFloating(display.toScreenRect())) scheduleRefresh(250)
+                if (!overlay.showFloating(context.movementBounds)) scheduleRefresh(250)
             }
         }
     }

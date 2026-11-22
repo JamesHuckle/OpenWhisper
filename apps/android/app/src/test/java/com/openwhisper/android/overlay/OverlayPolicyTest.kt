@@ -11,7 +11,7 @@ class OverlayPolicyTest {
     fun hidesWhenKeyboardIsNotVisible() {
         assertEquals(
             OverlayDecision.Hidden,
-            policy.decide(OverlayContext(keyboardBounds = null, hasEditableFocus = true)),
+            policy.decide(OverlayContext(keyboardBounds = null)) { FocusedField() },
         )
     }
 
@@ -19,25 +19,20 @@ class OverlayPolicyTest {
     fun hidesWithoutAnEditableField() {
         assertEquals(
             OverlayDecision.Hidden,
-            policy.decide(
-                OverlayContext(
-                    keyboardBounds = ScreenRect(0, 1400, 1080, 2400),
-                    hasEditableFocus = false,
-                ),
-            ),
+            policy.decide(OverlayContext(keyboardBounds = ScreenRect(0, 1400, 1080, 2400))) { null },
         )
     }
 
     @Test
     fun hidesForPasswordsAndSensitiveEditors() {
-        val keyboard = ScreenRect(0, 1400, 1080, 2400)
+        val keyboard = OverlayContext(keyboardBounds = ScreenRect(0, 1400, 1080, 2400))
         assertEquals(
             OverlayDecision.Hidden,
-            policy.decide(OverlayContext(keyboard, true, isPassword = true)),
+            policy.decide(keyboard) { FocusedField(isPassword = true) },
         )
         assertEquals(
             OverlayDecision.Hidden,
-            policy.decide(OverlayContext(keyboard, true, isSensitive = true)),
+            policy.decide(keyboard) { FocusedField(isSensitive = true) },
         )
     }
 
@@ -46,13 +41,12 @@ class OverlayPolicyTest {
         val decision = policy.decide(
             OverlayContext(
                 keyboardBounds = ScreenRect(0, 1400, 1080, 2400),
-                hasEditableFocus = true,
                 displayBounds = ScreenRect(0, 0, 1080, 2400),
                 controlWidthPx = 64,
                 controlHeightPx = 128,
                 marginPx = 24,
             ),
-        )
+        ) { FocusedField() }
 
         assertEquals(OverlayDecision.Show(ScreenPoint(24, 1736)), decision)
     }
@@ -62,13 +56,12 @@ class OverlayPolicyTest {
         val decision = policy.decide(
             OverlayContext(
                 keyboardBounds = ScreenRect(-500, 40, -300, 500),
-                hasEditableFocus = true,
                 displayBounds = ScreenRect(-500, 0, -300, 500),
                 controlWidthPx = 64,
                 controlHeightPx = 128,
                 marginPx = 24,
             ),
-        )
+        ) { FocusedField() }
 
         assertEquals(OverlayDecision.Show(ScreenPoint(-476, 160)), decision)
     }
@@ -78,13 +71,12 @@ class OverlayPolicyTest {
         val decision = policy.decide(
             OverlayContext(
                 keyboardBounds = ScreenRect(10, 30, 90, 100),
-                hasEditableFocus = true,
                 displayBounds = ScreenRect(10, 20, 90, 100),
                 controlWidthPx = 64,
                 controlHeightPx = 128,
                 marginPx = 24,
             ),
-        )
+        ) { FocusedField() }
 
         assertEquals(OverlayDecision.Show(ScreenPoint(34, 44)), decision)
     }
@@ -94,8 +86,8 @@ class OverlayPolicyTest {
         assertEquals(
             OverlayDecision.Float,
             policy.decide(
-                OverlayContext(keyboardBounds = null, hasEditableFocus = false, dictationActive = true),
-            ),
+                OverlayContext(keyboardBounds = null, dictationActive = true),
+            ) { null },
         )
     }
 
@@ -106,11 +98,9 @@ class OverlayPolicyTest {
             policy.decide(
                 OverlayContext(
                     keyboardBounds = ScreenRect(0, 1400, 1080, 2400),
-                    hasEditableFocus = true,
-                    isPassword = true,
                     dictationActive = true,
                 ),
-            ),
+            ) { FocusedField(isPassword = true) },
         )
     }
 
@@ -119,15 +109,30 @@ class OverlayPolicyTest {
         val decision = policy.decide(
             OverlayContext(
                 keyboardBounds = ScreenRect(0, 1400, 1080, 2400),
-                hasEditableFocus = true,
                 controlWidthPx = 64,
                 controlHeightPx = 128,
                 marginPx = 24,
                 dictationActive = true,
             ),
-        )
+        ) { FocusedField() }
 
         assertEquals(OverlayDecision.Show(ScreenPoint(24, 1736)), decision)
+    }
+
+    @Test
+    fun sharesItsMovementBoundsWithTheOverlayWindow() {
+        val context = OverlayContext(
+            keyboardBounds = null,
+            displayBounds = ScreenRect(-500, 0, -300, 500),
+            controlWidthPx = 64,
+            controlHeightPx = 128,
+            marginPx = 24,
+        )
+
+        assertEquals(
+            OverlayMovementBounds(minX = -476, maxX = -388, minY = 24, maxY = 348),
+            context.movementBounds,
+        )
     }
 
     @Test
