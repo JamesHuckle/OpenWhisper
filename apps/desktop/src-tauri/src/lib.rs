@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use settings::{frontend_settings_from, session_settings, AppSettings, FrontendSettings};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use std::borrow::Cow;
@@ -177,13 +177,21 @@ struct SessionStartResponse {
     session_id: String,
 }
 
-fn recordings_root(app_handle: &AppHandle) -> Result<PathBuf> {
+fn recordings_root(app_handle: &AppHandle) -> Result<PathBuf, String> {
     let mut root = app_handle
         .path()
         .app_data_dir()
-        .map_err(|e| anyhow!("Failed to resolve app data directory: {e}"))?;
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
     root.push("recordings");
     Ok(root)
+}
+
+/// Opens a file or folder in the program the OS picks for it.
+fn open_path(app_handle: &AppHandle, path: &Path) -> Result<(), String> {
+    app_handle
+        .opener()
+        .open_path(path.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 // The recording commands create, write and list files, which antivirus
@@ -197,7 +205,7 @@ fn recording_begin(
     source: String,
     name: String,
 ) -> Result<RecordingStartResponse, String> {
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let root = recordings_root(&app_handle)?;
     // One microphone recording runs at a time. Close any the UI left open
     // (for example after a reload) so their files are complete.
     let left_open: Vec<String> = lock(&state.recordings).keys().cloned().collect();
@@ -296,7 +304,7 @@ async fn recording_import(app_handle: AppHandle) -> Result<Option<RecordingStart
         return Ok(None);
     };
     let source = picked.into_path().map_err(|e| e.to_string())?;
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let root = recordings_root(&app_handle)?;
     // A large file copies on a blocking thread, not an async worker.
     tauri::async_runtime::spawn_blocking(move || import_recording(&root, &source))
         .await
@@ -315,7 +323,7 @@ async fn recording_transcribe(
     session_id: String,
 ) -> Result<(), String> {
     let sessions = transcription(&state)?;
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let root = recordings_root(&app_handle)?;
     close_active_recording(&state.recordings, &root, &recording_id)?;
     let metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
     let audio_path = root.join(&recording_id).join(&metadata.file_name);
@@ -349,36 +357,30 @@ fn recording_finish(
     transcript: String,
     error: String,
 ) -> Result<(), String> {
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let root = recordings_root(&app_handle)?;
     close_active_recording(&state.recordings, &root, &recording_id)?;
     finish_recording(&root, &recording_id, status, transcript, error).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
 fn recording_list(app_handle: AppHandle) -> Result<Vec<RecordingMetadata>, String> {
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let root = recordings_root(&app_handle)?;
     list_recording_metadata(&root).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn recording_open(app_handle: AppHandle, recording_id: String) -> Result<(), String> {
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let root = recordings_root(&app_handle)?;
     let metadata = read_recording_metadata(&root, &recording_id).map_err(|e| e.to_string())?;
     let audio_path = root.join(recording_id).join(metadata.file_name);
-    app_handle
-        .opener()
-        .open_path(audio_path.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| e.to_string())
+    open_path(&app_handle, &audio_path)
 }
 
 #[tauri::command]
 fn recordings_open_folder(app_handle: AppHandle) -> Result<(), String> {
-    let root = recordings_root(&app_handle).map_err(|e| e.to_string())?;
+    let root = recordings_root(&app_handle)?;
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    app_handle
-        .opener()
-        .open_path(root.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| e.to_string())
+    open_path(&app_handle, &root)
 }
 
 /// Opens the folder holding `openwhisper.log` (src/debug_log.rs), so a user
@@ -387,10 +389,7 @@ fn recordings_open_folder(app_handle: AppHandle) -> Result<(), String> {
 fn logs_open_folder(app_handle: AppHandle) -> Result<(), String> {
     let dir = app_handle.path().app_log_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    app_handle
-        .opener()
-        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|e| e.to_string())
+    open_path(&app_handle, &dir)
 }
 
 fn transcription(state: &AppState) -> Result<&Sessions, String> {
@@ -869,16 +868,12 @@ fn reveal_window(app: &AppHandle, intent: OverlayRevealIntent) {
 }
 
 fn setup_tray(app: &tauri::App) -> Result<()> {
-    let show_i = MenuItem::with_id(app, "show", "Show Pill", true, None::<&str>)
-        .map_err(|e| anyhow!("{e}"))?;
-    let record_i = MenuItem::with_id(app, "record", "Toggle Recording", true, None::<&str>)
-        .map_err(|e| anyhow!("{e}"))?;
-    let sep = PredefinedMenuItem::separator(app).map_err(|e| anyhow!("{e}"))?;
-    let quit_i = MenuItem::with_id(app, "quit", "Quit OpenWhisper", true, None::<&str>)
-        .map_err(|e| anyhow!("{e}"))?;
+    let show_i = MenuItem::with_id(app, "show", "Show Pill", true, None::<&str>)?;
+    let record_i = MenuItem::with_id(app, "record", "Toggle Recording", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let quit_i = MenuItem::with_id(app, "quit", "Quit OpenWhisper", true, None::<&str>)?;
 
-    let menu =
-        Menu::with_items(app, &[&show_i, &record_i, &sep, &quit_i]).map_err(|e| anyhow!("{e}"))?;
+    let menu = Menu::with_items(app, &[&show_i, &record_i, &sep, &quit_i])?;
 
     TrayIconBuilder::new()
         .icon(make_tray_icon())
@@ -907,8 +902,7 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
                 reveal_window(&app, OverlayRevealIntent::Interactive);
             }
         })
-        .build(app)
-        .map_err(|e| anyhow!("{e}"))?;
+        .build(app)?;
 
     Ok(())
 }
@@ -960,7 +954,8 @@ pub fn run() {
             }
             // Before anything can start a recording or a transcription: setup
             // runs on the main thread, so no command is handled until it ends.
-            if let Err(error) = recordings_root(app.handle()).and_then(|root| recover_interrupted(&root)) {
+            if let Err(error) = recordings_root(app.handle())
+                .and_then(|root| recover_interrupted(&root).map_err(|e| e.to_string())) {
                 debug_log_line("recording", &format!("recovery failed: {error}"));
             }
             let emit_app = app.handle().clone();
