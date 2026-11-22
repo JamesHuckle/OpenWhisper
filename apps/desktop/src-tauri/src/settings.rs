@@ -4,9 +4,13 @@
 //!
 //! This file needs no Tauri, so its tests also run in `core-tests`.
 
+use crate::json_file;
 use crate::models::default_transcription_model;
 use crate::transcription_sessions::SessionSettings;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
 
 fn default_transcription_prompt() -> String {
     "I was editing @README.md and checking @package.json in my IDE. Let me also look at @tsconfig.json and the @src directory.".to_string()
@@ -69,6 +73,24 @@ impl Default for AppSettings {
     }
 }
 
+/// Saves the settings file at `path`.
+pub fn save_settings_file(path: &Path, settings: &AppSettings) -> Result<()> {
+    json_file::write_json_atomic(path, settings)?;
+    // The backup is the previous file. Once the plain-text API key has left
+    // the settings it must not stay behind in the backup either.
+    if settings.plain_openai_api_key.is_empty() && backup_holds_plain_api_key(path) {
+        json_file::refresh_backup(path)?;
+    }
+    Ok(())
+}
+
+fn backup_holds_plain_api_key(settings_path: &Path) -> bool {
+    fs::read(json_file::backup_path(settings_path))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+        .is_some_and(|backup| backup.get("openaiApiKey").is_some())
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FrontendSettings {
@@ -129,6 +151,67 @@ pub fn masked_api_key_preview(api_key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "openwhisper-settings-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn with_plain_key(key: &str) -> AppSettings {
+        AppSettings {
+            plain_openai_api_key: key.into(),
+            ..AppSettings::default()
+        }
+    }
+
+    #[test]
+    fn a_save_without_the_plain_key_clears_it_from_the_backup_too() {
+        let dir = TempDir::new();
+        let path = dir.0.join("settings.json");
+        save_settings_file(&path, &with_plain_key("sk-legacy")).unwrap();
+        save_settings_file(&path, &with_plain_key("sk-legacy")).unwrap();
+
+        save_settings_file(&path, &AppSettings::default()).unwrap();
+
+        assert!(!fs::read_to_string(&path).unwrap().contains("sk-legacy"));
+        let backup = fs::read_to_string(json_file::backup_path(&path)).unwrap();
+        assert!(!backup.contains("sk-legacy"), "{backup}");
+    }
+
+    #[test]
+    fn a_save_that_keeps_the_plain_key_keeps_the_previous_file_as_backup() {
+        let dir = TempDir::new();
+        let path = dir.0.join("settings.json");
+        save_settings_file(&path, &with_plain_key("sk-legacy")).unwrap();
+        let changed = AppSettings {
+            refine_prompt: "Use British spelling.".into(),
+            ..with_plain_key("sk-legacy")
+        };
+
+        save_settings_file(&path, &changed).unwrap();
+
+        let backup = fs::read_to_string(json_file::backup_path(&path)).unwrap();
+        assert!(backup.contains("sk-legacy"));
+        assert!(!backup.contains("British"), "the backup is the previous file");
+    }
 
     #[test]
     fn settings_file_never_contains_the_api_key() {

@@ -844,21 +844,7 @@ impl api_key_store::SecretStore for CredentialStore {
 }
 
 fn save_settings(app_handle: &AppHandle, settings: &AppSettings) -> Result<()> {
-    let path = settings_path(app_handle)?;
-    json_file::write_json_atomic(&path, settings)?;
-    // The backup is the previous file. Once the plain-text API key has left
-    // the settings it must not stay behind in the backup either.
-    if settings.plain_openai_api_key.is_empty() && backup_holds_plain_api_key(&path) {
-        json_file::refresh_backup(&path)?;
-    }
-    Ok(())
-}
-
-fn backup_holds_plain_api_key(settings_path: &std::path::Path) -> bool {
-    fs::read(json_file::backup_path(settings_path))
-        .ok()
-        .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
-        .is_some_and(|backup| backup.get("openaiApiKey").is_some())
+    settings::save_settings_file(&settings_path(app_handle)?, settings)
 }
 
 fn make_tray_icon() -> tauri::image::Image<'static> {
