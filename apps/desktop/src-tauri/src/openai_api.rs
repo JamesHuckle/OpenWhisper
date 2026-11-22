@@ -16,6 +16,7 @@
 
 use crate::debug_log::debug_log_line;
 use crate::recording_store::extension_for_mime_type;
+use bytes::Bytes;
 use reqwest::{multipart, Client, Response};
 use serde_json::{json, Value};
 use std::fmt;
@@ -222,17 +223,18 @@ impl HttpApi {
 }
 
 impl HttpApi {
-    /// One try at transcribing `audio`.
+    /// One try at transcribing `audio`, which every try shares uncopied.
     async fn transcribe_once(
         &self,
         key: &str,
-        audio: Vec<u8>,
+        audio: Bytes,
         mime_type: &str,
         model: &str,
         prompt: &str,
     ) -> Result<String, Failure> {
         let timeout = transcribe_timeout(audio.len());
-        let file = multipart::Part::bytes(audio)
+        let length = audio.len() as u64;
+        let file = multipart::Part::stream_with_length(audio, length)
             .file_name(format!(
                 "session_audio.{}",
                 extension_for_mime_type(mime_type)
@@ -306,6 +308,8 @@ impl OpenAiApi for HttpApi {
         prompt: &str,
     ) -> Result<String, ApiError> {
         let key = self.key()?;
+        // A part can be 24 MiB; cloning `Bytes` shares it instead of copying.
+        let audio = Bytes::from(audio);
         with_retries("transcribe", || {
             self.transcribe_once(key, audio.clone(), mime_type, model, prompt)
         })
