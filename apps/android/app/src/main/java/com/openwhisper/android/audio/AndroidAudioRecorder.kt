@@ -11,6 +11,8 @@ import com.openwhisper.android.recordings.PcmRecordingWriter
 import com.openwhisper.android.recordings.RecordingStore
 import java.text.DateFormat
 import java.util.Date
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlin.math.min
@@ -18,7 +20,7 @@ import kotlin.math.sqrt
 
 /**
  * @param onAmplitude optional sink invoked from the audio thread with a normalized
- *   RMS level (0..1) roughly every [AMPLITUDE_WINDOW_BYTES] of captured audio.
+ *   RMS level (0..1) roughly every 64 ms of captured audio.
  *   Used to drive the live volume meter in the overlay.
  */
 class AndroidAudioRecorder(
@@ -26,16 +28,12 @@ class AndroidAudioRecorder(
     private val recordingStore: RecordingStore,
     private val onAmplitude: ((Float) -> Unit)? = null,
 ) : PcmRecorder {
-    private val recording = AtomicBoolean(false)
-    private var audioRecord: AudioRecord? = null
-    private var readThread: Thread? = null
-    private var output: PcmRecordingWriter? = null
-    @Volatile
-    private var readFailure: String? = null
+    /** The recording that holds the microphone, until its clean-up finishes. */
+    private var active: MicrophoneRecording? = null
 
     @Synchronized
-    override fun start() {
-        check(!recording.get()) { "Microphone is already recording" }
+    override fun start(): ActiveRecording {
+        check(active == null) { "Microphone is already recording" }
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             throw SecurityException("Microphone permission is required")
         }
@@ -67,83 +65,93 @@ class AndroidAudioRecorder(
             "Recording ${DateFormat.getDateTimeInstance().format(Date())}",
             SAMPLE_RATE,
         )
-        audioRecord = recorder
-        output = sink
-        readFailure = null
-        recording.set(true)
         try {
             recorder.startRecording()
         } catch (error: Exception) {
-            recording.set(false)
-            audioRecord = null
-            output = null
             recorder.release()
             runCatching { sink.finish("capture_failed") }
             throw error
         }
 
-        readThread = Thread({ readLoop(recorder, sink, bufferSize) }, "openwhisper-audio").apply {
-            priority = Thread.MAX_PRIORITY
-            start()
+        val recording = MicrophoneRecording(recorder, sink, bufferSize, onAmplitude) {
+            synchronized(this@AndroidAudioRecorder) { active = null }
         }
+        active = recording
+        recording.startReading()
+        return recording
     }
 
+    private companion object {
+        const val SAMPLE_RATE = 16_000
+    }
+}
+
+/**
+ * One recording on the microphone, with its own recorder, file and read
+ * thread. Stop or cancel cleans it up once, and [onReleased] runs when the
+ * microphone is free again.
+ */
+internal class MicrophoneRecording(
+    private val recorder: AudioRecord,
+    private val sink: PcmRecordingWriter,
+    bufferSize: Int,
+    private val onAmplitude: ((Float) -> Unit)?,
+    private val onReleased: () -> Unit,
+) : ActiveRecording {
+    private val capturing = AtomicBoolean(true)
+    private val ended = AtomicBoolean(false)
+    private val released = CountDownLatch(1)
+    @Volatile
+    private var readFailure: String? = null
+    private val readThread = Thread({ readLoop(bufferSize) }, "openwhisper-audio").apply {
+        priority = Thread.MAX_PRIORITY
+    }
+
+    fun startReading() = readThread.start()
+
     override fun stop(): PcmRecording {
-        val recorder: AudioRecord
-        val thread: Thread?
-        val sink: PcmRecordingWriter
-        synchronized(this) {
-            val wasRecording = recording.getAndSet(false)
-            check(wasRecording || readFailure != null) { "Microphone was not recording" }
-            recorder = requireNotNull(audioRecord)
-            thread = readThread
-            sink = requireNotNull(output)
-        }
-        runCatching { recorder.stop() }
-        thread?.join(2_000)
-        recorder.release()
-        synchronized(this) {
-            audioRecord = null
-            readThread = null
-            output = null
-        }
+        check(ended.compareAndSet(false, true)) { "Microphone was not recording" }
+        release(joinMillis = 2_000)
         val recording = sink.finish(if (readFailure == null) "saved" else "capture_failed")
         readFailure?.let { throw IllegalStateException("$it. Raw audio was saved in OpenWhisper.") }
         return recording
     }
 
     override fun cancel() {
-        val recorder: AudioRecord?
-        val thread: Thread?
-        val sink: PcmRecordingWriter?
-        synchronized(this) {
-            recording.set(false)
-            recorder = audioRecord
-            thread = readThread
-            audioRecord = null
-            readThread = null
-            sink = output
-            output = null
+        if (ended.compareAndSet(false, true)) {
+            release(joinMillis = 1_000)
+            runCatching { sink.finish("cancelled") }
+        } else {
+            // A stop is cleaning up; wait for it so the next recording can start.
+            released.await(STOP_CLEANUP_MILLIS, TimeUnit.MILLISECONDS)
         }
-        runCatching { recorder?.stop() }
-        thread?.join(1_000)
-        recorder?.release()
-        runCatching { sink?.finish("cancelled") }
     }
 
-    private fun readLoop(recorder: AudioRecord, sink: PcmRecordingWriter, bufferSize: Int) {
+    private fun release(joinMillis: Long) {
+        try {
+            capturing.set(false)
+            runCatching { recorder.stop() }
+            readThread.join(joinMillis)
+            recorder.release()
+        } finally {
+            onReleased()
+            released.countDown()
+        }
+    }
+
+    private fun readLoop(bufferSize: Int) {
         val buffer = ByteArray(bufferSize)
         // Read in short windows so the live meter updates ~16×/second.
         val readLength = min(buffer.size, AMPLITUDE_WINDOW_BYTES)
-        while (recording.get()) {
+        while (capturing.get()) {
             val count = recorder.read(buffer, 0, readLength, AudioRecord.READ_BLOCKING)
             if (count > 0) {
                 sink.write(buffer, count)
                 emitAmplitude(buffer, count)
             } else {
-                audioReadFailure(count, recording.get())?.let { failure ->
+                audioReadFailure(count, capturing.get())?.let { failure ->
                     readFailure = failure
-                    recording.set(false)
+                    capturing.set(false)
                 }
             }
         }
@@ -167,9 +175,10 @@ class AndroidAudioRecorder(
     }
 
     private companion object {
-        const val SAMPLE_RATE = 16_000
         // 1024 samples (16-bit mono) ≈ 64 ms at 16 kHz.
         const val AMPLITUDE_WINDOW_BYTES = 2_048
+        // A stop's longest clean-up: its 2 s wait for the read thread, and some.
+        const val STOP_CLEANUP_MILLIS = 2_500L
     }
 }
 

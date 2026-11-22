@@ -1,5 +1,6 @@
 package com.openwhisper.android.dictation
 
+import com.openwhisper.android.audio.ActiveRecording
 import com.openwhisper.android.audio.PcmRecording
 import com.openwhisper.android.audio.PcmRecorder
 import com.openwhisper.android.audio.WavEncoder
@@ -51,6 +52,37 @@ class BufferedDictationBackendTest {
         assertEquals(1, recorder.cancelCount)
         assertNull(listener.final)
         assertNull(listener.error)
+    }
+
+    @Test
+    fun aStopQueuedBeforeACancelDoesNotEndTheNextRecording() {
+        val recorder = FakePcmRecorder(pcmRecording(byteArrayOf(1, 2)))
+        val client = FakeTranscriptionClient("second")
+        val runner = QueuedRunner()
+        val first = CapturingListener()
+        val second = CapturingListener()
+        val backend = BufferedDictationBackend(recorder, manager(client, runner), runner, DirectDispatcher)
+
+        // Recording A's stop is queued, then the user cancels and starts B
+        // before the background thread runs it.
+        backend.start(first)
+        backend.finish()
+        backend.cancel()
+        backend.start(second)
+        runner.runAll()
+
+        val (recordingA, recordingB) = recorder.started
+        assertEquals("cancelled", recordingA.ended)
+        assertNull(recordingB.ended)
+        assertNull(first.error)
+
+        backend.finish()
+        runner.runAll()
+
+        assertEquals("stopped", recordingB.ended)
+        assertEquals("second", second.final)
+        assertNull(second.error)
+        assertNull(first.final)
     }
 
     @Test
@@ -155,24 +187,32 @@ private class FakePcmRecorder(
     private val recording: PcmRecording,
     private val stopError: String? = null,
 ) : PcmRecorder {
-    var startCount = 0
+    val started = mutableListOf<FakeRecording>()
+    val startCount get() = started.size
     var stopCount = 0
     var cancelCount = 0
     var onStop: () -> Unit = {}
 
-    override fun start() {
-        startCount += 1
-    }
+    override fun start() = FakeRecording().also(started::add)
 
-    override fun stop(): PcmRecording {
-        stopCount += 1
-        stopError?.let { throw IllegalStateException(it) }
-        onStop()
-        return recording
-    }
+    /** Ends once, like the real recorder: a later stop throws, a later cancel does nothing. */
+    inner class FakeRecording : ActiveRecording {
+        var ended: String? = null
 
-    override fun cancel() {
-        cancelCount += 1
+        override fun stop(): PcmRecording {
+            stopCount += 1
+            check(ended == null) { "Microphone was not recording" }
+            ended = "stopped"
+            stopError?.let { throw IllegalStateException(it) }
+            onStop()
+            return recording
+        }
+
+        override fun cancel() {
+            if (ended != null) return
+            ended = "cancelled"
+            cancelCount += 1
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 package com.openwhisper.android.dictation
 
+import com.openwhisper.android.audio.ActiveRecording
 import com.openwhisper.android.audio.PcmRecorder
 import com.openwhisper.android.audio.WavEncoder
 import com.openwhisper.android.transcription.NoSpeechException
@@ -29,6 +30,7 @@ class BufferedDictationBackend(
     private val callbacks: CallbackDispatcher,
 ) : DictationBackend {
     private val generation = AtomicLong(0)
+    private val activeRecording = AtomicReference<ActiveRecording?>(null)
     private val activeJob = AtomicReference<TranscriptionJob?>(null)
     @Volatile
     private var listener: DictationBackend.Listener? = null
@@ -37,7 +39,7 @@ class BufferedDictationBackend(
         generation.incrementAndGet()
         this.listener = listener
         try {
-            recorder.start()
+            activeRecording.set(recorder.start())
         } catch (error: Exception) {
             this.listener = null
             listener.onError(error.safeMessage("Unable to start microphone"))
@@ -47,16 +49,19 @@ class BufferedDictationBackend(
     override fun finish() {
         val expectedGeneration = generation.get()
         val expectedListener = listener ?: return
+        // Stops this recording only, even if a cancel and a new recording
+        // come before the background thread gets to it.
+        val recording = activeRecording.get() ?: return
         background.run {
             try {
-                val recording = recorder.stop()
-                val job = transcriptions.submit(recording.id, TranscriptionOrigin.DICTATION) {
+                val saved = recording.stop()
+                val job = transcriptions.submit(saved.id, TranscriptionOrigin.DICTATION) {
                     TranscriptionAudio(
-                        file = recording.file,
+                        file = saved.file,
                         mimeType = "audio/wav",
-                        pcmSampleRate = recording.sampleRate,
+                        pcmSampleRate = saved.sampleRate,
                         pcmDataOffset = WavEncoder.HEADER_BYTES.toLong(),
-                        pcmDataLength = recording.byteCount,
+                        pcmDataLength = saved.byteCount,
                     )
                 }
                 activeJob.set(job)
@@ -80,7 +85,7 @@ class BufferedDictationBackend(
     override fun cancel() {
         generation.incrementAndGet()
         listener = null
-        recorder.cancel()
+        activeRecording.getAndSet(null)?.cancel()
         // Stop this dictation's upload too; other transcriptions carry on.
         activeJob.getAndSet(null)?.cancel()
     }

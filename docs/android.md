@@ -50,7 +50,9 @@ during dictation still cancel insertion.
   the WAV header is brought up to date and forced to disk about once a
   second; the recording's `metadata.json` is written only when it starts
   and closes, and meanwhile `RecordingStore` reads its size from the WAV
-  file, as the desktop does.
+  file, as the desktop does. Each recording gets its own handle: a stop
+  queued for one recording never ends the next, stop or cancel cleans it up
+  once, and the microphone stays taken until that clean-up finishes.
 - `FlacFileEncoder` turns each upload part into lossless FLAC with the phone's
   own `MediaCodec` encoder, about half the bytes of WAV for speech, reading
   the part from the saved file in blocks. If the
