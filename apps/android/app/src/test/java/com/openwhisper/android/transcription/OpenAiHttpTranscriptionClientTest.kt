@@ -69,6 +69,39 @@ class OpenAiHttpTranscriptionClientTest {
     }
 
     @Test
+    fun aCancelJustBeforeTheConnectionIsRegisteredSendsNothing() {
+        lateinit var client: OpenAiHttpTranscriptionClient
+        var opened = 0
+        var closed = false
+        client = OpenAiHttpTranscriptionClient(
+            apiKey = { "sk-test" },
+            openConnection = { url ->
+                opened += 1
+                // The cancel lands after the connection is opened but before
+                // the call registers it, so cancel() cannot close it.
+                client.cancel()
+                object : HttpURLConnection(URL(url)) {
+                    override fun connect() = Unit
+                    override fun disconnect() {
+                        closed = true
+                    }
+                    override fun usingProxy() = false
+                    override fun getOutputStream(): OutputStream =
+                        error("Nothing is uploaded after a cancel")
+                }
+            },
+        )
+
+        val error = assertThrows(TranscriptionException::class.java) {
+            client.transcribe(pcmAudio())
+        }
+
+        assertEquals(OpenAiHttpTranscriptionClient.CANCELLED_MESSAGE, error.message)
+        assertEquals(1, opened)
+        assertTrue(closed)
+    }
+
+    @Test
     fun aCancelledCallNeverReplacesTheNextCallsConnection() {
         val newerUploading = CountDownLatch(1)
         val newerClosed = CountDownLatch(1)
