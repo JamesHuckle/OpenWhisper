@@ -219,7 +219,7 @@ mod tests {
         fs::write(&backup, br#"{"openaiApiKey":"sk-legacy"}"#).unwrap();
         fs::set_permissions(&backup, fs::Permissions::from_mode(0o444)).unwrap();
         if fs::OpenOptions::new().write(true).open(&backup).is_ok() {
-            eprintln!("skipped: this user can write read-only files");
+            println!("skipped: this user can write read-only files");
             return;
         }
         let changed = AppSettings {
