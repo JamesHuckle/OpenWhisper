@@ -74,6 +74,22 @@ class OverlayPolicyTest {
     }
 
     @Test
+    fun pinsMicToTheTopLeftMarginWhenTheDisplayIsSmallerThanTheMic() {
+        val decision = policy.decide(
+            OverlayContext(
+                keyboardBounds = ScreenRect(10, 30, 90, 100),
+                hasEditableFocus = true,
+                displayBounds = ScreenRect(10, 20, 90, 100),
+                controlWidthPx = 64,
+                controlHeightPx = 128,
+                marginPx = 24,
+            ),
+        )
+
+        assertEquals(OverlayDecision.Show(ScreenPoint(34, 44)), decision)
+    }
+
+    @Test
     fun floatsWhileDictatingWithTheKeyboardClosed() {
         assertEquals(
             OverlayDecision.Float,
