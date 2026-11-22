@@ -14,10 +14,14 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Holds the one [TranscriptionManager] the app screen and the dictation
- * overlay share, so an upload outlives the screen that started it.
+ * Holds the one [RecordingStore] and the one [TranscriptionManager] the app
+ * screen and the dictation overlay share, so every recording is guarded by one
+ * lock and an upload outlives the screen that started it.
  */
 class OpenWhisperApplication : Application() {
+    lateinit var recordings: RecordingStore
+        private set
+
     lateinit var transcriptions: TranscriptionManager
         private set
 
@@ -36,8 +40,9 @@ class OpenWhisperApplication : Application() {
             Thread(task, "openwhisper-bulk-transcription")
         }
         val mainThread = Handler(Looper.getMainLooper())
+        recordings = RecordingStore(this)
         transcriptions = TranscriptionManager(
-            store = RecordingStore(this),
+            store = recordings,
             newClient = { isCancelled ->
                 OpenAiHttpTranscriptionClient(
                     secrets::load,
@@ -55,6 +60,9 @@ class OpenWhisperApplication : Application() {
     }
 
     companion object {
+        fun recordings(context: Context): RecordingStore =
+            (context.applicationContext as OpenWhisperApplication).recordings
+
         fun transcriptions(context: Context): TranscriptionManager =
             (context.applicationContext as OpenWhisperApplication).transcriptions
     }

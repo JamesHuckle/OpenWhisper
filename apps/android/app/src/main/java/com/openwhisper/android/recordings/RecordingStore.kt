@@ -7,7 +7,6 @@ import java.io.File
 import java.io.InputStream
 import java.io.RandomAccessFile
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONObject
 
 data class StoredRecording(
@@ -31,10 +30,10 @@ data class PcmRecording(
 )
 
 /**
- * The saved recordings in one folder. The app screen and the accessibility
- * service each make their own store, so every store of the same folder shares
- * one lock, and each recording's details are saved with [AtomicFile]: a crash
- * while saving leaves the previous details, never a half-written file.
+ * The saved recordings in one folder. The app makes one store, which the app
+ * screen, the accessibility service and the transcriptions share, so one lock
+ * guards the folder, and each recording's details are saved with [AtomicFile]:
+ * a crash while saving leaves the previous details, never a half-written file.
  *
  * While a long recording is transcribed in parts, each finished part is saved
  * in its [partsFile], so a retry sends only the parts that did not finish. The
@@ -49,9 +48,8 @@ data class PcmRecording(
  * still in use is never deleted: a capture holds its recording from
  * [beginPcm] until [PcmRecordingWriter.finish], and a transcription holds its
  * recording with [reserve] until [release]. A released recording past the
- * limit goes at the next cleanup. Every store of the same folder shares these
- * reservations, so an import on the app screen never deletes a recording the
- * dictation overlay or a retry is still using.
+ * limit goes at the next cleanup, so an import on the app screen never deletes
+ * a recording the dictation overlay or a retry is still using.
  */
 class RecordingStore private constructor(
     private val root: File,
@@ -59,9 +57,10 @@ class RecordingStore private constructor(
 ) {
     constructor(context: Context) : this(File(context.filesDir, "recordings"))
 
-    private val folder: Folder = folderFor(root)
+    private val lock = Any()
 
-    internal val lock: Any = folder
+    /** How many times each recording is reserved (guarded by [lock]). */
+    private val reservations = mutableMapOf<String, Int>()
 
     /**
      * Keeps [id] from being deleted until a matching [release], however many
@@ -71,15 +70,15 @@ class RecordingStore private constructor(
      */
     fun reserve(id: String) {
         synchronized(lock) {
-            folder.reservations[id] = (folder.reservations[id] ?: 0) + 1
+            reservations[id] = (reservations[id] ?: 0) + 1
         }
     }
 
     /** Ends one [reserve]; past the limit, the recording goes at the next cleanup. */
     fun release(id: String) {
         synchronized(lock) {
-            val count = folder.reservations[id] ?: return
-            if (count > 1) folder.reservations[id] = count - 1 else folder.reservations.remove(id)
+            val count = reservations[id] ?: return
+            if (count > 1) reservations[id] = count - 1 else reservations.remove(id)
         }
     }
 
@@ -253,7 +252,7 @@ class RecordingStore private constructor(
 
     /** Deletes every recording past the newest [RETAIN_COUNT] that is not reserved. */
     private fun prune() {
-        list().drop(RETAIN_COUNT).filter { it.id !in folder.reservations }.forEach { recording ->
+        list().drop(RETAIN_COUNT).filter { it.id !in reservations }.forEach { recording ->
             File(root, recording.id).takeIf { it.parentFile == root }?.deleteRecursively()
         }
     }
@@ -265,16 +264,6 @@ class RecordingStore private constructor(
         private const val PARTS_FILE = "parts.json"
         private val SUPPORTED_EXTENSIONS =
             setOf("wav", "mp3", "m4a", "mp4", "mpeg", "mpga", "webm", "ogg")
-
-        /** One folder's shared lock, and the recordings reserved in it (guarded by that lock). */
-        private class Folder {
-            val reservations = mutableMapOf<String, Int>()
-        }
-
-        private val folders = ConcurrentHashMap<String, Folder>()
-
-        private fun folderFor(root: File): Folder =
-            folders.computeIfAbsent(root.absoluteFile.normalize().path) { Folder() }
 
         /** A store of [root]; [onMetadataRead] hears the id of every recording whose details are read. */
         internal fun forDirectory(

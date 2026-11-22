@@ -38,7 +38,6 @@ import com.openwhisper.android.overlay.OverlayDecision
 import com.openwhisper.android.overlay.OverlayKeyGeometry
 import com.openwhisper.android.overlay.OverlayPolicy
 import com.openwhisper.android.overlay.ScreenRect
-import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.settings.SettingsRepository
 import com.openwhisper.android.update.UpdateNotifier
 import java.util.concurrent.Executors
@@ -80,7 +79,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             accessibility = editorProvider,
             inputConnection = { accessibilityInputMethod?.currentEditor() },
         )
-        val recordingStore = RecordingStore(this)
+        val recordingStore = OpenWhisperApplication.recordings(this)
         val liveBackend = BufferedDictationBackend(
             recorder = AndroidAudioRecorder(this, recordingStore) { level ->
                 // Deliver live mic levels to the overlay's equalizer on the UI thread.

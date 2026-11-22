@@ -83,7 +83,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         secretStore = SecureApiKeyStore(this)
         settingsRepository = SettingsRepository(this)
-        recordingStore = RecordingStore(this)
+        recordingStore = OpenWhisperApplication.recordings(this)
         transcriptions = OpenWhisperApplication.transcriptions(this)
         setContentView(buildContent())
         transcriptions.addListener(transcriptionListener)

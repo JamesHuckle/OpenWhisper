@@ -11,7 +11,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -41,10 +40,10 @@ class RecordingStoreTest {
     @Test
     fun aReservedRecordingOutlivesTheLimitUntilReleasedThenGoesAtTheNextCleanup() {
         withRoot { root ->
-            // A retry holds the oldest recording while the app screen, with
-            // its own store of the same folder, imports more files.
+            // A retry holds the oldest recording while the app screen, through
+            // the same store, imports more files.
             val manager = RecordingStore.forDirectory(root)
-            val screen = RecordingStore.forDirectory(root)
+            val screen = manager
             val oldest = importInto(screen, "oldest.wav")
             manager.reserve(oldest.id)
             manager.reserve(oldest.id)
@@ -75,7 +74,7 @@ class RecordingStoreTest {
     fun aLongCaptureIsNeverDeletedByNewerImports() {
         withRoot { root ->
             val service = RecordingStore.forDirectory(root)
-            val screen = RecordingStore.forDirectory(root)
+            val screen = service
             val writer = service.beginPcm("Long dictation", 16_000)
             val oneSecond = ByteArray(32_000) { (it % 97).toByte() }
             writer.write(oneSecond, oneSecond.size)
@@ -259,10 +258,10 @@ class RecordingStoreTest {
     }
 
     @Test
-    fun aSlowImportDoesNotHoldUpTheOtherStores() {
+    fun aSlowImportDoesNotHoldUpADictationOrTheList() {
         withRoot { root ->
             val screen = RecordingStore.forDirectory(root)
-            val service = RecordingStore.forDirectory(root)
+            val service = screen
             val reading = CountDownLatch(1)
             val release = CountDownLatch(1)
             val slowInput = object : InputStream() {
@@ -299,19 +298,10 @@ class RecordingStoreTest {
     }
 
     @Test
-    fun storesOfTheSameFolderShareOneLock() {
+    fun twoThreadsUpdatingTheSameRecordingNeverDamageIt() {
         withRoot { root ->
             val screen = RecordingStore.forDirectory(root)
-            val service = RecordingStore.forDirectory(File(root, "../${root.name}"))
-            assertSame(screen.lock, service.lock)
-        }
-    }
-
-    @Test
-    fun twoStoresUpdatingTheSameRecordingNeverDamageIt() {
-        withRoot { root ->
-            val screen = RecordingStore.forDirectory(root)
-            val service = RecordingStore.forDirectory(root)
+            val service = screen
             val stored = screen.import(
                 name = "shared.wav",
                 mimeType = "audio/wav",

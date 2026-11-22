@@ -86,9 +86,9 @@ class TranscriptionManagerTest {
         assertTrue(client.entered.await(5, TimeUnit.SECONDS))
         val parts = store.partsFile(oldest.id).apply { writeText("{\"key\":\"k\",\"parts\":[]}") }
 
-        // The app screen, with its own store of the folder, imports more files
-        // while the retry uploads.
-        val screen = RecordingStore.forDirectory(root)
+        // The app screen, through the same store, imports more files while
+        // the retry uploads.
+        val screen = store
         repeat(3) { index ->
             Thread.sleep(2)
             screen.import("new-$index.mp3", "audio/mpeg", "mp3", ByteArrayInputStream(byteArrayOf(5, 6)))
@@ -217,9 +217,10 @@ class TranscriptionManagerTest {
         // The retry finishes while recovery is between reading the list and
         // looking at this recording: on its second read of the recording.
         val reads = AtomicInteger()
-        val watched = RecordingStore.forDirectory(root) { id ->
+        lateinit var watched: RecordingStore
+        watched = RecordingStore.forDirectory(root) { id ->
             if (id == retried.id && reads.incrementAndGet() == 2) {
-                store.finish(retried.id, "complete", transcript = "Finished")
+                watched.finish(retried.id, "complete", transcript = "Finished")
             }
         }
         val manager = TranscriptionManager(

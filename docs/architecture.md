@@ -24,10 +24,12 @@ WhisperFlow is split into two runtime layers, in one process:
      flushes it to disk and renames it over the old file, keeping the old
      one as `.bak`; a damaged file is read from that backup instead, so a
      crash while saving never hides a recording or resets the settings. The
-     Android app saves recording details with `AtomicFile`, under one lock
-     shared by every `RecordingStore` of the same folder. It keeps the newest
-     ten recordings, plus any older one still being captured or transcribed
-     (`RecordingStore.reserve`), which goes at the next cleanup once done.
+     Android app saves recording details with `AtomicFile`, under the lock of
+     its one `RecordingStore`, which `OpenWhisperApplication` creates and the
+     app screen, the dictation overlay and transcriptions share. It keeps
+     the newest ten recordings, plus any older one still being captured or
+     transcribed (`RecordingStore.reserve`), which goes at the next cleanup
+     once done.
    - debug log: `src-tauri/src/debug_log.rs` writes each line to stderr and
      to `openwhisper.log` in the app log folder (release builds on Windows
      have no console). Past 1 MB the file becomes `openwhisper.log.1`,
