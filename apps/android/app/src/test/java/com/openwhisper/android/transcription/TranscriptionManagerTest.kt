@@ -402,7 +402,6 @@ private class OverlayListener : DictationBackend.Listener {
     var final: String? = null
     var error: String? = null
 
-    override fun onPartial(text: String) = Unit
     override fun onFinal(text: String) {
         final = text
     }

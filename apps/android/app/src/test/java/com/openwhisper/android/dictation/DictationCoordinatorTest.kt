@@ -22,31 +22,26 @@ class DictationCoordinatorTest {
 
         coordinator.onMicPressed()
         assertEquals(1, backend.startCount)
-        assertEquals(DictationState.Listening(""), states.last())
-        assertEquals(DictationState.Listening(""), coordinator.currentState)
-
-        backend.listener?.onPartial("Hello")
-        assertEquals(DictationState.Listening("Hello"), states.last())
+        assertEquals(DictationState.Listening, states.last())
+        assertEquals(DictationState.Listening, coordinator.currentState)
 
         coordinator.onMicPressed()
         assertEquals(1, backend.finishCount)
-        assertEquals(DictationState.Finalizing("Hello"), states.last())
+        assertEquals(DictationState.Finalizing, states.last())
 
-        // Pressing again while finalizing, or a partial arriving then, changes nothing.
+        // Pressing again while finalizing changes nothing.
         coordinator.onMicPressed()
-        backend.listener?.onPartial("Hello there")
         assertEquals(1, backend.finishCount)
-        assertEquals(DictationState.Finalizing("Hello"), coordinator.currentState)
+        assertEquals(DictationState.Finalizing, coordinator.currentState)
 
         backend.listener?.onFinal("Hello world")
         assertEquals("Hello world", editor.committedText)
         assertEquals(listOf("Hello world"), copiedTranscripts)
         assertEquals(
             listOf(
-                DictationState.Listening(""),
-                DictationState.Listening("Hello"),
-                DictationState.Finalizing("Hello"),
-                DictationState.ReadyToInsert("Hello world"),
+                DictationState.Listening,
+                DictationState.Finalizing,
+                DictationState.ReadyToInsert,
                 DictationState.Idle,
             ),
             states,
@@ -111,7 +106,7 @@ class DictationCoordinatorTest {
 
         coordinator.onMicPressed()
         coordinator.onMicPressed()
-        assertEquals(DictationState.Finalizing(""), coordinator.currentState)
+        assertEquals(DictationState.Finalizing, coordinator.currentState)
         coordinator.cancel()
         assertEquals(DictationState.Idle, coordinator.currentState)
 
@@ -161,7 +156,6 @@ class DictationCoordinatorTest {
         val staleListener = backend.listener
         coordinator.cancel()
         staleListener?.onFinal("stale")
-        staleListener?.onPartial("stale")
 
         assertEquals(DictationState.Idle, states.last())
         assertEquals(DictationState.Idle, coordinator.currentState)
@@ -182,7 +176,7 @@ class DictationCoordinatorTest {
 
         coordinator.onMicPressed()
         assertEquals(2, backend.startCount)
-        assertEquals(DictationState.Listening(""), states.last())
+        assertEquals(DictationState.Listening, states.last())
     }
 }
 

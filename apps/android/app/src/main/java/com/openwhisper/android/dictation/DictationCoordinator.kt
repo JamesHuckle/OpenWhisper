@@ -6,7 +6,6 @@ import com.openwhisper.android.editor.EditorSessionPort
 
 interface DictationBackend {
     interface Listener {
-        fun onPartial(text: String)
         fun onFinal(text: String)
         fun onError(message: String)
     }
@@ -33,9 +32,9 @@ class DictationCoordinator(
             DictationState.Idle,
             is DictationState.Failed,
             -> start()
-            is DictationState.Listening -> finish()
-            is DictationState.Finalizing,
-            is DictationState.ReadyToInsert,
+            DictationState.Listening -> finish()
+            DictationState.Finalizing,
+            DictationState.ReadyToInsert,
             -> Unit
         }
     }
@@ -46,15 +45,10 @@ class DictationCoordinator(
         transition(DictationState.Idle)
     }
 
-    override fun onPartial(text: String) {
-        val listening = state as? DictationState.Listening ?: return
-        transition(listening.copy(partialText = text))
-    }
-
     override fun onFinal(text: String) {
         if (state !is DictationState.Finalizing) return
         onTranscriptReady(text)
-        transition(DictationState.ReadyToInsert(text))
+        transition(DictationState.ReadyToInsert)
         // The render callback may have cancelled the session; then nothing is inserted.
         if (state !is DictationState.ReadyToInsert) return
         val captured = session
@@ -91,13 +85,12 @@ class DictationCoordinator(
             return
         }
         session = captured
-        transition(DictationState.Listening(partialText = ""))
+        transition(DictationState.Listening)
         backend.start(this)
     }
 
     private fun finish() {
-        val listening = state as DictationState.Listening
-        transition(DictationState.Finalizing(listening.partialText))
+        transition(DictationState.Finalizing)
         backend.finish()
     }
 

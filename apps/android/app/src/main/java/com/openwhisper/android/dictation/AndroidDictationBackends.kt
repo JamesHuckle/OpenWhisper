@@ -11,13 +11,7 @@ class DeterministicDemoBackend(
 
     override fun start(listener: DictationBackend.Listener) {
         generation += 1
-        val expected = generation
         this.listener = listener
-        handler.postDelayed({
-            if (expected == generation && this.listener === listener) {
-                listener.onPartial("OpenWhisper")
-            }
-        }, 120)
     }
 
     override fun finish() {
