@@ -1,5 +1,5 @@
 //! The two OpenAI HTTP calls the desktop makes: transcribe one audio file
-//! (`/v1/audio/transcriptions`, streamed) and tidy a transcript
+//! (`/v1/audio/transcriptions`) and tidy a transcript
 //! (`/v1/responses`). The Live websocket is in src/realtime.rs.
 //!
 //! A request that fails for a passing reason (the connection dropped, a rate
@@ -25,15 +25,15 @@ use std::time::Duration;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
-/// The longest wait for the next piece of a streamed transcript once its
-/// answer has started. It is not a client-wide read timeout, because reqwest
-/// counts that from the start of the upload, and a long part on a slow
-/// connection can take minutes to send.
-const READ_TIMEOUT: Duration = Duration::from_secs(120);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The whole of one transcription request is a minute plus a second for every
 /// 50 kB uploaded (about 400 kbit/s), so a stalled short dictation fails
 /// within about a minute while a full-size part has nine; never more than this.
+/// The answer is one JSON body sent when the transcript is finished, so this
+/// is also the only limit on a stall after the upload: for a full-size part
+/// a stalled answer is noticed only when its nine minutes run out. There is
+/// no shorter read timeout, because reqwest counts that from the start of the
+/// upload, and a long part on a slow connection can take minutes to send.
 const MAX_TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(40 * 60);
 const TRANSCRIBE_BASE_TIMEOUT: Duration = Duration::from_secs(60);
 const UPLOAD_BYTES_PER_SECOND: u64 = 50_000;
@@ -243,7 +243,6 @@ impl HttpApi {
             .map_err(|_| ApiError::Unexpected(format!("audio type {mime_type}")))?;
         let mut form = multipart::Form::new()
             .text("model", model.to_string())
-            .text("stream", "true")
             .text("response_format", "json")
             .part("file", file);
         if !prompt.is_empty() {
@@ -449,58 +448,14 @@ async fn checked(response: Response) -> Result<Response, Failure> {
     })
 }
 
-/// The transcript from a streamed answer (server-sent events, the text in
-/// `transcript.text.done`) or a plain JSON one.
-async fn read_transcript(mut response: Response) -> Result<String, ApiError> {
-    let streamed = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream"));
-    if !streamed {
-        let answer: Value = response.json().await.map_err(request_error)?;
-        return Ok(answer["text"].as_str().unwrap_or("").to_string());
-    }
-    let mut pending: Vec<u8> = Vec::new();
-    loop {
-        let chunk = tokio::time::timeout(READ_TIMEOUT, response.chunk())
-            .await
-            .map_err(|_| ApiError::Timeout)?
-            .map_err(request_error)?;
-        let Some(chunk) = chunk else { break };
-        pending.extend_from_slice(&chunk);
-        while let Some(end) = pending.iter().position(|&byte| byte == b'\n') {
-            let line: Vec<u8> = pending.drain(..=end).collect();
-            if let Some(text) = transcript_event(&String::from_utf8_lossy(&line))? {
-                return Ok(text);
-            }
-        }
-    }
-    // Only `transcript.text.done` carries the whole transcript; a stream that
-    // ends without it was cut off.
-    transcript_event(&String::from_utf8_lossy(&pending))?.ok_or_else(|| {
-        ApiError::Unexpected("the transcription stream ended before its transcript".into())
-    })
-}
-
-/// The finished transcript, if this event line carries it.
-fn transcript_event(line: &str) -> Result<Option<String>, ApiError> {
-    let Some(data) = line.trim().strip_prefix("data:") else {
-        return Ok(None);
-    };
-    let Ok(event) = serde_json::from_str::<Value>(data.trim()) else {
-        return Ok(None);
-    };
-    match event["type"].as_str() {
-        Some("transcript.text.done") => Ok(Some(event["text"].as_str().unwrap_or("").to_string())),
-        Some("error") => Err(ApiError::Unexpected(
-            event["error"]["message"]
-                .as_str()
-                .unwrap_or("transcription stream failed")
-                .to_string(),
-        )),
-        _ => Ok(None),
-    }
+/// The transcript in a JSON answer `{"text": ...}`. Empty text is a silent
+/// recording, not an error.
+async fn read_transcript(response: Response) -> Result<String, ApiError> {
+    let answer: Value = response.json().await.map_err(request_error)?;
+    answer["text"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| ApiError::Unexpected("the transcription answer had no text".into()))
 }
 
 /// Every output text of a Responses API answer, in order.
@@ -611,18 +566,9 @@ pub mod test_server {
     }
 
     impl Reply {
-        /// A streamed transcription that ends with `text`.
+        /// A transcription answer holding `text`.
         pub fn transcript(text: &str) -> Self {
-            let delta = serde_json::json!({"type": "transcript.text.delta", "delta": text});
-            let done = serde_json::json!({"type": "transcript.text.done", "text": text});
-            Self {
-                status: 200,
-                content_type: "text/event-stream",
-                body: format!("data: {delta}\n\ndata: {done}\n\n"),
-                delay: Duration::ZERO,
-                retry_after: None,
-                cut_short: false,
-            }
+            Self::json(200, serde_json::json!({ "text": text }))
         }
 
         /// A Responses API answer holding `text`.
@@ -798,7 +744,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_recording_is_streamed_with_its_prompt() {
+    async fn a_recording_is_sent_with_its_prompt() {
         let server = TestServer::start(vec![Reply::transcript("Hello there.")]).await;
 
         let text = api(&server, "sk-test")
@@ -817,7 +763,7 @@ mod tests {
         assert_eq!(sent.authorization, "Bearer sk-test");
         assert_eq!(sent.field("model").as_deref(), Some("gpt-transcribe"));
         assert_eq!(sent.field("prompt").as_deref(), Some("Glossary: Zoon"));
-        assert_eq!(sent.field("stream").as_deref(), Some("true"));
+        assert_eq!(sent.field("stream"), None);
         assert_eq!(sent.field("response_format").as_deref(), Some("json"));
         let file = sent
             .fields()
@@ -917,37 +863,29 @@ mod tests {
         );
     }
 
-    fn event_stream(events: &[Value]) -> Reply {
-        Reply {
-            status: 200,
-            content_type: "text/event-stream",
-            body: events
-                .iter()
-                .map(|event| format!("data: {event}\n\n"))
-                .collect(),
-            delay: std::time::Duration::ZERO,
-            retry_after: None,
-            cut_short: false,
-        }
-    }
-
     #[tokio::test]
-    async fn a_stream_that_ends_without_its_transcript_is_an_error() {
+    async fn a_transcription_answer_without_text_is_an_error_sent_once() {
         let server = TestServer::start(vec![
-            event_stream(&[json!({"type": "transcript.text.delta", "delta": "Hello"})]),
-            event_stream(&[json!({"type": "transcript.text.done", "text": ""})]),
+            Reply::json(200, json!({"usage": {"seconds": 1}})),
+            Reply::transcript(""),
         ])
         .await;
         let api = api(&server, "sk-test");
 
-        let cut_off = api
+        let missing = api
             .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
             .await;
+        assert_eq!(server.received().len(), 1);
         let empty = api
             .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
             .await;
 
-        assert!(matches!(cut_off, Err(ApiError::Unexpected(_))));
+        assert_eq!(
+            missing,
+            Err(ApiError::Unexpected(
+                "the transcription answer had no text".into()
+            ))
+        );
         assert_eq!(empty, Ok(String::new()));
     }
 
@@ -1082,20 +1020,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_answer_cut_off_mid_download_is_tried_again() {
-        let partial_stream = Reply {
-            body: format!(
-                "data: {}\n\n",
-                json!({"type": "transcript.text.delta", "delta": "Hel"})
-            ),
-            ..Reply::transcript("unused")
-        };
         let server = TestServer::start(vec![
             Reply::response("Tidied.").cut_short(),
             Reply::response("Tidied."),
             Reply::json(200, json!({"text": "Hello."})).cut_short(),
             Reply::json(200, json!({"text": "Hello."})),
-            partial_stream.cut_short(),
-            Reply::transcript("Hello again."),
         ])
         .await;
         let api = api(&server, "sk-test");
@@ -1104,14 +1033,10 @@ mod tests {
         let whole = api
             .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
             .await;
-        let streamed = api
-            .transcribe(b"audio".to_vec(), "audio/wav", "gpt-transcribe", "")
-            .await;
 
         assert_eq!(tidy, Ok("Tidied.".to_string()));
         assert_eq!(whole, Ok("Hello.".to_string()));
-        assert_eq!(streamed, Ok("Hello again.".to_string()));
-        assert_eq!(server.received().len(), 6);
+        assert_eq!(server.received().len(), 4);
     }
 
     #[tokio::test]
