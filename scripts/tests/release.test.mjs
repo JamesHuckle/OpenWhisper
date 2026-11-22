@@ -335,11 +335,16 @@ describe("release workflow", () => {
     // has tests that never run, and lib.rs cannot be built there at all.
     const sourceDir = join(repositoryRoot, "apps/desktop/src-tauri/src");
     const coreTests = readRepo("apps/desktop/src-tauri/core-tests/lib.rs");
+    // Files that call Win32 through the windows crate build only in the
+    // Windows app, so their tests run there.
     const tested = readdirSync(sourceDir)
       .filter((name) => name.endsWith(".rs"))
-      .filter((name) => readFileSync(join(sourceDir, name), "utf8").includes("#[cfg(test)]"));
+      .map((name) => [name, readFileSync(join(sourceDir, name), "utf8")])
+      .filter(([, source]) => source.includes("#[cfg(test)]") && !/^use windows::/m.test(source))
+      .map(([name]) => name);
     assert.ok(tested.includes("transcription_sessions.rs"));
     assert.ok(!tested.includes("lib.rs"));
+    assert.ok(!tested.includes("text_inserter.rs"));
     for (const name of tested) {
       assert.ok(coreTests.includes(`#[path = "../src/${name}"]`), name);
     }
