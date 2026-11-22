@@ -1,7 +1,6 @@
 import audioRules from "../../../packages/protocol/audio-rules.json";
 import { errorMessage } from "./error-message";
 import { isLiveTranscription, type TranscriptionModel } from "./models";
-import { PCM_MIME_TYPE } from "./pcm-capture";
 import {
   joinAudioParts,
   sendAudioChunk,
@@ -444,10 +443,7 @@ export function createDictationController(deps: DictationDeps) {
       if (backupError) throw backupError;
       if (currentSessionId !== sessionId) return;
       if (streamAudioToWorker) {
-        await invoke("worker_finalize_session_audio", {
-          sessionId,
-          mimeType: PCM_MIME_TYPE,
-        });
+        await invoke("worker_finalize_session_audio", { sessionId });
       } else {
         // The transcriber reads the saved backup from disk, so the audio
         // crosses to it once, at the end, instead of a second time while
@@ -848,10 +844,7 @@ export function createDictationController(deps: DictationDeps) {
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
     setState("transcribing");
-    await invoke("worker_finalize_session_audio", {
-      sessionId,
-      mimeType: PCM_MIME_TYPE,
-    });
+    await invoke("worker_finalize_session_audio", { sessionId });
   }
 
   return {

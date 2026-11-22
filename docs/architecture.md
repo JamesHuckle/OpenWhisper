@@ -129,9 +129,10 @@ worker did the work:
   saved key and model.
 - `worker_append_audio_chunk` (raw bytes, `session-id` header) sends Live
   audio.
-- `worker_finalize_session_audio { sessionId, mimeType }` finishes a Live
-  session; `recording_transcribe { recordingId, sessionId }` finishes a
-  Standard one from its saved recording.
+- `worker_finalize_session_audio { sessionId }` finishes a Live session
+  (its audio is always 24 kHz 16-bit mono PCM);
+  `recording_transcribe { recordingId, sessionId }` finishes a Standard one
+  from its saved recording.
 - `worker_stop_session { sessionId }` cancels the session's token: a running
   upload or tidy request is dropped at once, and the session sends no more
   events.

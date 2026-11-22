@@ -6,7 +6,6 @@ import {
   PCM_CHUNK_FRAMES,
   PCM_FLUSH_REQUEST,
   PCM_FLUSHED,
-  PCM_MIME_TYPE,
   PCM_SAMPLE_RATE,
   PCM_WORKLET_NAME,
   Pcm16Chunker,
@@ -33,7 +32,6 @@ describe("PCM16 conversion", () => {
     const input = ramp(4800);
 
     expect(new Int16Array(floatToPcm16(input)).length).toBe(input.length);
-    expect(PCM_MIME_TYPE).toBe(`audio/pcm;rate=${PCM_SAMPLE_RATE}`);
     expect(PCM_SAMPLE_RATE).toBe(24_000);
   });
 });

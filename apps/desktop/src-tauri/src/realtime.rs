@@ -5,6 +5,7 @@
 //! This file needs no Tauri, so its tests run in `core-tests`.
 
 use crate::openai_api::ensure_crypto_provider;
+use crate::recording_store::MICROPHONE_SAMPLE_RATE;
 use crate::sync::lock;
 use base64::Engine;
 use futures_util::stream::SplitSink;
@@ -21,8 +22,6 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-/// The live format: 16-bit mono PCM at 24 kHz.
-pub const LIVE_SAMPLE_RATE: u32 = 24_000;
 /// How long a finished stretch may take to arrive after its commit.
 pub const FINAL_TIMEOUT: Duration = Duration::from_secs(120);
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -93,7 +92,7 @@ impl RealtimeStream {
                 "type": "transcription",
                 "audio": {
                     "input": {
-                        "format": { "type": "audio/pcm", "rate": LIVE_SAMPLE_RATE },
+                        "format": { "type": "audio/pcm", "rate": MICROPHONE_SAMPLE_RATE },
                         "transcription": { "model": model, "delay": "minimal" },
                         "turn_detection": null,
                     }

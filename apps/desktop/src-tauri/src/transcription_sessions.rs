@@ -16,12 +16,13 @@
 //! This file needs no Tauri, so its tests run in `core-tests`.
 
 use crate::audio_rules::{
-    echoes_prompt, no_speech_reason, no_speech_reason_from_counters, pcm_peak, pcm_rate, rules,
+    echoes_prompt, no_speech_reason, no_speech_reason_from_counters, pcm_peak, rules,
 };
 use crate::debug_log::debug_log_line;
 use crate::models::{default_transcription_model, live_transcription_model, refine_model};
 use crate::openai_api::{HttpApi, DEFAULT_BASE_URL};
 use crate::realtime::{DeltaHandler, RealtimeStream, FINAL_TIMEOUT};
+use crate::recording_store::MICROPHONE_SAMPLE_RATE;
 use crate::sync::lock;
 use crate::transcriber::{
     is_short_clean_transcript, PolishSettings, SavedAudio, Transcriber,
@@ -39,7 +40,7 @@ pub const SESSION_EVENT: &str = "worker-session-event";
 
 /// A Live session moves to a new Realtime connection after this much audio
 /// (25 minutes), before the service's session limit.
-pub const LIVE_ROTATE_BYTES: u64 = 24_000 * 2 * 25 * 60;
+pub const LIVE_ROTATE_BYTES: u64 = MICROPHONE_SAMPLE_RATE as u64 * 2 * 25 * 60;
 /// Shorter prompt fragments are too common to remove from an error message
 /// without mangling it.
 const MIN_REDACT_CHARS: usize = 4;
@@ -67,10 +68,9 @@ pub struct SessionSettings {
 }
 
 pub enum FinalizeAudio {
-    /// The chunks a Live session was sent, in this raw PCM type.
-    Live {
-        mime_type: String,
-    },
+    /// The chunks a Live session was sent: raw 16-bit mono PCM at
+    /// [`MICROPHONE_SAMPLE_RATE`].
+    Live,
     /// The saved recording, always transcribed with Standard transcription.
     Saved(SavedAudio),
 }
@@ -422,7 +422,7 @@ impl Sessions {
                 Self::close_stream(session);
                 Some(saved)
             }
-            FinalizeAudio::Live { mime_type } => {
+            FinalizeAudio::Live => {
                 let (audio_bytes, peak) = {
                     let state = lock(&session.state);
                     (state.audio_bytes, state.peak)
@@ -433,9 +433,9 @@ impl Sessions {
                     return self.finish_without_audio(session, "no_bytes");
                 }
                 if progress.segments.is_empty() {
-                    let reason = pcm_rate(&mime_type)
-                        .and_then(|rate| no_speech_reason_from_counters(audio_bytes, peak, rate));
-                    if let Some(reason) = reason {
+                    if let Some(reason) =
+                        no_speech_reason_from_counters(audio_bytes, peak, MICROPHONE_SAMPLE_RATE)
+                    {
                         return self.finish_without_audio(session, &reason);
                     }
                 }
@@ -1049,12 +1049,7 @@ mod tests {
         );
         assert_eq!(
             h.sessions
-                .finalize(
-                    &id,
-                    FinalizeAudio::Live {
-                        mime_type: "audio/pcm;rate=24000".into()
-                    }
-                )
+                .finalize(&id, FinalizeAudio::Live)
                 .await
                 .unwrap_err(),
             "bad_request: Unknown session_id"
@@ -1112,15 +1107,7 @@ mod tests {
         let id = h.start("gpt-live-transcribe", false, "").await;
 
         h.sessions.append(&id, &tone(0.5, 6_000)).await.unwrap();
-        h.sessions
-            .finalize(
-                &id,
-                FinalizeAudio::Live {
-                    mime_type: "audio/pcm;rate=24000".into(),
-                },
-            )
-            .await
-            .unwrap();
+        h.sessions.finalize(&id, FinalizeAudio::Live).await.unwrap();
 
         assert_eq!(
             h.events(),
@@ -1158,15 +1145,7 @@ mod tests {
 
         h.sessions.append(&id, &tone(0.5, 6_000)).await.unwrap();
         h.sessions.append(&id, &tone(0.5, 6_000)).await.unwrap();
-        h.sessions
-            .finalize(
-                &id,
-                FinalizeAudio::Live {
-                    mime_type: "audio/pcm;rate=24000".into(),
-                },
-            )
-            .await
-            .unwrap();
+        h.sessions.finalize(&id, FinalizeAudio::Live).await.unwrap();
 
         assert_eq!(
             h.events(),
@@ -1219,15 +1198,7 @@ mod tests {
         for audio in [tone(1.0, 0), tone(0.1, 6_000)] {
             let id = h.start("gpt-live-transcribe", false, "").await;
             h.sessions.append(&id, &audio).await.unwrap();
-            h.sessions
-                .finalize(
-                    &id,
-                    FinalizeAudio::Live {
-                        mime_type: "audio/pcm;rate=24000".into(),
-                    },
-                )
-                .await
-                .unwrap();
+            h.sessions.finalize(&id, FinalizeAudio::Live).await.unwrap();
             assert_eq!(
                 h.last(),
                 ("error".into(), rules().no_audio_message.clone(), true)

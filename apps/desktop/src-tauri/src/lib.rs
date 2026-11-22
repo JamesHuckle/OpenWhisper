@@ -549,10 +549,9 @@ async fn worker_append_audio_chunk(
 async fn worker_finalize_session_audio(
     state: State<'_, Arc<AppState>>,
     session_id: String,
-    mime_type: String,
 ) -> Result<(), String> {
     transcription(&state)?
-        .finalize(&session_id, FinalizeAudio::Live { mime_type })
+        .finalize(&session_id, FinalizeAudio::Live)
         .await
 }
 

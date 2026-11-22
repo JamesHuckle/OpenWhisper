@@ -7,7 +7,6 @@
 // samples into 16-bit little-endian PCM in fixed-size chunks.
 
 export const PCM_SAMPLE_RATE = 24_000;
-export const PCM_MIME_TYPE = `audio/pcm;rate=${PCM_SAMPLE_RATE}`;
 export const PCM_WORKLET_NAME = "openwhisper-pcm-capture";
 /** Frames per chunk sent to the page: about 85 ms at 24 kHz. */
 export const PCM_CHUNK_FRAMES = 2048;

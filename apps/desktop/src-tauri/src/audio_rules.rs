@@ -132,20 +132,6 @@ pub fn kept_part_text(text: &str, prompt: &str, previous: &str) -> String {
     }
 }
 
-/// The sample rate a raw PCM type names (`audio/pcm;rate=24000`), if any.
-pub fn pcm_rate(mime_type: &str) -> Option<u32> {
-    if !mime_type.starts_with("audio/pcm") {
-        return None;
-    }
-    mime_type.split(';').skip(1).find_map(|parameter| {
-        let (name, value) = parameter.split_once('=')?;
-        let name = name.trim().to_ascii_lowercase();
-        (name == "rate" || name == "samplerate")
-            .then(|| value.trim().parse().ok())
-            .flatten()
-    })
-}
-
 fn too_short(seconds: f64) -> Option<String> {
     (seconds < rules().min_speech_seconds).then(|| format!("too_short={seconds:.2}s"))
 }
@@ -252,11 +238,7 @@ mod tests {
             file.read_exact(&mut pcm).unwrap();
             // A Live session counts its chunks instead of keeping them.
             let peak = pcm.chunks(4_800).map(pcm_peak).max().unwrap_or(0);
-            let reason = no_speech_reason_from_counters(
-                pcm.len() as u64,
-                peak,
-                pcm_rate(&format!("audio/pcm;rate={}", format.sample_rate)).unwrap(),
-            );
+            let reason = no_speech_reason_from_counters(pcm.len() as u64, peak, format.sample_rate);
             assert_eq!(
                 expected_answer(reason),
                 case["expected"],
@@ -290,14 +272,6 @@ mod tests {
             no_speech_reason(Path::new("missing.wav"), "audio/wav"),
             None
         );
-    }
-
-    #[test]
-    fn raw_pcm_types_name_their_rate() {
-        assert_eq!(pcm_rate("audio/pcm;rate=24000"), Some(24_000));
-        assert_eq!(pcm_rate("audio/pcm; SampleRate=16000"), Some(16_000));
-        assert_eq!(pcm_rate("audio/pcm"), None);
-        assert_eq!(pcm_rate("audio/wav;rate=24000"), None);
     }
 
     #[test]

@@ -6,7 +6,6 @@ import {
   type WorkerSessionEvent,
 } from "./dictation-controller";
 import { DEFAULT_TRANSCRIPTION_MODEL, LIVE_TRANSCRIPTION_MODEL } from "./models";
-import { PCM_MIME_TYPE } from "./pcm-capture";
 
 type Call = { command: string; args: unknown; headers?: Record<string, string> };
 type Deferred = { resolve: (value: unknown) => void; reject: (error: unknown) => void };
@@ -221,7 +220,7 @@ describe("dictation controller", () => {
     expect(app.named("worker_finalize_session_audio")).toEqual([
       {
         command: "worker_finalize_session_audio",
-        args: { sessionId: "s-1", mimeType: PCM_MIME_TYPE },
+        args: { sessionId: "s-1" },
       },
     ]);
     expect(app.named("recording_transcribe")).toEqual([]);
