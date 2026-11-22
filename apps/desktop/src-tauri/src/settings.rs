@@ -4,6 +4,7 @@
 //!
 //! This file needs no Tauri, so its tests also run in `core-tests`.
 
+use crate::debug_log::debug_log_line;
 use crate::json_file;
 use crate::models::default_transcription_model;
 use crate::transcription_sessions::SessionSettings;
@@ -73,22 +74,33 @@ impl Default for AppSettings {
     }
 }
 
-/// Saves the settings file at `path`.
+/// Saves the settings file at `path`. An error means the file was not
+/// replaced, so the previous settings are still the saved ones.
 pub fn save_settings_file(path: &Path, settings: &AppSettings) -> Result<()> {
     json_file::write_json_atomic(path, settings)?;
     // The backup is the previous file. Once the plain-text API key has left
-    // the settings it must not stay behind in the backup either.
-    if settings.plain_openai_api_key.is_empty() && backup_holds_plain_api_key(path) {
-        json_file::refresh_backup(path)?;
+    // the settings it must not stay behind in the backup either. The new
+    // settings are saved by now, so a failed cleanup does not fail the save:
+    // the backup is checked again, and replaced, on the next save.
+    if settings.plain_openai_api_key.is_empty() && backup_may_hold_plain_api_key(path) {
+        if let Err(e) = json_file::refresh_backup(path) {
+            debug_log_line(
+                "settings",
+                &format!("saved, but could not remove the old API key from the backup: {e}"),
+            );
+        }
     }
     Ok(())
 }
 
-fn backup_holds_plain_api_key(settings_path: &Path) -> bool {
-    fs::read(json_file::backup_path(settings_path))
-        .ok()
-        .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
-        .is_some_and(|backup| backup.get("openaiApiKey").is_some())
+/// True when the backup holds a plain-text API key, or cannot be read or
+/// parsed to tell. A missing backup holds nothing.
+fn backup_may_hold_plain_api_key(settings_path: &Path) -> bool {
+    match fs::read(json_file::backup_path(settings_path)) {
+        Ok(raw) => serde_json::from_slice::<serde_json::Value>(&raw)
+            .map_or(true, |backup| backup.get("openaiApiKey").is_some()),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -194,6 +206,74 @@ mod tests {
         assert!(!fs::read_to_string(&path).unwrap().contains("sk-legacy"));
         let backup = fs::read_to_string(json_file::backup_path(&path)).unwrap();
         assert!(!backup.contains("sk-legacy"), "{backup}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_backup_cleanup_still_saves_the_settings() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let path = dir.0.join("settings.json");
+        // A backup holding the plain key that cannot be replaced.
+        let backup = json_file::backup_path(&path);
+        fs::write(&backup, br#"{"openaiApiKey":"sk-legacy"}"#).unwrap();
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o444)).unwrap();
+        if fs::OpenOptions::new().write(true).open(&backup).is_ok() {
+            eprintln!("skipped: this user can write read-only files");
+            return;
+        }
+        let changed = AppSettings {
+            refine_prompt: "Use British spelling.".into(),
+            ..AppSettings::default()
+        };
+
+        save_settings_file(&path, &changed).unwrap();
+
+        let saved: AppSettings = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.refine_prompt, "Use British spelling.");
+        // Still marked for cleanup, so the next save tries again.
+        assert!(backup_may_hold_plain_api_key(&path));
+    }
+
+    #[test]
+    fn a_backup_that_cannot_be_read_or_parsed_needs_cleanup() {
+        let dir = TempDir::new();
+        let path = dir.0.join("settings.json");
+        let backup = json_file::backup_path(&path);
+        assert!(!backup_may_hold_plain_api_key(&path), "no backup is clean");
+
+        fs::write(&backup, br#"{"refinePrompt":""}"#).unwrap();
+        assert!(!backup_may_hold_plain_api_key(&path));
+        fs::write(&backup, br#"{"openaiApiKey":"sk-legacy"}"#).unwrap();
+        assert!(backup_may_hold_plain_api_key(&path));
+        fs::write(&backup, b"{\"openaiApiKey\": \"sk-leg").unwrap();
+        assert!(backup_may_hold_plain_api_key(&path), "unparsable");
+        fs::remove_file(&backup).unwrap();
+        fs::create_dir(&backup).unwrap();
+        assert!(backup_may_hold_plain_api_key(&path), "unreadable");
+    }
+
+    #[test]
+    fn an_unparsable_backup_is_replaced_with_the_clean_file() {
+        let dir = TempDir::new();
+        let path = dir.0.join("settings.json");
+        fs::write(json_file::backup_path(&path), b"{\"openaiApiKey\": \"sk-legacy").unwrap();
+
+        save_settings_file(&path, &AppSettings::default()).unwrap();
+
+        let backup = fs::read_to_string(json_file::backup_path(&path)).unwrap();
+        assert!(!backup.contains("sk-legacy"), "{backup}");
+        assert_eq!(backup, fs::read_to_string(&path).unwrap());
+    }
+
+    #[test]
+    fn a_save_with_no_backup_creates_none() {
+        let dir = TempDir::new();
+        let path = dir.0.join("settings.json");
+
+        save_settings_file(&path, &AppSettings::default()).unwrap();
+
+        assert!(!json_file::backup_path(&path).exists());
     }
 
     #[test]
