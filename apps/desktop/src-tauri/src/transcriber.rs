@@ -8,7 +8,7 @@
 //!
 //! The part rules are shared with the Android app
 //! (packages/protocol/audio-examples/cases.json). This file needs no Tauri,
-//! so its tests run in `core-tests`.
+//! so its tests run in the `core` crate.
 
 use crate::audio_rules::{kept_part_text, max_upload_bytes, pcm_is_silent, previous_part_text};
 use crate::debug_log::debug_log_line;

@@ -38,7 +38,8 @@ WhisperFlow is split into two runtime layers, in one process:
    - code layout: `src-tauri/src/lib.rs` holds the Tauri commands, the tray
      and start-up. Logic that needs no Tauri sits in files beside it
      (`settings.rs`, `recordings.rs`, `overlay_geometry.rs` and the files
-     named above), and `src-tauri/core-tests` runs their tests on any system.
+     named above). The `src-tauri/core` crate declares them once: the app
+     uses them from there, and it runs their tests on any system.
      The Windows-only `text_inserter.rs` and `overlay_positioner.rs` make the
      Win32 calls, all through the `windows` crate's types and functions.
    - transcription: the app calls OpenAI itself, as the Android app does;
@@ -49,7 +50,7 @@ WhisperFlow is split into two runtime layers, in one process:
      3 s when the connection drops or the service answers 429, 500, 502, 503
      or 504, and a transcription's time limit grows with its upload) and
      `realtime.rs` is the Live websocket. The shared rules are in `audio_rules.rs` and
-     `saved_parts.rs`. All of them need no Tauri, so `core-tests` runs their
+     `saved_parts.rs`. All of them need no Tauri, so the `core` crate runs their
      tests against local stand-ins for OpenAI.
 
 ## Data flow

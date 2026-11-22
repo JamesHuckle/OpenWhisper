@@ -226,7 +226,7 @@ base64 -w0 openwhisper-release.jks | gh secret set OPENWHISPER_ANDROID_KEYSTORE_
 
 1. Test and production-build the website; test the desktop's Rust logic,
    including the transcriber against local stand-ins for OpenAI (`cargo test`
-   in `apps/desktop/src-tauri/core-tests`, which needs no Tauri), the desktop UI, the Android unit tests and
+   in `apps/desktop/src-tauri/core`, the app's Rust files that need no Tauri), the desktop UI, the Android unit tests and
    `scripts/release.mjs`.
 2. Decide whether app code changed since the last tag and choose the version
    (`node scripts/release.mjs plan`).

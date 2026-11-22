@@ -570,12 +570,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "claxon"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bfbf56724aa9eca8afa4fcfadeb479e722935bb2a0900c2d37e0cc477af0688"
-
-[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2819,24 +2813,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
-name = "openwhisper_desktop"
-version = "0.2.27"
+name = "openwhisper_core"
+version = "0.0.0"
 dependencies = [
  "anyhow",
- "arboard",
  "base64 0.22.1",
  "bytes",
- "claxon",
- "clipboard-win",
  "flacenc",
  "futures-util",
- "keyring",
  "regex",
  "reqwest",
  "rustls",
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "openwhisper_desktop"
+version = "0.2.27"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "clipboard-win",
+ "keyring",
+ "openwhisper_core",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
@@ -2845,8 +2852,6 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tokio",
- "tokio-tungstenite",
- "tokio-util",
  "uuid",
  "windows",
 ]

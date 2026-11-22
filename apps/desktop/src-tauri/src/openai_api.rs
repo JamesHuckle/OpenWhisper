@@ -12,7 +12,7 @@
 //! API message can quote the request, which holds the user's dictated words
 //! and prompts.
 //!
-//! This file needs no Tauri, so its tests run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use crate::debug_log::debug_log_line;
 use crate::recording_store::extension_for_mime_type;

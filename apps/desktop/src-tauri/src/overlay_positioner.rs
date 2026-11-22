@@ -3,7 +3,7 @@
 //! Callers pass and get window and monitor handles as `isize`; they become
 //! `HWND` and `HMONITOR` only here.
 
-use crate::overlay_geometry::{
+use openwhisper_core::overlay_geometry::{
     overlay_bottom_anchor, OverlayAnchor, OverlayPlacement, PlacementVisibility, Position, Size,
 };
 use std::ffi::c_void;

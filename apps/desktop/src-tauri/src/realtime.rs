@@ -2,7 +2,7 @@
 //! recording. Audio is appended while the user speaks, the model's words
 //! come back as deltas, and a commit at the end asks for the finished text.
 //!
-//! This file needs no Tauri, so its tests run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use crate::openai_api::ensure_crypto_provider;
 use crate::recording_store::MICROPHONE_SAMPLE_RATE;

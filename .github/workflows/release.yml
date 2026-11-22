@@ -69,11 +69,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri/core-tests
+          workspaces: apps/desktop/src-tauri/core
       # The desktop's Rust files that need no Tauri (recordings, the WAV
       # backup, model settings, the OpenAI transcriber, the write rules).
       - name: Test desktop Rust logic
-        working-directory: apps/desktop/src-tauri/core-tests
+        working-directory: apps/desktop/src-tauri/core
         run: cargo test --locked
       - uses: actions/setup-node@v4
         with:

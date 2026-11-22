@@ -13,7 +13,7 @@
 //! Stopping a session cancels its token: whatever request it is waiting for
 //! is dropped at once and it sends no more events.
 //!
-//! This file needs no Tauri, so its tests run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use crate::audio_rules::{
     echoes_prompt, no_speech_reason, no_speech_reason_from_counters, pcm_peak, rules,

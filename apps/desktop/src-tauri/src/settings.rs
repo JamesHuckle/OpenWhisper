@@ -2,7 +2,7 @@
 //! (which never holds the API key), the copy the settings menu sees, and the
 //! settings each dictation starts with.
 //!
-//! This file needs no Tauri, so its tests also run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use crate::debug_log::debug_log_line;
 use crate::json_file;

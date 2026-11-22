@@ -789,7 +789,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
 
 [[package]]
-name = "openwhisper_core_tests"
+name = "openwhisper_core"
 version = "0.0.0"
 dependencies = [
  "anyhow",

@@ -5,7 +5,7 @@
 //! whether showing it takes focus.
 //! The Win32 calls that apply a placement are in `overlay_positioner.rs`.
 //!
-//! This file needs no Tauri, so its tests also run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use std::sync::atomic::{AtomicIsize, Ordering};
 

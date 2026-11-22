@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 // CSS and browser calls in main.ts, and Windows-only or Tauri-bound Rust.
 // Everything else is tested by running it (dictation-controller,
 // recording-pipeline, target-write, overlay-layout, settings-save, meter and
-// the Rust core-tests).
+// the Rust core crate's tests).
 const desktopRoot = resolve(import.meta.dirname, "..");
 const nativeSourceDir = resolve(desktopRoot, "src-tauri/src");
 const read = (path: string) => readFileSync(resolve(desktopRoot, path), "utf8");
@@ -98,7 +98,7 @@ describe("desktop regression guards", () => {
 
   it("writes debug lines through the log file, not only to the console", () => {
     // Bug (fixed in ff78eb6): Windows release builds have no console, so lines printed
-    // with eprintln! were lost. debug_log.rs tests the file in core-tests.
+    // with eprintln! were lost. debug_log.rs tests the file in the core crate.
     const printing = readdirSync(nativeSourceDir)
       .filter((name) => name.endsWith(".rs") && name !== "debug_log.rs")
       .filter((name) => readFileSync(resolve(nativeSourceDir, name), "utf8").includes("eprintln!"));

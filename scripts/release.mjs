@@ -98,7 +98,6 @@ const nonAppPatterns = [
   /\.test\.[cm]?[jt]s$/,
   /(^|\/)tests?\//,
   /^apps\/android\/app\/src\/(test|androidTest)\//,
-  /^apps\/desktop\/src-tauri\/core-tests\//,
 ];
 
 export function isAppChange(path) {

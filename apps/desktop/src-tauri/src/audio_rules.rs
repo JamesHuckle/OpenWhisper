@@ -3,7 +3,7 @@
 //! upload. They live in packages/protocol/audio-rules.json, built into the
 //! app, and their examples in packages/protocol/audio-examples/cases.json.
 //!
-//! This file needs no Tauri, so its tests run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use crate::wav_file::{read_up_to, read_wav_format};
 use serde::Deserialize;
@@ -173,7 +173,7 @@ mod tests {
     use serde_json::Value;
     use std::path::PathBuf;
 
-    /// The shared examples, found from the app or the core-tests crate.
+    /// The shared examples, found from the core crate.
     fn examples_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()

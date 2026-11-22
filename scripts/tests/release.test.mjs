@@ -54,6 +54,7 @@ describe("release decision", () => {
       "apps/desktop/src/main.ts",
       "apps/desktop/src-tauri/src/lib.rs",
       "apps/desktop/src-tauri/src/transcriber.rs",
+      "apps/desktop/src-tauri/core/lib.rs",
       "packages/protocol/audio-rules.json",
       "scripts/build-windows-installer.ps1",
     ]) {
@@ -65,7 +66,6 @@ describe("release decision", () => {
       "docs/android.md",
       "apps/desktop/src/ui-regressions.test.ts",
       "apps/android/app/src/test/java/com/openwhisper/android/AudioRulesTest.kt",
-      "apps/desktop/src-tauri/core-tests/lib.rs",
       "packages/protocol/README.md",
       ".github/workflows/release.yml",
     ]) {
@@ -331,10 +331,12 @@ describe("release workflow", () => {
   });
 
   it("runs the tests of every desktop Rust file that has them", () => {
-    // core-tests builds the Rust files without Tauri; a file it leaves out
-    // has tests that never run, and lib.rs cannot be built there at all.
+    // The core crate declares the Rust files without Tauri once, for the app
+    // and its tests; a file it leaves out has tests that never run, and
+    // lib.rs cannot be built there at all.
     const sourceDir = join(repositoryRoot, "apps/desktop/src-tauri/src");
-    const coreTests = readRepo("apps/desktop/src-tauri/core-tests/lib.rs");
+    const core = readRepo("apps/desktop/src-tauri/core/lib.rs");
+    const app = readRepo("apps/desktop/src-tauri/src/lib.rs");
     // Files that call Win32 through the windows crate build only in the
     // Windows app, so their tests run there.
     const tested = readdirSync(sourceDir)
@@ -346,9 +348,10 @@ describe("release workflow", () => {
     assert.ok(!tested.includes("lib.rs"));
     assert.ok(!tested.includes("text_inserter.rs"));
     for (const name of tested) {
-      assert.ok(coreTests.includes(`#[path = "../src/${name}"]`), name);
+      assert.ok(core.includes(`#[path = "../src/${name}"]`), name);
+      assert.ok(!app.includes(`mod ${name.replace(/\.rs$/, "")};`), name);
     }
-    assert.match(job("test-desktop"), /working-directory: apps\/desktop\/src-tauri\/core-tests\s+run: cargo test --locked/);
+    assert.match(job("test-desktop"), /working-directory: apps\/desktop\/src-tauri\/core\s+run: cargo test --locked/);
   });
 });
 

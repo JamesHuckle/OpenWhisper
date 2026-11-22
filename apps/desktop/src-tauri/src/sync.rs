@@ -4,7 +4,7 @@
 //! is still whole for everything the app keeps in a mutex, so the app carries
 //! on with it rather than failing every later call.
 //!
-//! This file needs no Tauri, so its tests also run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use std::sync::{Mutex, MutexGuard};
 

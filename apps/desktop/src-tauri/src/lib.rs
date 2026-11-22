@@ -1,36 +1,13 @@
-mod api_key_store;
-mod audio_rules;
-// Keeps the UI Automation client the Windows writer reuses.
-#[cfg(target_os = "windows")]
-mod automation_client;
-mod debug_log;
-mod flac_upload;
-#[cfg(target_os = "windows")]
-mod foreground_app;
-mod json_file;
-mod openai_api;
-// Parts of the insertion rules are used only by the Windows writer.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-mod paste_target;
-mod models;
-// The pill is placed with Win32 calls, so most of this is used only on Windows.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-mod overlay_geometry;
 #[cfg(target_os = "windows")]
 mod overlay_positioner;
-mod realtime;
-mod recording_store;
-mod recordings;
-mod saved_parts;
-mod settings;
-mod sync;
 // Writes dictated text into the field focused when recording began.
 #[cfg(target_os = "windows")]
 mod text_inserter;
-mod transcriber;
-// Dictation sessions: OpenAI is called from here, with no helper process.
-mod transcription_sessions;
-mod wav_file;
+
+use openwhisper_core::{
+    api_key_store, debug_log, json_file, models, overlay_geometry, recording_store, recordings,
+    settings, sync, transcriber, transcription_sessions,
+};
 
 use anyhow::{anyhow, Result};
 use debug_log::debug_log_line;

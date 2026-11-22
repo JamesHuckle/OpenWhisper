@@ -6,7 +6,7 @@
 //! that the client's COM connection is gone, the client is rebuilt once and
 //! the question asked again. The client type and the code that creates it
 //! are passed in, so the rules are tested here without Windows. This file
-//! has no dependencies so it also builds in `core-tests`.
+//! has no dependencies, so the `core` crate builds and tests it on any system.
 
 /// COM error codes (HRESULTs) meaning the connection behind the client is
 /// gone, so a new client may succeed where the old one failed. Time-outs are

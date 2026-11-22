@@ -3,7 +3,7 @@
 //!
 //! The FLAC encoder (src/flac_upload.rs) and the transcriber
 //! (src/transcriber.rs) both read saved recordings through this one parser.
-//! This file needs no Tauri, so its tests run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use crate::recording_store::wav_header;
 use std::fs::File;

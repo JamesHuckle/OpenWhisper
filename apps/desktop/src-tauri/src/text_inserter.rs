@@ -11,11 +11,11 @@
 //! is pasted through the clipboard, which is put back afterwards; the temporary
 //! text is kept out of clipboard history and cloud sync.
 
-use crate::foreground_app::ForegroundApp;
-use crate::overlay_geometry::cursor_entered_new_monitor;
+use openwhisper_core::foreground_app::ForegroundApp;
+use openwhisper_core::overlay_geometry::cursor_entered_new_monitor;
 use crate::overlay_positioner;
-use crate::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
-use crate::sync::lock;
+use openwhisper_core::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
+use openwhisper_core::sync::lock;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
@@ -844,7 +844,7 @@ fn unicode_key(unit: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
 /// its whole life (`automation_client` has the reuse rules); the focused
 /// element and its password flag are still read again on every write.
 mod uia {
-    use crate::automation_client::ReusedClient;
+    use openwhisper_core::automation_client::ReusedClient;
     use std::cell::RefCell;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,

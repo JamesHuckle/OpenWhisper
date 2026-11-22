@@ -1,8 +1,9 @@
-# Runs the tests of the desktop app's Rust files that need no Tauri, on any
-# system: cargo test --manifest-path apps/desktop/src-tauri/core-tests/Cargo.toml
-# The release workflow (.github/workflows/release.yml) runs it before building.
+# The desktop app's Rust files that need no Tauri (lib.rs). The app depends on
+# it by path; its tests run on any system:
+# cargo test --manifest-path apps/desktop/src-tauri/core/Cargo.toml
+# The release workflow (.github/workflows/release.yml) runs them before building.
 [package]
-name = "openwhisper_core_tests"
+name = "openwhisper_core"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -15,9 +16,13 @@ anyhow = "1.0"
 base64 = "0.22"
 # Shares one upload buffer across retries (src/openai_api.rs).
 bytes = "1.11"
+# Lossless upload copy of each microphone recording (src/flac_upload.rs).
 flacenc = { version = "0.5", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 regex = "1"
+# OpenAI is called from the app (src/openai_api.rs, src/realtime.rs). TLS is
+# rustls with ring, as the updater already uses, and the system's
+# certificates.
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }

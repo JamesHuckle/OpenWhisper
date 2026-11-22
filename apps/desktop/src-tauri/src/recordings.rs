@@ -7,7 +7,7 @@
 //! the parts that did not finish. The file goes when the transcription
 //! completes or the recording is pruned.
 //!
-//! This file needs no Tauri, so its tests also run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use crate::json_file;
 use crate::recording_store::{self, PcmWavWriter};

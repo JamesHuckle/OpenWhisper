@@ -10,7 +10,7 @@
 //! The desktop names the file (`parts.json` in the recording's folder) and
 //! deletes it when the transcription completes or the recording is pruned.
 //!
-//! This file needs no Tauri, so its tests run in `core-tests`.
+//! This file needs no Tauri, so its tests run in the `core` crate.
 
 use crate::debug_log::debug_log_line;
 use serde::{Deserialize, Serialize};
