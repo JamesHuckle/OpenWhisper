@@ -1050,8 +1050,16 @@ mod tests {
         let sent = server.received();
         assert_eq!(sent.len(), 2);
         assert!(started.elapsed() >= RETRY_DELAYS[0]);
-        // The second try sends the same audio and prompt.
-        assert_eq!(sent[0].body.len(), sent[1].body.len());
+        // The second try sends the same audio, under the same name, and prompt.
+        let file = |sent: &test_server::Received| {
+            sent.fields()
+                .into_iter()
+                .find(|(name, _, _)| name == "file")
+                .map(|(_, file_name, value)| (file_name, value))
+        };
+        let expected = (Some("session_audio.wav".to_string()), b"audio".to_vec());
+        assert_eq!(file(&sent[0]), Some(expected.clone()));
+        assert_eq!(file(&sent[1]), Some(expected));
         assert_eq!(sent[1].field("prompt").as_deref(), Some("Zoon"));
     }
 
