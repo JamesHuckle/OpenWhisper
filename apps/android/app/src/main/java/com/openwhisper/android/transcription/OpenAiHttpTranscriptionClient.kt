@@ -7,7 +7,6 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class OpenAiHttpTranscriptionClient(
@@ -40,11 +39,13 @@ class OpenAiHttpTranscriptionClient(
      */
     private val retryDelaysMillis: List<Long> = RETRY_DELAYS_MILLIS,
 ) : TranscriptionClient {
-    private val generation = AtomicLong(0)
+    // Each job builds its own client and calls [transcribe] on it once, so
+    // one flag is enough: once set, this client never sends again.
+    @Volatile private var cancelCalled = false
     private val activeConnection = AtomicReference<HttpURLConnection?>(null)
 
     // Makes cancelling and registering a connection one step each, so a
-    // cancelled call can never replace a newer call's connection.
+    // cancel that lands while a connection opens still closes it.
     private val connectionLock = Any()
 
     /**
@@ -53,19 +54,18 @@ class OpenAiHttpTranscriptionClient(
      */
     override fun cancel() {
         synchronized(connectionLock) {
-            generation.incrementAndGet()
+            cancelCalled = true
             activeConnection.getAndSet(null)
         }?.disconnect()
     }
 
     override fun transcribe(audio: TranscriptionAudio): String {
-        val started = generation.get()
         val key = apiKey()?.takeIf { it.isNotBlank() }
             ?: throw TranscriptionException("Save an OpenAI API key or enable demo mode")
         if (!audio.file.exists() || audio.file.length() == 0L) {
             throw TranscriptionException("The saved audio file is empty")
         }
-        if (audio.pcmSampleRate != null) return transcribePcm(key, audio, started)
+        if (audio.pcmSampleRate != null) return transcribePcm(key, audio)
         if (audio.file.length() > AudioRules.MAX_UPLOAD_BYTES) {
             throw TranscriptionException(
                 "This audio file is larger than ${AudioRules.MAX_UPLOAD_BYTES / (1024 * 1024)} MB. " +
@@ -74,11 +74,11 @@ class OpenAiHttpTranscriptionClient(
         }
         // A compressed import goes as it is, under its own name and type.
         val upload = UploadAudio.file(audio.file, audio.mimeType)
-        return transcribeRequest(key, upload, "", started).trim()
+        return transcribeRequest(key, upload, "").trim()
             .ifBlank { throw NoSpeechException("empty_transcript") }
     }
 
-    private fun transcribePcm(key: String, audio: TranscriptionAudio, started: Long): String {
+    private fun transcribePcm(key: String, audio: TranscriptionAudio): String {
         val sampleRate = requireNotNull(audio.pcmSampleRate)
         // A tap or a muted microphone is never uploaded: it costs money and
         // the service rejects it or answers with the prompt.
@@ -117,7 +117,7 @@ class OpenAiHttpTranscriptionClient(
                 continue
             }
             val prompt = AudioRules.previousPartText(transcripts)
-            val text = transcribePart(key, audio.file, start, count, sampleRate, prompt, started).trim()
+            val text = transcribePart(key, audio.file, start, count, sampleRate, prompt).trim()
             // Each later part is sent with the previous part's text as its
             // prompt; a near-silent part can still make the model repeat it.
             val kept = AudioRules.keptPartText(text, prompt)
@@ -142,30 +142,29 @@ class OpenAiHttpTranscriptionClient(
         length: Int,
         sampleRate: Int,
         prompt: String,
-        started: Long,
     ): String {
         val flac = if (flacRefused.get()) {
             null
         } else {
             try {
-                encodeFlac(file, offset, length, sampleRate) { cancelledSince(started) }
+                encodeFlac(file, offset, length, sampleRate) { cancelled() }
                     .takeIf(ByteArray::isNotEmpty)
             } catch (_: Exception) {
                 // A cancel is reported as one, never answered with the WAV.
-                throwIfCancelled(started)
+                throwIfCancelled()
                 null
             }
         }
         if (flac != null) {
             try {
                 val upload = UploadAudio.bytes("dictation.flac", FLAC, flac)
-                return transcribeRequest(key, upload, prompt, started)
+                return transcribeRequest(key, upload, prompt)
             } catch (error: TranscriptionHttpException) {
                 if (error.statusCode != 400) throw error
             }
         }
         val wav = UploadAudio.wav(file, offset, length.toLong(), sampleRate)
-        return transcribeRequest(key, wav, prompt, started)
+        return transcribeRequest(key, wav, prompt)
             .also { if (flac != null) flacRefused.set(true) }
     }
 
@@ -179,21 +178,19 @@ class OpenAiHttpTranscriptionClient(
         key: String,
         audio: UploadAudio,
         prompt: String,
-        started: Long,
     ): String {
         var tries = 0
         while (true) {
             try {
-                return sendOnce(key, audio, prompt, started)
+                return sendOnce(key, audio, prompt)
             } catch (error: TranscriptionException) {
                 val delay = retryDelaysMillis.getOrNull(tries)
-                    ?.takeIf { isTemporary(error) && !cancelledSince(started) }
+                    ?.takeIf { isTemporary(error) && !cancelled() }
                     ?: throw error
                 tries += 1
                 val asked = (error as? TranscriptionHttpException)?.retryAfterSeconds
                 waitUnlessCancelled(
                     asked?.let { minOf(it * 1_000, MAX_RETRY_AFTER_MILLIS) } ?: delay,
-                    started,
                 )
             }
         }
@@ -203,14 +200,13 @@ class OpenAiHttpTranscriptionClient(
         key: String,
         audio: UploadAudio,
         prompt: String,
-        started: Long,
     ): String {
-        throwIfCancelled(started)
+        throwIfCancelled()
         val request = requestFactory.create(key, audio, prompt = prompt)
         val connection = openConnection(request.url)
         val registered = synchronized(connectionLock) {
             // A cancel that came just before the connection was registered.
-            (!cancelledSince(started)).also { if (it) activeConnection.set(connection) }
+            (!cancelled()).also { if (it) activeConnection.set(connection) }
         }
         if (!registered) {
             connection.disconnect()
@@ -224,7 +220,7 @@ class OpenAiHttpTranscriptionClient(
             request.headers.forEach(connection::setRequestProperty)
             connection.setFixedLengthStreamingMode(request.contentLength)
             connection.outputStream.use { output ->
-                request.writeBody(output) { throwIfCancelled(started) }
+                request.writeBody(output) { throwIfCancelled() }
             }
 
             val status = connection.responseCode
@@ -237,7 +233,7 @@ class OpenAiHttpTranscriptionClient(
         } catch (error: TranscriptionException) {
             throw error
         } catch (error: Exception) {
-            throwIfCancelled(started)
+            throwIfCancelled()
             val detail = error.message?.takeIf(String::isNotBlank)
             throw TranscriptionException(
                 "Could not reach the transcription service" +
@@ -251,21 +247,20 @@ class OpenAiHttpTranscriptionClient(
     }
 
     /** Sleeps for [millis], in short steps so a cancel ends it at once. */
-    private fun waitUnlessCancelled(millis: Long, started: Long) {
+    private fun waitUnlessCancelled(millis: Long) {
         val until = System.nanoTime() + millis * 1_000_000
         while (true) {
-            throwIfCancelled(started)
+            throwIfCancelled()
             val left = (until - System.nanoTime()) / 1_000_000
             if (left <= 0) return
             Thread.sleep(minOf(left, 50))
         }
     }
 
-    private fun cancelledSince(started: Long): Boolean =
-        generation.get() != started || isCancelled()
+    private fun cancelled(): Boolean = cancelCalled || isCancelled()
 
-    private fun throwIfCancelled(started: Long) {
-        if (cancelledSince(started)) throw TranscriptionException(CANCELLED_MESSAGE)
+    private fun throwIfCancelled() {
+        if (cancelled()) throw TranscriptionException(CANCELLED_MESSAGE)
     }
 
     companion object {

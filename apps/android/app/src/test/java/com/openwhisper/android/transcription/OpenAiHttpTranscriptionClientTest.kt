@@ -102,43 +102,6 @@ class OpenAiHttpTranscriptionClientTest {
     }
 
     @Test
-    fun aCancelledCallNeverReplacesTheNextCallsConnection() {
-        val newerUploading = CountDownLatch(1)
-        val newerClosed = CountDownLatch(1)
-        lateinit var client: OpenAiHttpTranscriptionClient
-        var calls = 0
-        var newer: Thread? = null
-        client = OpenAiHttpTranscriptionClient(
-            apiKey = { "sk-test" },
-            openConnection = { url ->
-                calls += 1
-                if (calls == 1) {
-                    // The first call is cancelled and a newer call starts
-                    // uploading before the first registers its connection.
-                    client.cancel()
-                    newer = thread(isDaemon = true) {
-                        runCatching { client.transcribe(pcmAudio()) }
-                    }
-                    assertTrue(newerUploading.await(5, TimeUnit.SECONDS))
-                    FakeConnection(URL(url), "stale", mutableListOf())
-                } else {
-                    BlockingConnection(URL(url), newerUploading, newerClosed)
-                }
-            },
-        )
-
-        val error = assertThrows(TranscriptionException::class.java) {
-            client.transcribe(pcmAudio())
-        }
-        assertEquals(OpenAiHttpTranscriptionClient.CANCELLED_MESSAGE, error.message)
-
-        // Cancelling now still reaches the newer call's upload.
-        client.cancel()
-        assertTrue(newerClosed.await(5, TimeUnit.SECONDS))
-        newer?.join(5_000)
-    }
-
-    @Test
     fun anAccidentalTapIsNeverUploaded() {
         val service = FakeService("unused")
         val error = assertThrows(NoSpeechException::class.java) {
@@ -604,24 +567,6 @@ class OpenAiHttpTranscriptionClientTest {
         override fun getErrorStream(): InputStream =
             "{\"error\":{\"message\":\"$text\",\"code\":${code?.let { "\"$it\"" } ?: "null"}}}"
                 .byteInputStream()
-    }
-
-    private class BlockingConnection(
-        url: URL,
-        private val uploading: CountDownLatch,
-        private val closed: CountDownLatch,
-    ) : HttpURLConnection(url) {
-        override fun connect() = Unit
-        override fun disconnect() = closed.countDown()
-        override fun usingProxy() = false
-        override fun getOutputStream(): OutputStream = object : OutputStream() {
-            override fun write(b: Int) = Unit
-            override fun write(b: ByteArray, off: Int, len: Int) {
-                uploading.countDown()
-                closed.await(5, TimeUnit.SECONDS)
-                throw java.io.IOException("closed")
-            }
-        }
     }
 
     private fun pcmAudio(
