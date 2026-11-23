@@ -17,20 +17,10 @@ fn default_transcription_prompt() -> String {
     "I was editing @README.md and checking @package.json in my IDE. Let me also look at @tsconfig.json and the @src directory.".to_string()
 }
 
-fn default_refine_enabled() -> bool {
-    true
-}
-
-fn default_show_idle_pill() -> bool {
-    true
-}
-
-fn default_hold_to_talk() -> bool {
-    true
-}
-
+/// A field missing from the settings file, as in files from older versions,
+/// takes its value from `AppSettings::default()`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
     /// The key in use. It is kept in the OS credential store, never written
     /// to the settings file.
@@ -39,23 +29,13 @@ pub struct AppSettings {
     /// A plain-text key in the settings file, from versions before the
     /// credential store. It is moved out on start and stays only while that
     /// move keeps failing.
-    #[serde(
-        default,
-        rename = "openaiApiKey",
-        skip_serializing_if = "String::is_empty"
-    )]
+    #[serde(rename = "openaiApiKey", skip_serializing_if = "String::is_empty")]
     pub plain_openai_api_key: String,
-    #[serde(default = "default_transcription_model")]
     pub transcription_model: String,
-    #[serde(default = "default_transcription_prompt")]
     pub transcription_prompt: String,
-    #[serde(default = "default_refine_enabled")]
     pub refine_enabled: bool,
-    #[serde(default)]
     pub refine_prompt: String,
-    #[serde(default = "default_show_idle_pill")]
     pub show_idle_pill: bool,
-    #[serde(default = "default_hold_to_talk")]
     pub hold_to_talk: bool,
 }
 
