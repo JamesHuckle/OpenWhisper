@@ -62,7 +62,9 @@ during dictation still cancel insertion.
   the FLAC (HTTP 400) the part is sent once more as WAV and later parts skip
   FLAC.
 - `OpenAiHttpTranscriptionClient` sends multipart form data directly to
-  `POST /v1/audio/transcriptions` using `gpt-transcribe`. Each part is copied
+  `POST /v1/audio/transcriptions` using the shared default model
+  (`default_transcription_model` in `packages/protocol/models.json`, read
+  into `BuildConfig` at build time). Each part is copied
   from the saved file into the request in 64 KB blocks (behind a generated
   WAV header when it goes as WAV), so a long recording is never held in
   memory; an imported compressed file goes as it is, under its own name and

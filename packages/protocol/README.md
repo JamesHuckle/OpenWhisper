@@ -10,8 +10,9 @@ default and live models, the menu label and hint for each, the models that
 older saved settings move to, and the refine (tidy) model. The desktop settings
 menu (`apps/desktop/src/models.ts`) and the desktop's settings and sessions
 (`apps/desktop/src-tauri/src/models.rs`) read it; both are built into the app.
-Change a model here only. The Android app still names `gpt-transcribe` in its
-own code.
+The Android build (`apps/android/app/build.gradle.kts`) reads
+`default_transcription_model` into `BuildConfig` as the model it sends. Change
+a model here only.
 
 ## Dictation rules
 

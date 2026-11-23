@@ -1,5 +1,6 @@
 package com.openwhisper.android.transcription
 
+import com.openwhisper.android.BuildConfig
 import com.openwhisper.android.audio.WavEncoder
 import java.io.EOFException
 import java.io.File
@@ -164,7 +165,7 @@ class OpenAiRequestFactory(
     }
 
     companion object {
-        const val MODEL = "gpt-transcribe"
+        const val MODEL = BuildConfig.TRANSCRIPTION_MODEL
         const val WAV_MIME_TYPE = "audio/wav"
         const val FLAC_MIME_TYPE = "audio/flac"
     }

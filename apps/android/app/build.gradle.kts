@@ -8,6 +8,10 @@ plugins {
 val audioRules = groovy.json.JsonSlurper()
     .parse(rootProject.file("../../packages/protocol/audio-rules.json")) as Map<*, *>
 
+// The transcription model the desktop app also uses by default.
+val models = groovy.json.JsonSlurper()
+    .parse(rootProject.file("../../packages/protocol/models.json")) as Map<*, *>
+
 android {
     namespace = "com.openwhisper.android"
     compileSdk = 36
@@ -30,6 +34,11 @@ android {
         )
         buildConfigField("long", "MAX_UPLOAD_BYTES", "${audioRules["max_upload_bytes"]}L")
         buildConfigField("String", "NO_AUDIO_MESSAGE", "\"${audioRules["no_audio_message"]}\"")
+        buildConfigField(
+            "String",
+            "TRANSCRIPTION_MODEL",
+            "\"${models["default_transcription_model"]}\"",
+        )
     }
 
     buildFeatures {
