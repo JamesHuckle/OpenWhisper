@@ -1,7 +1,9 @@
 package com.openwhisper.android.update
 
 import com.openwhisper.android.update.DailyUpdateCheck.Companion.CHECK_INTERVAL_MS
+import java.io.IOException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class DailyUpdateCheckTest {
@@ -11,6 +13,7 @@ class DailyUpdateCheckTest {
     private var fetchCount = 0
     private val shown = mutableListOf<UpdateManifest>()
     private val waiting = mutableListOf<Runnable>()
+    private val logged = mutableListOf<String>()
 
     private val check = DailyUpdateCheck(
         currentTimeMillis = { now },
@@ -19,6 +22,7 @@ class DailyUpdateCheckTest {
         findUpdate = { fetches[fetchCount++]() },
         showUpdate = { shown += it },
         runInBackground = { waiting += it },
+        logFailure = { logged += it },
     )
 
     @Test
@@ -53,6 +57,47 @@ class DailyUpdateCheckTest {
         check.runIfDue()
 
         assertEquals(1, waiting.size)
+    }
+
+    @Test
+    fun aFailedFetchAndABadManifestDoNotEscapeAndALaterCheckStillShowsTheUpdate() {
+        fetches += { throw IOException("Unable to resolve host") }
+        fetches += { UpdateManifestCodec.parse("<html>private response body</html>") }
+        fetches += { throw IllegalArgumentException("Update server returned HTTP 503") }
+        fetches += { update(31) }
+
+        repeat(4) { attempt ->
+            if (attempt > 0) now += CHECK_INTERVAL_MS
+            check.runIfDue()
+            runWaiting()
+        }
+
+        assertEquals(4, fetchCount)
+        assertEquals(listOf(update(31)), shown)
+        assertEquals(
+            listOf(
+                "Automatic update check failed: IOException: Unable to resolve host",
+                "Automatic update check failed: JSONException",
+                "Automatic update check failed: IllegalArgumentException: Update server returned HTTP 503",
+            ),
+            logged,
+        )
+        assertFalse(logged.any { "private response body" in it })
+    }
+
+    @Test
+    fun aFailedFetchStillWaitsADayBeforeTheNextAttempt() {
+        fetches += { throw IOException("timeout") }
+        fetches += { update(31) }
+
+        check.runIfDue()
+        runWaiting()
+        now += CHECK_INTERVAL_MS - 1
+        check.runIfDue()
+        runWaiting()
+
+        assertEquals(1, fetchCount)
+        assertEquals(emptyList<UpdateManifest>(), shown)
     }
 
     private fun runWaiting() {

@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import com.openwhisper.android.BuildConfig
 import com.openwhisper.android.MainActivity
 import com.openwhisper.android.R
@@ -35,6 +36,7 @@ object UpdateNotifier {
                 findUpdate = { AndroidUpdateClient().findUpdate(BuildConfig.VERSION_CODE) },
                 showUpdate = { showNotification(application, it) },
                 runInBackground = executor::execute,
+                logFailure = { Log.w(LOG_TAG, it) },
             ).also { dailyCheck = it }
         }
 
@@ -97,6 +99,7 @@ object UpdateNotifier {
         )
     }
 
+    private const val LOG_TAG = "OpenWhisperUpdate"
     private const val PREFERENCES = "openwhisper_updates"
     private const val LAST_CHECK = "last_check_epoch_ms"
     private const val CHANNEL = "openwhisper_updates"
