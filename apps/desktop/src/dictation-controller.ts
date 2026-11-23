@@ -85,7 +85,6 @@ export function createDictationController(deps: DictationDeps) {
   // recording that is current now.
   let operationId = 0;
   let sessionEventTail: Promise<void> = Promise.resolve();
-  let finalTranscript = "";
   let liveTranscript = "";
   let streamTextToTarget = false;
   // Live transcription hears audio while it is recorded, so its session gets
@@ -114,7 +113,6 @@ export function createDictationController(deps: DictationDeps) {
     number,
     { parts: Uint8Array[]; stopping: Promise<void> | null }
   >();
-  let sessionFailure = "";
   let shouldPasteFinalTranscript = true;
   let pressToTalkHeld = false;
   let pressToTalkStarting = false;
@@ -176,7 +174,6 @@ export function createDictationController(deps: DictationDeps) {
       return;
     }
     currentSessionId = sessionId;
-    finalTranscript = "";
     liveTranscript = "";
     try {
       await invoke("recording_transcribe", { recordingId, sessionId });
@@ -305,7 +302,6 @@ export function createDictationController(deps: DictationDeps) {
       backupError = null;
       pendingAudioParts = [];
       pendingAudioBytes = 0;
-      sessionFailure = "";
       shouldPasteFinalTranscript = true;
       // Set from this start's own session; kept only once the start is still
       // current, so a cancelled start that answers late never marks a newer
@@ -385,7 +381,6 @@ export function createDictationController(deps: DictationDeps) {
       currentSessionId = sessionId;
       sessionWasLive = liveSession;
       audioQueue.attachSession(currentSessionId);
-      finalTranscript = "";
       liveTranscript = "";
       streamTextToTarget = sessionWasLive;
       targetWriteQueue = Promise.resolve();
@@ -624,9 +619,7 @@ export function createDictationController(deps: DictationDeps) {
     currentRecordingId = recordingId;
     lastFailedRecordingId = null;
     sessionWasLive = false;
-    sessionFailure = "";
     shouldPasteFinalTranscript = false;
-    finalTranscript = "";
     liveTranscript = "";
     targetWriteQueue = Promise.resolve();
     await invoke("recording_finish", {
@@ -673,12 +666,21 @@ export function createDictationController(deps: DictationDeps) {
     return sessionEventTail;
   }
 
+  // A final or error event is a session's last one: it ends the dictation.
   async function handleSessionEvent(message: WorkerSessionEvent) {
-    if (!currentSessionId || message.session_id !== currentSessionId) return;
+    const { session_id: sessionId, event } = message;
+    if (!currentSessionId || sessionId !== currentSessionId) return;
     try {
-      // A failed Live session handed over to Standard is not completed here.
-      if (await applyTranscriptEvent(message.event)) return;
-      if (message.done) await completeSession(message.session_id);
+      if (event.type === "final") {
+        deps.showTranscript(event.text, true);
+        await completeSession(sessionId, event.text.trim());
+      } else if (event.type === "error") {
+        await failSession(sessionId, event.text || "Transcription failed");
+      } else if (event.type === "warning") {
+        deps.showToast(event.text, 8000);
+      } else {
+        showLiveText(event.text);
+      }
     } catch (error) {
       const text = errorMessage(error, "Could not finish the transcription");
       log(`session event failed=${text}`);
@@ -688,77 +690,64 @@ export function createDictationController(deps: DictationDeps) {
     }
   }
 
-  /** Applies one event; true when a failed Live session is being transcribed with Standard instead. */
-  async function applyTranscriptEvent(ev: TranscriptEvent): Promise<boolean> {
-    if (ev.type === "final") {
-      finalTranscript = `${finalTranscript} ${ev.text}`.trim();
-      liveTranscript = ev.text;
-      deps.showTranscript(liveTranscript, true);
-    } else if (
-      ev.type === "partial" &&
-      ev.text !== "Refining transcript..." &&
-      !ev.text.startsWith("Transcribing part ")
-    ) {
-      liveTranscript += ev.text;
-      deps.showTranscript(liveTranscript, false);
-      if (streamTextToTarget) {
-        const delta = ev.text;
-        // A piece still queued when its session is cancelled is never typed
-        // into the field a later recording locked.
-        const sessionId = currentSessionId;
-        targetWriteQueue = targetWriteQueue.then(async () => {
-          if (!streamTextToTarget || currentSessionId !== sessionId) return;
-          // The native side checks the field before each piece. Once it stops
-          // (field changed, cursor moved, password field), the final text is
-          // pasted without deleting what the user did.
-          const write = (await invoke("type_to_target", { text: delta })) as TargetWrite;
-          if (currentSessionId !== sessionId) return;
-          if (write.outcome !== "typed") {
-            streamTextToTarget = false;
-            log(`live target typing stopped reason=${write.reason ?? "unknown"}`);
-          }
-        }).catch((err) => {
-          log(`live target write failed=${errorMessage(err)}`);
-        });
+  function showLiveText(text: string) {
+    if (text === "Refining transcript..." || text.startsWith("Transcribing part ")) return;
+    liveTranscript += text;
+    deps.showTranscript(liveTranscript, false);
+    if (!streamTextToTarget) return;
+    // A piece still queued when its session is cancelled is never typed
+    // into the field a later recording locked.
+    const sessionId = currentSessionId;
+    targetWriteQueue = targetWriteQueue.then(async () => {
+      if (!streamTextToTarget || currentSessionId !== sessionId) return;
+      // The native side checks the field before each piece. Once it stops
+      // (field changed, cursor moved, password field), the final text is
+      // pasted without deleting what the user did.
+      const write = (await invoke("type_to_target", { text })) as TargetWrite;
+      if (currentSessionId !== sessionId) return;
+      if (write.outcome !== "typed") {
+        streamTextToTarget = false;
+        log(`live target typing stopped reason=${write.reason ?? "unknown"}`);
       }
-    } else if (ev.type === "error") {
-      const failure = ev.text || "Transcription failed";
-      if (canTranscribeWithStandard(failure)) {
-        // Not awaited, so the new session's events are handled as they arrive.
-        void transcribeWithStandard(failure).catch((error) => {
-          log(`standard fallback failed=${errorMessage(error)}`);
-        });
-        return true;
-      }
-      sessionFailure = failure;
-      await handleTranscriptionFailure(sessionFailure);
-    } else if (ev.type === "warning") {
-      deps.showToast(ev.text, 8000);
-    }
-    return false;
+    }).catch((err) => {
+      log(`live target write failed=${errorMessage(err)}`);
+    });
   }
 
-  async function completeSession(sessionId: string) {
+  async function completeSession(sessionId: string, transcript: string) {
     // A cancel (or a new recording) while this waits takes the session over;
     // then nothing more is written, recorded or cleaned up here.
     const owned = () => currentSessionId === sessionId;
-    if (finalTranscript) {
+    if (transcript) {
       // Saved before it is copied or pasted, so a delivery error never turns a
       // paid transcription into a failed recording.
       await deliverFinalTranscript({
         invoke,
-        transcript: finalTranscript,
+        transcript,
         paste: shouldPasteFinalTranscript,
         owned,
-        saveRecording: (transcript) => finishCurrentRecording("complete", transcript, ""),
+        saveRecording: (saved) => finishCurrentRecording("complete", saved, ""),
         liveTypingDone: () => targetWriteQueue,
         notify: deps.showToast,
         log,
       });
-    } else if (sessionFailure) {
-      await finishCurrentRecording("failed", "", sessionFailure);
     }
-    if (!owned()) return;
+    if (owned()) endSession();
+  }
+
+  // A failed Live session hands its saved recording to Standard instead.
+  async function failSession(sessionId: string, failure: string) {
+    if (canTranscribeWithStandard(failure)) {
+      // Not awaited, so the new session's events are handled as they arrive.
+      void transcribeWithStandard(failure).catch((error) => {
+        log(`standard fallback failed=${errorMessage(error)}`);
+      });
+      return;
+    }
+    if (await handleTranscriptionFailure(failure, () => currentSessionId === sessionId)) endSession();
+  }
+
+  function endSession() {
     cleanup();
     deps.clearTranscript();
     setState("idle");
@@ -832,7 +821,6 @@ export function createDictationController(deps: DictationDeps) {
     await invoke("capture_paste_target");
     const sessionId = await startSession("realtime-smoke");
     currentSessionId = sessionId;
-    finalTranscript = "";
     liveTranscript = "";
     streamTextToTarget = true;
     targetWriteQueue = Promise.resolve();

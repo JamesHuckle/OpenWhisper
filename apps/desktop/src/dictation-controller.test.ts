@@ -400,6 +400,22 @@ describe("dictation controller", () => {
     expect(dictation.state).toBe("idle");
   });
 
+  it("keeps a dictation's saved transcript and tells the user when pasting it fails", async () => {
+    const { app, dictation, failures, toasts } = setup();
+    app.fail("insert_final_text", new Error("Paste blocked"));
+    await startRecording(dictation);
+    await dictation.toggleRecording();
+
+    await dictation.receiveSessionEvent(sessionEvent({ type: "final", text: "Hello world" }, true));
+
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "complete", transcript: "Hello world", error: "" },
+    ]);
+    expect(toasts).toEqual(["Transcript saved; could not paste it. Copy it from the menu"]);
+    expect(failures).toEqual([]);
+    expect(dictation.state).toBe("idle");
+  });
+
   it("ends a session whose final text is empty without saving or pasting anything", async () => {
     const { app, dictation, pill } = setup();
     await startRecording(dictation);
@@ -428,6 +444,29 @@ describe("dictation controller", () => {
     expect(dictation.lastFailedRecordingId).toBe("rec-1");
     expect(pill.cleared).toBe(1);
     expect(dictation.state).toBe("idle");
+  });
+
+  it("shows no old failure on the next recording when cancelled while a session error is saved", async () => {
+    const { app, mic, dictation, failures } = setup();
+    await startRecording(dictation);
+    await dictation.toggleRecording();
+    app.hold("recording_finish");
+
+    const failing = dictation.receiveSessionEvent(sessionEvent({ type: "error", text: "OpenAI is unreachable" }, true));
+    await settle();
+    expect(app.named("recording_finish")).toHaveLength(1);
+    await dictation.cancelTranscription();
+    app.answers.recording_begin = { id: "rec-2" };
+    app.answers.worker_start_session = { session_id: "s-2" };
+    await startRecording(dictation);
+    app.release("recording_finish");
+    await failing;
+    await settle();
+
+    expect(failures).toEqual([]);
+    expect(dictation.state).toBe("recording");
+    expect(dictation.currentRecordingId).toBe("rec-2");
+    expect(mic.capture.isActive()).toBe(true);
   });
 
   it("shows live text but not progress messages, and warnings as toasts, without ending the session", async () => {
