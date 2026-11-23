@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,6 +22,7 @@ import {
   releaseAssetNames,
   repositoryRoot,
   setVersion,
+  stageRelease,
   versionFiles,
   windowsFeed,
 } from "../release.mjs";
@@ -309,6 +311,53 @@ describe("update feeds", () => {
     assert.ok(website.includes("releases/latest/download/OpenWhisper-Android.apk"));
   });
 
+  it("stages all eight files from the four versioned builds", () => {
+    const directory = mkdtempSync(join(tmpdir(), "openwhisper-stage-"));
+    try {
+      const names = releaseAssetNames(version);
+      writeFileSync(join(directory, names.windowsInstaller), "installer bytes");
+      writeFileSync(join(directory, names.windowsSignature), signature);
+      writeFileSync(join(directory, names.androidApk), "apk bytes");
+      writeFileSync(join(directory, names.androidChecksum), "checksum line\n");
+      const staged = stageRelease({ directory, repository, version, pubDate: "2026-11-15T10:00:00Z" });
+
+      assert.deepEqual(readdirSync(directory).sort(), Object.values(names).sort());
+      assert.deepEqual(staged.uploads.sort(), Object.values(names).sort());
+      const read = (name) => readFileSync(join(directory, name), "utf8");
+      assert.equal(read(names.windowsStableInstaller), "installer bytes");
+      assert.equal(read(names.androidStableApk), "apk bytes");
+      assert.equal(staged.signature, "c2lnbmF0dXJl");
+      assert.equal(staged.apkSha256, createHash("sha256").update("apk bytes").digest("hex"));
+
+      const windows = JSON.parse(read(names.windowsFeed));
+      const android = JSON.parse(read(names.androidFeed));
+      assert.equal(
+        windows.platforms["windows-x86_64"].url,
+        "https://github.com/owner/OpenWhisper/releases/download/v0.2.28/OpenWhisper_0.2.28_x64-setup.exe",
+      );
+      assert.equal(android.apkUrl, "https://github.com/owner/OpenWhisper/releases/download/v0.2.28/OpenWhisper-Android.apk");
+      assert.deepEqual(checkFeeds({ repository, version, signature, apkSha256: staged.apkSha256, windows, android }), []);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to stage without a versioned build or with an empty signature", () => {
+    const directory = mkdtempSync(join(tmpdir(), "openwhisper-stage-"));
+    try {
+      const names = releaseAssetNames(version);
+      const stage = () => stageRelease({ directory, repository, version, pubDate: "2026-11-15T10:00:00Z" });
+      writeFileSync(join(directory, names.windowsInstaller), "installer bytes");
+      writeFileSync(join(directory, names.windowsSignature), " \n");
+      writeFileSync(join(directory, names.androidApk), "apk bytes");
+      assert.throws(stage, /Missing release file: OpenWhisper-Android-v0\.2\.28\.apk\.sha256/);
+      writeFileSync(join(directory, names.androidChecksum), "checksum line\n");
+      assert.throws(stage, /signature is empty/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("refuses feeds from another version or with the wrong checksum", () => {
     const windows = windowsFeed({ repository, version: "0.2.27", signature, pubDate: "2026-11-15T10:00:00Z" });
     const android = { ...androidFeed({ repository, version, sha256: apkSha256 }), sha256: "00".repeat(32) };
@@ -346,6 +395,22 @@ describe("release workflow", () => {
     const draft = steps.indexOf('"--draft", "--target"');
     const check = steps.indexOf("checkFeeds({", draft);
     assert.ok(draft > -1 && check > draft && steps.indexOf('"--draft=false", "--latest"') > check);
+  });
+
+  it("hands only the versioned builds from the build jobs to publish", () => {
+    // publish makes the fixed-name installer and APK, so the build jobs do not upload them.
+    for (const [name, files] of [
+      ["build-windows", ["_x64-setup.exe", "_x64-setup.exe.sig"]],
+      ["build-android", [".apk", ".apk.sha256"]],
+    ]) {
+      const uploaded = job(name).match(/upload-artifact@v\d[\s\S]*?path: \|\n((?: {12}\S.*\n?)+)/);
+      assert.ok(uploaded, name);
+      const paths = uploaded[1].trim().split(/\n\s*/);
+      assert.equal(paths.length, files.length, name);
+      for (const [index, ending] of files.entries()) {
+        assert.ok(paths[index].includes("${{ needs.plan.outputs.version }}") && paths[index].endsWith(ending), paths[index]);
+      }
+    }
   });
 
   it("runs the tests of every desktop Rust file that has them", () => {

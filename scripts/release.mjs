@@ -16,8 +16,9 @@
 //     build jobs run it on their own copy; versions are never committed.
 //
 //   node scripts/release.mjs publish --version <version> --assets <dir> --target <sha>
-//     Uploads the signed Windows and Android files and both update feeds to a
-//     draft release, checks the draft, then publishes it as latest and checks
+//     Copies the fixed-name installer and APK from the versioned builds in
+//     <dir>, then uploads the signed Windows and Android files and both update
+//     feeds to a draft release, checks the draft, then publishes it as latest and checks
 //     the public feeds. The tag is created only when the draft is published.
 //     Just before it creates the draft and again just before it publishes, it
 //     fetches main and the tags and checks that the commit is on main, comes
@@ -28,7 +29,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -413,6 +414,28 @@ export function checkReleaseAssets(release, expected) {
   return problems;
 }
 
+// The build jobs hand over only the versioned files: the installer, its
+// updater signature, the APK and its checksum. This adds the fixed-name copies
+// the latest-download links use and both update feeds, so `directory` holds
+// every release file. Returns the signature and APK digest the feeds carry
+// and the names to upload.
+export function stageRelease({ directory, repository, version, pubDate }) {
+  const names = releaseAssetNames(version);
+  const path = (name) => join(resolve(directory), name);
+  for (const name of [names.windowsInstaller, names.windowsSignature, names.androidApk, names.androidChecksum]) {
+    if (!existsSync(path(name))) throw new Error(`Missing release file: ${name}`);
+  }
+  const signature = readFileSync(path(names.windowsSignature), "utf8").trim();
+  if (!signature) throw new Error("The Windows updater signature is empty.");
+  const apkSha256 = sha256(path(names.androidApk));
+
+  copyFileSync(path(names.windowsInstaller), path(names.windowsStableInstaller));
+  copyFileSync(path(names.androidApk), path(names.androidStableApk));
+  writeFileSync(path(names.windowsFeed), JSON.stringify(windowsFeed({ repository, version, signature, pubDate })));
+  writeFileSync(path(names.androidFeed), JSON.stringify(androidFeed({ repository, version, sha256: apkSha256 })));
+  return { signature, apkSha256, uploads: Object.values(names) };
+}
+
 async function fetchWithRetry(url, attempts = 10) {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -444,31 +467,12 @@ async function publish(options) {
   const tag = `v${version}`;
   const names = releaseAssetNames(version);
   const path = (name) => join(resolve(assets), name);
-
-  for (const name of [
-    names.windowsInstaller,
-    names.windowsSignature,
-    names.windowsStableInstaller,
-    names.androidApk,
-    names.androidStableApk,
-    names.androidChecksum,
-  ]) {
-    if (!existsSync(path(name))) throw new Error(`Missing release file: ${name}`);
-  }
-  const apkSha256 = sha256(path(names.androidApk));
-  if (sha256(path(names.androidStableApk)) !== apkSha256) throw new Error("The two Android APKs differ.");
-  if (sha256(path(names.windowsStableInstaller)) !== sha256(path(names.windowsInstaller))) {
-    throw new Error("The two Windows installers differ.");
-  }
-  const signature = readFileSync(path(names.windowsSignature), "utf8").trim();
-  if (!signature) throw new Error("The Windows updater signature is empty.");
-
-  writeFileSync(
-    path(names.windowsFeed),
-    JSON.stringify(windowsFeed({ repository, version, signature, pubDate: new Date().toISOString().replace(/\.\d+Z$/, "Z") })),
-  );
-  writeFileSync(path(names.androidFeed), JSON.stringify(androidFeed({ repository, version, sha256: apkSha256 })));
-  const uploads = Object.values(names);
+  const { signature, apkSha256, uploads } = stageRelease({
+    directory: assets,
+    repository,
+    version,
+    pubDate: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+  });
 
   const releaseList = () =>
     JSON.parse(gh("api", `repos/${repository}/releases`, "--paginate", "--slurp")).flat();

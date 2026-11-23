@@ -236,8 +236,10 @@ base64 -w0 openwhisper-release.jks | gh secret set OPENWHISPER_ANDROID_KEYSTORE_
    sign and verify the Android APK (`scripts/bootstrap-android.ps1`, then
    `scripts/build-android-release.ps1`). The Android `versionCode` comes from
    the version (0.2.28 is 2028), so it grows with every release.
-4. Upload the installers, APKs, checksum and both update feeds (`latest.json`
-   and `OpenWhisper-Android-update.json`) to a draft release, check that every
+4. Copy the fixed-name `OpenWhisper_x64-setup.exe` and `OpenWhisper-Android.apk`
+   from the versioned builds, then upload the installers, APKs, checksum and
+   both update feeds (`latest.json` and `OpenWhisper-Android-update.json`) to a
+   draft release, check that every
    file finished uploading and that both feeds match the builds.
 5. Publish the draft as latest, which tags the pushed commit, then re-download
    and check both public feeds and the public APK

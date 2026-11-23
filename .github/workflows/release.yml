@@ -139,7 +139,6 @@ jobs:
           path: |
             artifacts/windows-installer/OpenWhisper_${{ needs.plan.outputs.version }}_x64-setup.exe
             artifacts/windows-installer/OpenWhisper_${{ needs.plan.outputs.version }}_x64-setup.exe.sig
-            artifacts/windows-installer/OpenWhisper_x64-setup.exe
 
   build-android:
     needs: [plan, test-web, test-desktop, test-android]
@@ -192,7 +191,6 @@ jobs:
           path: |
             apps/android/app/build/outputs/apk/public/OpenWhisper-Android-v${{ needs.plan.outputs.version }}.apk
             apps/android/app/build/outputs/apk/public/OpenWhisper-Android-v${{ needs.plan.outputs.version }}.apk.sha256
-            apps/android/app/build/outputs/apk/public/OpenWhisper-Android.apk
 
   publish:
     needs: [plan, build-windows, build-android]
@@ -209,6 +207,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+      # The versioned builds only; publish makes the fixed-name copies.
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
