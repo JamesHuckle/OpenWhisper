@@ -342,6 +342,47 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_settings_file_gives_the_new_install_defaults() {
+        let settings: AppSettings = serde_json::from_value(json!({})).unwrap();
+        let defaults = AppSettings::default();
+
+        assert_eq!(settings.openai_api_key, defaults.openai_api_key);
+        assert_eq!(settings.plain_openai_api_key, defaults.plain_openai_api_key);
+        assert_eq!(settings.transcription_model, defaults.transcription_model);
+        assert_eq!(settings.transcription_prompt, defaults.transcription_prompt);
+        assert_eq!(settings.refine_enabled, defaults.refine_enabled);
+        assert_eq!(settings.refine_prompt, defaults.refine_prompt);
+        assert_eq!(settings.show_idle_pill, defaults.show_idle_pill);
+        assert_eq!(settings.hold_to_talk, defaults.hold_to_talk);
+    }
+
+    #[test]
+    fn older_partial_settings_keep_saved_choices_and_fill_the_rest() {
+        let settings: AppSettings = serde_json::from_value(json!({
+            "refineEnabled": false,
+            "showIdlePill": false,
+            "holdToTalk": false,
+            "refinePrompt": "Use British spelling."
+        }))
+        .unwrap();
+        let defaults = AppSettings::default();
+
+        assert!(!settings.refine_enabled);
+        assert!(!settings.show_idle_pill);
+        assert!(!settings.hold_to_talk);
+        assert_eq!(settings.refine_prompt, "Use British spelling.");
+        assert_eq!(settings.transcription_model, defaults.transcription_model);
+        assert_eq!(settings.transcription_prompt, defaults.transcription_prompt);
+        assert_eq!(settings.plain_openai_api_key, "");
+
+        let one_flag: AppSettings =
+            serde_json::from_value(json!({ "showIdlePill": false })).unwrap();
+        assert!(!one_flag.show_idle_pill);
+        assert!(one_flag.refine_enabled);
+        assert!(one_flag.hold_to_talk);
+    }
+
+    #[test]
     fn settings_without_idle_pill_preference_keep_showing_it() {
         let settings: AppSettings = serde_json::from_value(json!({})).unwrap();
 
