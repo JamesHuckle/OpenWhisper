@@ -420,7 +420,14 @@ async fn checked(response: Response) -> Result<Response, Failure> {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(Duration::from_secs);
-    let body = response.text().await.unwrap_or_default();
+    // The request's time limit runs until its whole body is read: an error
+    // body that stalls past it is a timeout, which is not tried again. Any
+    // other failed read leaves the status to decide.
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(error) if error.is_timeout() => return Err(ApiError::Timeout.into()),
+        Err(_) => String::new(),
+    };
     let error = serde_json::from_str::<Value>(&body)
         .ok()
         .and_then(|value| value.get("error").cloned())
@@ -563,6 +570,8 @@ pub mod test_server {
         pub retry_after: Option<u64>,
         /// The connection closes before the whole announced body is sent.
         pub cut_short: bool,
+        /// Only the head is sent; the connection then stays open, silent.
+        pub stalls: bool,
     }
 
     impl Reply {
@@ -602,6 +611,7 @@ pub mod test_server {
                 delay: Duration::ZERO,
                 retry_after: None,
                 cut_short: false,
+                stalls: false,
             }
         }
 
@@ -624,6 +634,13 @@ pub mod test_server {
         /// drops, as when a network fails mid-answer.
         pub fn cut_short(mut self) -> Self {
             self.cut_short = true;
+            self
+        }
+
+        /// The answer's head, then no body while the connection stays open,
+        /// as when a server stops mid-answer.
+        pub fn stalls(mut self) -> Self {
+            self.stalls = true;
             self
         }
     }
@@ -725,10 +742,13 @@ pub mod test_server {
                 reply.status,
                 reply.content_type,
                 reply.body.len() + if reply.cut_short { 100 } else { 0 },
-                reply.body
+                if reply.stalls { "" } else { &reply.body }
             );
             if socket.write_all(answer.as_bytes()).await.is_err() || reply.cut_short {
                 return;
+            }
+            if reply.stalls {
+                std::future::pending::<()>().await;
             }
         }
     }
@@ -944,6 +964,7 @@ mod tests {
             delay: Duration::ZERO,
             retry_after: None,
             cut_short: false,
+            stalls: false,
         };
         let server =
             TestServer::start(vec![not_json.clone(), not_json, Reply::response("Unused.")]).await;
@@ -1003,6 +1024,32 @@ mod tests {
         assert_eq!(file(&sent[0]), Some(expected.clone()));
         assert_eq!(file(&sent[1]), Some(expected));
         assert_eq!(sent[1].field("prompt").as_deref(), Some("Zoon"));
+    }
+
+    #[tokio::test]
+    async fn a_server_error_whose_body_stalls_past_the_time_limit_is_sent_once() {
+        let server = TestServer::start(vec![
+            server_error(503).stalls(),
+            Reply::response("Never asked for."),
+        ])
+        .await;
+        let client = new_http_client().unwrap();
+        // The real time limits are a minute or more; the reading is the same.
+        let attempt = || async {
+            let response = client
+                .post(format!("{}/responses", server.base_url))
+                .timeout(Duration::from_millis(300))
+                .send()
+                .await
+                .map_err(request_error)?;
+            checked(response).await.map(|_| ())
+        };
+
+        let result = with_retries("respond", attempt).await;
+
+        assert_eq!(result, Err(ApiError::Timeout));
+        assert_eq!(server.received().len(), 1);
+        assert_eq!(server.unused_replies(), 1);
     }
 
     #[tokio::test]
