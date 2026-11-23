@@ -62,7 +62,7 @@ export default function ZoonMeetingsPage() {
           </div>
 
           <p className="mt-8 text-lg leading-relaxed text-text-muted">
-            When a WhatsApp, Teams, Meet, Zoom or phone call connects, Zoon Meetings asks{" "}
+            When a WhatsApp, Teams, Slack or phone call connects, Zoon Meetings asks{" "}
             <span className="text-text">“Record this call?”</span>. Tap Record and both sides of the call are transcribed,
             summarised and filed in your calendar, like the desktop app does.
           </p>
