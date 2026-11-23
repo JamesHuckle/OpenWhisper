@@ -4,6 +4,7 @@ import com.openwhisper.android.audio.WavEncoder
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.File
+import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -11,6 +12,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpenAiRequestFactoryTest {
+    @Test
+    fun theDefaultModelIsTheSharedDefault() {
+        val protocolDir = generateSequence(File(System.getProperty("user.dir")!!).absoluteFile) {
+            it.parentFile
+        }.map { File(it, "packages/protocol") }
+            .first { File(it, "models.json").isFile }
+        val shared = JSONObject(File(protocolDir, "models.json").readText())
+
+        assertEquals(shared.getString("default_transcription_model"), OpenAiRequestFactory.MODEL)
+    }
+
     @Test
     fun buildsAuthenticatedMultipartRequestWithoutMutatingAudio() {
         val audio = byteArrayOf(0, 1, 2, 3, 13, 10, -1)
