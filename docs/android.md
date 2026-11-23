@@ -47,8 +47,10 @@ during dictation still cancel insertion.
   changed during dictation.
 - `AndroidAudioRecorder` captures mono 16 kHz PCM and `WavEncoder` writes every
   WAV header: the saved recording's and each WAV upload's. While recording,
-  the WAV header is brought up to date and forced to disk about once a
-  second; the recording's `metadata.json` is written only when it starts
+  the WAV header is brought up to date about once a second, without waiting
+  for storage on the microphone thread, so a killed app still leaves a
+  playable file; the file is forced to disk once, when the recording
+  finishes. The recording's `metadata.json` is written only when it starts
   and closes, and meanwhile `RecordingStore` reads its size from the WAV
   file, as the desktop does. Each recording gets its own handle: a stop
   queued for one recording never ends the next, stop or cancel cleans it up

@@ -306,6 +306,9 @@ class PcmRecordingWriter internal constructor(
         if (!closed) {
             try {
                 checkpoint()
+                // The one wait for storage, after capture has stopped, so a
+                // saved recording survives the phone losing power.
+                wav.fd.sync()
                 wav.close()
                 closed = true
                 finished = store.finish(id, status)
@@ -322,15 +325,17 @@ class PcmRecordingWriter internal constructor(
     }
 
     /**
-     * Makes the file playable up to here and forces it to disk. It touches
-     * only the audio file, never the store, so it takes no shared lock.
+     * Makes the file playable up to here by rewriting its header. It runs on
+     * the microphone thread, so it never waits for storage: the written file
+     * survives the app being killed, and [finish] forces it to disk once.
+     * It touches only the audio file, never the store, so it takes no
+     * shared lock.
      */
     private fun checkpoint() {
         val end = WavEncoder.HEADER_BYTES + pcmBytes
         wav.seek(0)
         wav.write(WavEncoder.header(pcmBytes, sampleRate))
         wav.seek(end)
-        wav.fd.sync()
         bytesSinceCheckpoint = 0
     }
 }
