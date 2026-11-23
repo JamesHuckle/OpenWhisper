@@ -114,6 +114,8 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
   const failures: { message: string; recordingSaved: boolean }[] = [];
   const logs: string[] = [];
   const changes = { recordings: 0 };
+  // What the pill showed as transcript text, and how often it was cleared.
+  const pill = { shown: [] as { text: string; final: boolean }[], cleared: 0 };
   // The model the menu has selected; a test may change it between recordings.
   const config = { model };
   const dictation = createDictationController({
@@ -127,15 +129,17 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
     clearNotice: () => undefined,
     startMeter: () => undefined,
     stopMeter: () => undefined,
-    showTranscript: () => undefined,
-    clearTranscript: () => undefined,
+    showTranscript: (text, final) => pill.shown.push({ text, final }),
+    clearTranscript: () => {
+      pill.cleared += 1;
+    },
     recordingsChanged: () => {
       changes.recordings += 1;
     },
     closeMenu: () => undefined,
     log: (message) => logs.push(message),
   });
-  return { app, mic, dictation, states, toasts, failures, logs, config, changes };
+  return { app, mic, dictation, states, toasts, failures, logs, config, changes, pill };
 }
 
 async function settle() {
@@ -376,6 +380,73 @@ describe("dictation controller", () => {
       { recordingId: "rec-1", status: "complete", transcript: "Hello world", error: "" },
     ]);
     expect(dictation.state).toBe("idle");
+  });
+
+  it("shows the final text, saves it trimmed before pasting it, then clears the pill", async () => {
+    const { app, dictation, pill } = setup();
+    await startRecording(dictation);
+    await dictation.toggleRecording();
+
+    await dictation.receiveSessionEvent(sessionEvent({ type: "final", text: " Hello world " }, true));
+
+    expect(pill.shown).toEqual([{ text: " Hello world ", final: true }]);
+    expect(app.commands().filter((command) => command === "recording_finish" || command === "insert_final_text"))
+      .toEqual(["recording_finish", "insert_final_text"]);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "complete", transcript: "Hello world", error: "" },
+    ]);
+    expect(app.named("insert_final_text").map((call) => call.args)).toEqual([{ text: "Hello world" }]);
+    expect(pill.cleared).toBe(1);
+    expect(dictation.state).toBe("idle");
+  });
+
+  it("ends a session whose final text is empty without saving or pasting anything", async () => {
+    const { app, dictation, pill } = setup();
+    await startRecording(dictation);
+    await dictation.toggleRecording();
+
+    await dictation.receiveSessionEvent(sessionEvent({ type: "final", text: "  " }, true));
+
+    expect(app.commands()).not.toContain("recording_finish");
+    expect(app.commands()).not.toContain("insert_final_text");
+    expect(app.commands()).not.toContain("copy_to_clipboard");
+    expect(pill.cleared).toBe(1);
+    expect(dictation.state).toBe("idle");
+  });
+
+  it("marks a transcribing dictation failed once when its session reports an error", async () => {
+    const { app, dictation, failures, pill } = setup();
+    await startRecording(dictation);
+    await dictation.toggleRecording();
+
+    await dictation.receiveSessionEvent(sessionEvent({ type: "error", text: "" }, true));
+
+    expect(failures).toEqual([{ message: "Transcription failed", recordingSaved: true }]);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "failed", transcript: "", error: "Transcription failed" },
+    ]);
+    expect(dictation.lastFailedRecordingId).toBe("rec-1");
+    expect(pill.cleared).toBe(1);
+    expect(dictation.state).toBe("idle");
+  });
+
+  it("shows live text but not progress messages, and warnings as toasts, without ending the session", async () => {
+    const { dictation, pill, toasts } = setup(LIVE_TRANSCRIPTION_MODEL);
+    await startRecording(dictation);
+
+    await dictation.receiveSessionEvent(sessionEvent({ type: "partial", text: "Refining transcript..." }));
+    await dictation.receiveSessionEvent(sessionEvent({ type: "partial", text: "Transcribing part 2 of 3..." }));
+    await dictation.receiveSessionEvent(sessionEvent({ type: "partial", text: "Hello" }));
+    await dictation.receiveSessionEvent(sessionEvent({ type: "partial", text: " there" }));
+    await dictation.receiveSessionEvent(sessionEvent({ type: "warning", text: "Slow connection" }));
+
+    expect(pill.shown).toEqual([
+      { text: "Hello", final: false },
+      { text: "Hello there", final: false },
+    ]);
+    expect(toasts).toEqual(["Slow connection"]);
+    expect(pill.cleared).toBe(0);
+    expect(dictation.state).toBe("recording");
   });
 
   it("copies the final transcript of an imported file instead of pasting it", async () => {
