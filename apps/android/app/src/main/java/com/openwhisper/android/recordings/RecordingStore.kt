@@ -22,13 +22,6 @@ data class StoredRecording(
     val error: String,
 )
 
-data class PcmRecording(
-    val id: String,
-    val file: File,
-    val sampleRate: Int,
-    val byteCount: Long,
-)
-
 /**
  * The saved recordings in one folder. The app makes one store, which the app
  * screen, the accessibility service and the transcriptions share, so one lock
@@ -150,20 +143,26 @@ class RecordingStore private constructor(
         }
     }
 
-    fun finish(id: String, status: String, transcript: String = "", error: String = "") = synchronized(lock) {
-        val current = get(id) ?: return
-        writeMetadata(
-            current.copy(
-                status = status,
-                bytes = file(current).length(),
-                transcript = transcript,
-                error = error,
-            ),
+    /** Saves [id]'s new status and returns its details, or null if it is gone. */
+    fun finish(
+        id: String,
+        status: String,
+        transcript: String = "",
+        error: String = "",
+    ): StoredRecording? = synchronized(lock) {
+        val current = get(id) ?: return null
+        val finished = current.copy(
+            status = status,
+            bytes = file(current).length(),
+            transcript = transcript,
+            error = error,
         )
+        writeMetadata(finished)
         // A completed transcription no longer needs its saved parts, so
         // transcribing it again starts fresh.
         if (status == "complete") AtomicFile(partsFile(id)).delete()
         prune()
+        finished
     }
 
     fun list(): List<StoredRecording> = synchronized(lock) {
@@ -289,6 +288,9 @@ class PcmRecordingWriter internal constructor(
     /** Whether this capture still holds its recording; see [RecordingStore.reserve]. */
     private var reserved = true
 
+    /** The recording's details once [finish] saved them. */
+    private var finished: StoredRecording? = null
+
     @Synchronized
     fun write(bytes: ByteArray, count: Int) {
         check(!closed) { "Recording is already closed" }
@@ -298,14 +300,15 @@ class PcmRecordingWriter internal constructor(
         if (bytesSinceCheckpoint >= sampleRate * 2L) checkpoint()
     }
 
+    /** Closes the audio file, saves [status] and returns the saved recording. */
     @Synchronized
-    fun finish(status: String): PcmRecording {
+    fun finish(status: String): StoredRecording {
         if (!closed) {
             try {
                 checkpoint()
                 wav.close()
                 closed = true
-                store.finish(id, status)
+                finished = store.finish(id, status)
             } finally {
                 // Released once, even when finishing fails, so a broken
                 // capture is never kept past the limit for ever.
@@ -315,7 +318,7 @@ class PcmRecordingWriter internal constructor(
                 }
             }
         }
-        return PcmRecording(id, file, sampleRate, pcmBytes)
+        return checkNotNull(finished) { "The recording could not be saved" }
     }
 
     /**

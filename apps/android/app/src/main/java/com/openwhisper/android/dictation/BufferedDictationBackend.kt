@@ -2,9 +2,7 @@ package com.openwhisper.android.dictation
 
 import com.openwhisper.android.audio.ActiveRecording
 import com.openwhisper.android.audio.PcmRecorder
-import com.openwhisper.android.audio.WavEncoder
 import com.openwhisper.android.transcription.NoSpeechException
-import com.openwhisper.android.transcription.TranscriptionAudio
 import com.openwhisper.android.transcription.TranscriptionJob
 import com.openwhisper.android.transcription.TranscriptionManager
 import com.openwhisper.android.transcription.TranscriptionOrigin
@@ -61,15 +59,7 @@ class BufferedDictationBackend(
                     // A cancel that came while the microphone was stopping:
                     // the saved audio is never sent.
                     if (generation.get() != expectedGeneration) return@run
-                    transcriptions.submit(saved.id, TranscriptionOrigin.DICTATION) {
-                        TranscriptionAudio(
-                            file = saved.file,
-                            mimeType = "audio/wav",
-                            pcmSampleRate = saved.sampleRate,
-                            pcmDataOffset = WavEncoder.HEADER_BYTES.toLong(),
-                            pcmDataLength = saved.byteCount,
-                        )
-                    }.also(activeJob::set)
+                    transcriptions.submit(saved, TranscriptionOrigin.DICTATION).also(activeJob::set)
                 }
                 // A new dictation that started while the job was being handed over.
                 if (generation.get() != expectedGeneration) job.cancel()

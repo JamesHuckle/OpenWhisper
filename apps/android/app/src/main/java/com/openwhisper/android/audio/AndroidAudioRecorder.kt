@@ -6,9 +6,9 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import com.openwhisper.android.recordings.PcmRecording
 import com.openwhisper.android.recordings.PcmRecordingWriter
 import com.openwhisper.android.recordings.RecordingStore
+import com.openwhisper.android.recordings.StoredRecording
 import java.text.DateFormat
 import java.util.Date
 import java.util.concurrent.CountDownLatch
@@ -109,7 +109,7 @@ internal class MicrophoneRecording(
 
     fun startReading() = readThread.start()
 
-    override fun stop(): PcmRecording {
+    override fun stop(): StoredRecording {
         check(ended.compareAndSet(false, true)) { "Microphone was not recording" }
         release(joinMillis = 2_000)
         val recording = sink.finish(if (readFailure == null) "saved" else "capture_failed")

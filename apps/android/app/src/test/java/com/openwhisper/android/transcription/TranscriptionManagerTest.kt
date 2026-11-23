@@ -6,7 +6,6 @@ import com.openwhisper.android.dictation.BackgroundRunner
 import com.openwhisper.android.dictation.BufferedDictationBackend
 import com.openwhisper.android.dictation.CallbackDispatcher
 import com.openwhisper.android.dictation.DictationBackend
-import com.openwhisper.android.recordings.PcmRecording
 import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.recordings.StoredRecording
 import java.io.ByteArrayInputStream
@@ -411,9 +410,9 @@ private class OverlayListener : DictationBackend.Listener {
     }
 }
 
-private class OneRecording(private val recording: PcmRecording) : PcmRecorder {
+private class OneRecording(private val recording: StoredRecording) : PcmRecorder {
     override fun start() = object : ActiveRecording {
-        override fun stop(): PcmRecording = recording
+        override fun stop(): StoredRecording = recording
         override fun cancel() = Unit
     }
 }

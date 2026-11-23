@@ -1,22 +1,49 @@
 package com.openwhisper.android.dictation
 
 import com.openwhisper.android.audio.ActiveRecording
-import com.openwhisper.android.audio.PcmRecording
 import com.openwhisper.android.audio.PcmRecorder
 import com.openwhisper.android.audio.WavEncoder
 import com.openwhisper.android.recordings.RecordingStore
+import com.openwhisper.android.recordings.StoredRecording
 import com.openwhisper.android.transcription.AudioRules
 import com.openwhisper.android.transcription.NoSpeechException
 import com.openwhisper.android.transcription.TranscriptionAudio
 import com.openwhisper.android.transcription.TranscriptionClient
 import com.openwhisper.android.transcription.TranscriptionManager
 import java.io.File
+import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class BufferedDictationBackendTest {
+    private val root = File(
+        System.getProperty("java.io.tmpdir"),
+        "openwhisper-dictation-${System.nanoTime()}",
+    )
+
+    /** Holds the recordings, as the app's one store does for the recorder and the manager. */
+    private val store = RecordingStore.forDirectory(root)
+
+    @After
+    fun cleanUp() {
+        root.deleteRecursively()
+    }
+
+    /** A microphone recording of [bytes], saved in [store] as the real recorder saves it. */
+    private fun pcmRecording(bytes: ByteArray): StoredRecording =
+        store.beginPcm("Dictation", 16_000).apply { write(bytes, bytes.size) }.finish("saved")
+
+    private fun manager(client: TranscriptionClient, runner: BackgroundRunner) = TranscriptionManager(
+        store = store,
+        newClient = { client },
+        dictationRunner = runner,
+        // A dictation never waits behind imports and retries.
+        bulkRunner = BackgroundRunner { error("A dictation ran on the bulk thread") },
+        callbacks = DirectDispatcher,
+    )
+
     @Test
     fun finalizesPcmAsWavAndReturnsTranscript() {
         val recorder = FakePcmRecorder(pcmRecording(byteArrayOf(1, 2, 3, 4)))
@@ -205,7 +232,7 @@ class BufferedDictationBackendTest {
 }
 
 private class FakePcmRecorder(
-    private val recording: PcmRecording,
+    private val recording: StoredRecording,
     private val stopError: String? = null,
 ) : PcmRecorder {
     val started = mutableListOf<FakeRecording>()
@@ -220,7 +247,7 @@ private class FakePcmRecorder(
     inner class FakeRecording : ActiveRecording {
         var ended: String? = null
 
-        override fun stop(): PcmRecording {
+        override fun stop(): StoredRecording {
             stopCount += 1
             check(ended == null) { "Microphone was not recording" }
             ended = "stopped"
@@ -257,14 +284,6 @@ private class FakeTranscriptionClient(
     }
 }
 
-private fun pcmRecording(bytes: ByteArray): PcmRecording {
-    val file = File.createTempFile("openwhisper-test-", ".wav").apply {
-        deleteOnExit()
-        writeBytes(WavEncoder.encodePcm16Mono(bytes, 16_000))
-    }
-    return PcmRecording("test-${file.name}", file, 16_000, bytes.size.toLong())
-}
-
 private class QueuedRunner : BackgroundRunner {
     private val tasks = ArrayDeque<() -> Unit>()
     override fun run(task: () -> Unit) {
@@ -276,21 +295,6 @@ private class QueuedRunner : BackgroundRunner {
         while (tasks.isNotEmpty()) tasks.removeFirst().invoke()
     }
 }
-
-private fun manager(client: TranscriptionClient, runner: BackgroundRunner) = TranscriptionManager(
-    store = RecordingStore.forDirectory(
-        File.createTempFile("openwhisper-store-", "").apply {
-            delete()
-            mkdirs()
-            deleteOnExit()
-        },
-    ),
-    newClient = { client },
-    dictationRunner = runner,
-    // A dictation never waits behind imports and retries.
-    bulkRunner = BackgroundRunner { error("A dictation ran on the bulk thread") },
-    callbacks = DirectDispatcher,
-)
 
 private data object DirectDispatcher : CallbackDispatcher {
     override fun dispatch(task: () -> Unit) = task()

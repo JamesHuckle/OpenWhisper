@@ -4,6 +4,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import com.openwhisper.android.recordings.RecordingStore
+import com.openwhisper.android.recordings.StoredRecording
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -29,7 +30,7 @@ class AndroidAudioRecorderTest {
         ) { freed.incrementAndGet() }
         recording.startReading()
 
-        var saved: PcmRecording? = null
+        var saved: StoredRecording? = null
         val stopping = thread { saved = recording.stop() }
         assertTrue(microphone.stopEntered.await(5, TimeUnit.SECONDS))
         val cancelling = thread { recording.cancel() }
@@ -59,7 +60,7 @@ class AndroidAudioRecorderTest {
         recording.startReading()
         assertTrue(microphone.readEntered.await(5, TimeUnit.SECONDS))
 
-        var saved: PcmRecording? = null
+        var saved: StoredRecording? = null
         val stopping = thread { saved = recording.stop() }
         // The stop is waiting for the read thread, which is stuck in a read.
         awaitState(stopping, Thread.State.TIMED_WAITING)

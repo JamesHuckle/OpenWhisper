@@ -82,7 +82,7 @@ class RecordingStoreTest {
             writer.write(oneSecond, oneSecond.size)
 
             val recording = writer.finish("saved")
-            assertTrue(recording.file.isFile)
+            assertTrue(service.file(recording).isFile)
             assertEquals(44L + 2 * oneSecond.size, service.get(recording.id)?.bytes)
 
             // Finished, it is no longer held: the next cleanup deletes it.
@@ -98,8 +98,11 @@ class RecordingStoreTest {
             val pcm = ByteArray(32_000) { (it % 127).toByte() }
             writer.write(pcm, pcm.size)
             val recording = writer.finish("saved")
+            // The details it returns are the ones it saved.
+            assertEquals(store.get(recording.id), recording)
+            assertEquals("saved", recording.status)
 
-            val wav = recording.file.readBytes()
+            val wav = store.file(recording).readBytes()
             assertEquals("RIFF", wav.copyOfRange(0, 4).decodeToString())
             assertEquals("WAVE", wav.copyOfRange(8, 12).decodeToString())
             assertArrayEquals(pcm, wav.copyOfRange(44, wav.size))
@@ -282,7 +285,7 @@ class RecordingStoreTest {
             // Inside the try, so a failed wait still releases the importer.
             try {
                 assertTrue(reading.await(5, TimeUnit.SECONDS))
-                val recording = listed.submit<PcmRecording> {
+                val recording = listed.submit<StoredRecording> {
                     service.beginPcm("Dictation", 16_000).finish("saved")
                 }
                 assertNotNull(recording.get(5, TimeUnit.SECONDS))

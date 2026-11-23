@@ -65,32 +65,22 @@ class TranscriptionManager(
 
     /**
      * Transcribes a saved recording, or returns its job if one is running.
-     * [showResultInApp] marks the job's result for the app screen to show.
+     * Its audio is read on the job's own thread, and its finished parts are
+     * saved beside it. [origin] picks the job's thread; a running job keeps
+     * its own. [showResultInApp] marks the job's result for the app screen.
      */
     fun submit(
         recording: StoredRecording,
         origin: TranscriptionOrigin,
         showResultInApp: Boolean = false,
-    ): TranscriptionJob = submit(recording.id, origin, showResultInApp) { audioFor(recording) }
-
-    /**
-     * Transcribes the recording [recordingId], or returns its job if one is
-     * running. [audio] is read on the job's own thread; its finished parts are
-     * saved beside the recording. [origin] picks the job's thread; a running
-     * job keeps its own.
-     */
-    fun submit(
-        recordingId: String,
-        origin: TranscriptionOrigin,
-        showResultInApp: Boolean = false,
-        audio: () -> TranscriptionAudio,
     ): TranscriptionJob {
+        val recordingId = recording.id
         val job = synchronized(lock) {
             jobs[recordingId]?.let { running ->
                 if (showResultInApp) running.showResultInApp = true
                 return running
             }
-            TranscriptionJob(recordingId, origin, audio, newClient, callbacks).also { job ->
+            TranscriptionJob(recordingId, origin, newClient, callbacks).also { job ->
                 job.showResultInApp = showResultInApp
                 jobs[recordingId] = job
                 // Reserved before the status change, whose cleanup could
@@ -111,7 +101,7 @@ class TranscriptionManager(
             TranscriptionOrigin.DICTATION -> dictationRunner
             TranscriptionOrigin.BULK -> bulkRunner
         }
-        runner.run { run(job) }
+        runner.run { run(job, recording) }
         return job
     }
 
@@ -132,9 +122,9 @@ class TranscriptionManager(
         }
     }
 
-    private fun run(job: TranscriptionJob) {
+    private fun run(job: TranscriptionJob, recording: StoredRecording) {
         val result = try {
-            transcribeAndSave(job)
+            transcribeAndSave(job, recording)
         } finally {
             // Past the newest recordings, it goes at the store's next cleanup.
             store.release(job.recordingId)
@@ -146,14 +136,14 @@ class TranscriptionManager(
     }
 
     /** Transcribes [job]'s recording, saves its status and ends the job. */
-    private fun transcribeAndSave(job: TranscriptionJob): Result<String> {
+    private fun transcribeAndSave(job: TranscriptionJob, recording: StoredRecording): Result<String> {
         val transcribed = if (job.isCancelled) {
             Result.failure(cancelled())
         } else {
             runCatching {
                 // Finished parts are saved beside the recording, so a retry
                 // sends only the parts that did not finish.
-                val audio = job.audio().copy(partsFile = store.partsFile(job.recordingId))
+                val audio = audioFor(recording).copy(partsFile = store.partsFile(job.recordingId))
                 // An empty microphone recording is never sent.
                 if (audio.pcmSampleRate != null && audio.pcmDataLength == 0L) {
                     throw NoSpeechException("no_bytes")
@@ -237,7 +227,6 @@ enum class TranscriptionOrigin {
 class TranscriptionJob internal constructor(
     val recordingId: String,
     val origin: TranscriptionOrigin,
-    internal val audio: () -> TranscriptionAudio,
     newClient: (isCancelled: () -> Boolean) -> TranscriptionClient,
     private val callbacks: CallbackDispatcher,
 ) {
