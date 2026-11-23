@@ -18,6 +18,7 @@ import {
   needsRelease,
   nextVersion,
   planRelease,
+  releaseAssetNames,
   repositoryRoot,
   setVersion,
   versionFiles,
@@ -289,6 +290,23 @@ describe("update feeds", () => {
     assert.equal(android.apkUrl, "https://github.com/owner/OpenWhisper/releases/download/v0.2.28/OpenWhisper-Android.apk");
     assert.equal(android.versionCode, 2028);
     assert.deepEqual(checkFeeds({ repository, version, signature, apkSha256, windows, android }), []);
+  });
+
+  it("publishes eight files under fixed public names", () => {
+    // The website's latest-download links use the two names without a version.
+    assert.deepEqual(Object.values(releaseAssetNames(version)).sort(), [
+      "OpenWhisper-Android-update.json",
+      "OpenWhisper-Android-v0.2.28.apk",
+      "OpenWhisper-Android-v0.2.28.apk.sha256",
+      "OpenWhisper-Android.apk",
+      "OpenWhisper_0.2.28_x64-setup.exe",
+      "OpenWhisper_0.2.28_x64-setup.exe.sig",
+      "OpenWhisper_x64-setup.exe",
+      "latest.json",
+    ]);
+    const website = readRepo("apps/web/lib/config.ts");
+    assert.ok(website.includes("releases/latest/download/OpenWhisper_x64-setup.exe"));
+    assert.ok(website.includes("releases/latest/download/OpenWhisper-Android.apk"));
   });
 
   it("refuses feeds from another version or with the wrong checksum", () => {
