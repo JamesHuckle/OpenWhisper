@@ -1282,22 +1282,21 @@ menuRefinePromptInput.addEventListener("input", () => {
 menuRefinePromptInput.addEventListener("blur", () => void persistRefineInput());
 
 // ---------------------------------------------------------------------------
-// Foreground app name: read when the menu opens, then sent by Rust only when
-// the user moves to another program
+// Foreground app name: read each time the menu opens. Until the lookup
+// answers, the label says "Detecting…" rather than the last menu's program.
 // ---------------------------------------------------------------------------
 function showForegroundApp(name: string | null) {
   menuTargetAppName.textContent = name ?? "Unknown";
 }
 
 async function refreshForegroundApp() {
+  menuTargetAppName.textContent = "Detecting…";
   try {
     showForegroundApp(await invoke<string | null>("get_foreground_app"));
   } catch {
     showForegroundApp(null);
   }
 }
-
-void listen<string | null>("foreground-app-changed", (event) => showForegroundApp(event.payload));
 
 // ---------------------------------------------------------------------------
 // Tray / global shortcuts: listen for recording events emitted by Rust

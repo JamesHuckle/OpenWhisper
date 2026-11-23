@@ -68,8 +68,8 @@ static DEBUG_EVENT_BITS: AtomicU32 = AtomicU32::new(0);
 static USER_INPUT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SESSION: Mutex<Option<PasteSession>> = Mutex::new(None);
 static FOREGROUND_APP: Mutex<ForegroundApp> = Mutex::new(ForegroundApp::new());
-/// Wakes the dispatcher thread in `run()` when a shortcut flag is set or
-/// the followed window changes. Nothing polls the flags.
+/// Wakes the dispatcher thread in `run()` when a shortcut flag is set.
+/// Nothing polls the flags.
 static DISPATCHER_WAKE: OnceLock<Sender<()>> = OnceLock::new();
 /// The monitor the cursor was last seen on (0 between displays).
 static LAST_CURSOR_MONITOR: AtomicIsize = AtomicIsize::new(0);
@@ -173,9 +173,7 @@ pub fn track_foreground() {
     let hwnd = foreground_window();
     if hwnd != 0 && !is_own_process(hwnd) {
         TRACKED_FOCUS_HWND.store(focused_control(hwnd), Ordering::Relaxed);
-        if TRACKED_HWND.swap(hwnd, Ordering::Relaxed) != hwnd {
-            wake_dispatcher();
-        }
+        TRACKED_HWND.store(hwnd, Ordering::Relaxed);
     }
 }
 
@@ -202,13 +200,6 @@ pub fn foreground_app_name() -> Option<String> {
     let mut pid: u32 = 0;
     unsafe { GetWindowThreadProcessId(to_hwnd(hwnd), Some(&mut pid)) };
     lock(&FOREGROUND_APP).name_for(pid, process_name)
-}
-
-/// The foreground program's name when it changed since the last call,
-/// for the settings menu.
-pub fn foreground_app_change() -> Option<Option<String>> {
-    let name = foreground_app_name();
-    lock(&FOREGROUND_APP).report(name)
 }
 
 fn process_name(pid: u32) -> Option<String> {
@@ -777,8 +768,8 @@ unsafe extern "system" fn focus_event_proc(
 
 /// Installs the low-level keyboard and mouse hooks and the focus-change
 /// hooks, then runs a blocking message pump. `wake` is signalled whenever
-/// a shortcut flag is set or the followed window changes, and
-/// `monitor_wake` whenever the cursor enters another monitor. Blocks
+/// a shortcut flag is set, and `monitor_wake` whenever the cursor enters
+/// another monitor. Blocks
 /// forever — must be called from a dedicated thread.
 pub fn install_input_hooks(wake: Sender<()>, monitor_wake: Sender<()>) {
     let _ = DISPATCHER_WAKE.set(wake);

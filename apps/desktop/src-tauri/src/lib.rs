@@ -988,8 +988,8 @@ pub fn run() {
                     text_inserter::install_input_hooks(wake, monitor_wake)
                 });
 
-                // Sleeps until the hook thread reports a shortcut or a focus
-                // change, so an idle app does no work here.
+                // Sleeps until the hook thread reports a shortcut, so an idle
+                // app does no work here.
                 let shortcut_handle = app.handle().clone();
                 std::thread::spawn(move || {
                     let mut last_hook_log = std::time::Instant::now();
@@ -1034,9 +1034,6 @@ pub fn run() {
                             text_inserter::track_foreground();
                             reveal_window(&shortcut_handle, OverlayRevealIntent::Passive);
                             let _ = shortcut_handle.emit("toggle-recording", ());
-                        }
-                        if let Some(name) = text_inserter::foreground_app_change() {
-                            let _ = shortcut_handle.emit("foreground-app-changed", name);
                         }
                     }
                 });

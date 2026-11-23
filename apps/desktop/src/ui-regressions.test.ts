@@ -72,6 +72,22 @@ describe("desktop regression guards", () => {
     expect(currentSettings).toContain('if (isSaving("model")) return invoke<AppSettings>("app_get_settings");');
   });
 
+  it("reads the Dictionary's target program only when the menu opens", () => {
+    // F1 (2026-11-23): Rust no longer sends every app switch to the menu. The
+    // menu asks on open and shows "Detecting…" meanwhile, so a reopened menu
+    // never shows the previous program's name.
+    const main = read("src/main.ts");
+    const refresh = main.slice(
+      main.indexOf("async function refreshForegroundApp("),
+      main.indexOf('invoke<string | null>("get_foreground_app")'),
+    );
+
+    expect(main).not.toContain("foreground-app-changed");
+    expect(read("src-tauri/src/lib.rs")).not.toContain("foreground-app-changed");
+    expect(refresh).toContain('menuTargetAppName.textContent = "Detecting…";');
+    expect(main.slice(main.indexOf("async function openMenu("))).toMatch(/^[^}]*void refreshForegroundApp\(\);/);
+  });
+
   it("installs an update only after the user confirms it", () => {
     // The README promises Windows asks first; an update relaunches the app.
     const main = read("src/main.ts");
