@@ -50,6 +50,31 @@ class AndroidAudioRecorderTest {
     }
 
     @Test
+    fun anInterruptedStopStillFreesTheMicrophoneAndSavesTheFile() {
+        val store = store()
+        val microphone = FakeAudioRecord(stopBlocks = false, readBlocks = true)
+        val freed = AtomicInteger()
+        val recording = MicrophoneRecording(microphone, store.beginPcm("A", 16_000), 8_192, null) {
+            freed.incrementAndGet()
+        }
+        recording.startReading()
+        assertTrue(microphone.readEntered.await(5, TimeUnit.SECONDS))
+
+        var saved: PcmRecording? = null
+        val stopping = thread { saved = recording.stop() }
+        // The stop is waiting for the read thread, which is stuck in a read.
+        awaitState(stopping, Thread.State.TIMED_WAITING)
+        stopping.interrupt()
+        stopping.join(5_000)
+        microphone.unblockRead.countDown()
+
+        assertFalse(stopping.isAlive)
+        assertEquals(1, microphone.releaseCount.get())
+        assertEquals(1, freed.get())
+        assertEquals("saved", store.get(saved!!.id)?.status)
+    }
+
+    @Test
     fun aCancelledRecordingCannotBeStoppedLater() {
         val store = store()
         val microphone = FakeAudioRecord(stopBlocks = false)
@@ -74,7 +99,10 @@ class AndroidAudioRecorderTest {
 }
 
 /** The microphone, with reads that return nothing and a stop that can be held. */
-private class FakeAudioRecord(private val stopBlocks: Boolean) : AudioRecord(
+private class FakeAudioRecord(
+    private val stopBlocks: Boolean,
+    private val readBlocks: Boolean = false,
+) : AudioRecord(
     MediaRecorder.AudioSource.MIC,
     16_000,
     AudioFormat.CHANNEL_IN_MONO,
@@ -83,9 +111,13 @@ private class FakeAudioRecord(private val stopBlocks: Boolean) : AudioRecord(
 ) {
     val stopEntered = CountDownLatch(1)
     val unblockStop = CountDownLatch(1)
+    val readEntered = CountDownLatch(1)
+    val unblockRead = CountDownLatch(1)
     val releaseCount = AtomicInteger()
 
     override fun read(audioData: ByteArray, offsetInBytes: Int, sizeInBytes: Int, readMode: Int): Int {
+        readEntered.countDown()
+        if (readBlocks) unblockRead.await(5, TimeUnit.SECONDS)
         Thread.sleep(5)
         return 0
     }
@@ -107,3 +139,10 @@ private fun store() = RecordingStore.forDirectory(
         deleteOnExit()
     },
 )
+
+/** Waits up to 5 s for [thread] to reach [state]. */
+private fun awaitState(thread: Thread, state: Thread.State) {
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+    while (thread.state != state && thread.isAlive && System.nanoTime() < deadline) Thread.sleep(5)
+    assertEquals(state, thread.state)
+}

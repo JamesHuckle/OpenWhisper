@@ -131,7 +131,13 @@ internal class MicrophoneRecording(
         try {
             capturing.set(false)
             runCatching { recorder.stop() }
-            readThread.join(joinMillis)
+            try {
+                readThread.join(joinMillis)
+            } catch (_: InterruptedException) {
+                // Still free the microphone and save the file; the caller
+                // sees the interrupt afterwards.
+                Thread.currentThread().interrupt()
+            }
             recorder.release()
         } finally {
             onReleased()
