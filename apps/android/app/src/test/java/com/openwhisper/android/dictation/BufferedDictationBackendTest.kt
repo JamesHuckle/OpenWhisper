@@ -11,6 +11,7 @@ import com.openwhisper.android.transcription.TranscriptionAudio
 import com.openwhisper.android.transcription.TranscriptionClient
 import com.openwhisper.android.transcription.TranscriptionManager
 import java.io.File
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -34,6 +35,26 @@ class BufferedDictationBackendTest {
         assertEquals(1, recorder.stopCount)
         assertEquals("RIFF", client.lastWav?.copyOfRange(0, 4)?.decodeToString())
         assertEquals("Hello", listener.final)
+    }
+
+    @Test
+    fun aDictationIsSentAsItsSavedPcmWav() {
+        val pcm = byteArrayOf(1, 2, 3, 4)
+        val recorder = FakePcmRecorder(pcmRecording(pcm))
+        val client = FakeTranscriptionClient("Hello")
+        val runner = QueuedRunner()
+        val backend = BufferedDictationBackend(recorder, manager(client, runner), runner, DirectDispatcher)
+
+        backend.start(CapturingListener())
+        backend.finish()
+        runner.runAll()
+
+        val audio = requireNotNull(client.lastAudio)
+        assertEquals("audio/wav", audio.mimeType)
+        assertEquals(16_000, audio.pcmSampleRate)
+        assertEquals(WavEncoder.HEADER_BYTES.toLong(), audio.pcmDataOffset)
+        assertEquals(pcm.size.toLong(), audio.pcmDataLength)
+        assertArrayEquals(WavEncoder.encodePcm16Mono(pcm, 16_000), client.lastWav)
     }
 
     @Test
@@ -221,6 +242,7 @@ private class FakeTranscriptionClient(
     private val error: Exception? = null,
 ) : TranscriptionClient {
     var lastWav: ByteArray? = null
+    var lastAudio: TranscriptionAudio? = null
     var cancelCount = 0
 
     override fun cancel() {
@@ -228,6 +250,7 @@ private class FakeTranscriptionClient(
     }
 
     override fun transcribe(audio: TranscriptionAudio): String {
+        lastAudio = audio
         lastWav = audio.file.readBytes()
         error?.let { throw it }
         return response
