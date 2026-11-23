@@ -33,10 +33,9 @@ class AndroidAudioRecorderTest {
         val stopping = thread { saved = recording.stop() }
         assertTrue(microphone.stopEntered.await(5, TimeUnit.SECONDS))
         val cancelling = thread { recording.cancel() }
-        cancelling.join(200)
 
         // The cancel waits while the stop still holds the microphone.
-        assertTrue(cancelling.isAlive)
+        awaitState(cancelling, Thread.State.TIMED_WAITING)
         assertEquals(0, freed.get())
 
         microphone.unblockStop.countDown()
