@@ -13,31 +13,30 @@ import com.openwhisper.android.BuildConfig
 import com.openwhisper.android.MainActivity
 import com.openwhisper.android.R
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
 object UpdateNotifier {
-    private val checking = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "openwhisper-update-notifier").apply { isDaemon = true }
     }
+    private var dailyCheck: DailyUpdateCheck? = null
 
     fun checkIfDue(context: Context) {
-        val application = context.applicationContext
-        val preferences = application.getSharedPreferences(PREFERENCES, 0)
-        val now = System.currentTimeMillis()
-        if (now - preferences.getLong(LAST_CHECK, 0) < CHECK_INTERVAL_MS) return
-        if (!checking.compareAndSet(false, true)) return
-        preferences.edit().putLong(LAST_CHECK, now).apply()
-        executor.execute {
-            try {
-                AndroidUpdateClient().findUpdate(BuildConfig.VERSION_CODE)?.let { update ->
-                    showNotification(application, update)
-                }
-            } finally {
-                checking.set(false)
-            }
-        }
+        dailyCheck(context.applicationContext).runIfDue()
     }
+
+    @Synchronized
+    private fun dailyCheck(application: Context): DailyUpdateCheck =
+        dailyCheck ?: run {
+            val preferences = application.getSharedPreferences(PREFERENCES, 0)
+            DailyUpdateCheck(
+                currentTimeMillis = System::currentTimeMillis,
+                lastAttemptMillis = { preferences.getLong(LAST_CHECK, 0) },
+                recordAttemptMillis = { preferences.edit().putLong(LAST_CHECK, it).apply() },
+                findUpdate = { AndroidUpdateClient().findUpdate(BuildConfig.VERSION_CODE) },
+                showUpdate = { showNotification(application, it) },
+                runInBackground = executor::execute,
+            ).also { dailyCheck = it }
+        }
 
     fun fromIntent(intent: Intent?): UpdateManifest? {
         if (intent?.getBooleanExtra(EXTRA_UPDATE, false) != true) return null
@@ -100,7 +99,6 @@ object UpdateNotifier {
 
     private const val PREFERENCES = "openwhisper_updates"
     private const val LAST_CHECK = "last_check_epoch_ms"
-    private const val CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L
     private const val CHANNEL = "openwhisper_updates"
     private const val NOTIFICATION_ID = 7002
     private const val EXTRA_UPDATE = "com.openwhisper.android.extra.UPDATE"
