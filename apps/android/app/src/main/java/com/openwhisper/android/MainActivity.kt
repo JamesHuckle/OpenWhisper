@@ -87,16 +87,13 @@ class MainActivity : Activity() {
         transcriptions = OpenWhisperApplication.transcriptions(this)
         setContentView(buildContent())
         transcriptions.addListener(transcriptionListener)
-        UpdateNotifier.fromIntent(intent)?.let { update ->
-            window.decorView.post { showUpdatePrompt(update) }
-        }
         showDictationRecoveryFrom(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        UpdateNotifier.fromIntent(intent)?.let(::showUpdatePrompt)
+        if (UpdateNotifier.isUpdateIntent(intent)) checkForUpdates(showUpToDate = false)
         showDictationRecoveryFrom(intent)
     }
 

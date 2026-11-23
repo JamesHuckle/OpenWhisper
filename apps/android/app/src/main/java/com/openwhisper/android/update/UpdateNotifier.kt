@@ -40,22 +40,7 @@ object UpdateNotifier {
             ).also { dailyCheck = it }
         }
 
-    fun fromIntent(intent: Intent?): UpdateManifest? {
-        if (intent?.getBooleanExtra(EXTRA_UPDATE, false) != true) return null
-        return runCatching {
-            UpdateManifest(
-                versionCode = intent.getIntExtra(EXTRA_VERSION_CODE, 0),
-                versionName = intent.getStringExtra(EXTRA_VERSION_NAME).orEmpty(),
-                apkUrl = intent.getStringExtra(EXTRA_APK_URL).orEmpty(),
-                sha256 = intent.getStringExtra(EXTRA_SHA256).orEmpty(),
-                releaseNotes = intent.getStringExtra(EXTRA_RELEASE_NOTES).orEmpty(),
-            ).also { update ->
-                require(update.versionCode > BuildConfig.VERSION_CODE)
-                require(update.apkUrl.startsWith("https://"))
-                require(update.sha256.matches(Regex("[0-9a-f]{64}")))
-            }
-        }.getOrNull()
-    }
+    fun isUpdateIntent(intent: Intent?) = intent?.getBooleanExtra(EXTRA_UPDATE, false) == true
 
     private fun showNotification(context: Context, update: UpdateManifest) {
         if (
@@ -76,11 +61,6 @@ object UpdateNotifier {
             update.versionCode,
             Intent(context, MainActivity::class.java).apply {
                 putExtra(EXTRA_UPDATE, true)
-                putExtra(EXTRA_VERSION_CODE, update.versionCode)
-                putExtra(EXTRA_VERSION_NAME, update.versionName)
-                putExtra(EXTRA_APK_URL, update.apkUrl)
-                putExtra(EXTRA_SHA256, update.sha256)
-                putExtra(EXTRA_RELEASE_NOTES, update.releaseNotes)
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -105,9 +85,4 @@ object UpdateNotifier {
     private const val CHANNEL = "openwhisper_updates"
     private const val NOTIFICATION_ID = 7002
     private const val EXTRA_UPDATE = "com.openwhisper.android.extra.UPDATE"
-    private const val EXTRA_VERSION_CODE = "com.openwhisper.android.extra.VERSION_CODE"
-    private const val EXTRA_VERSION_NAME = "com.openwhisper.android.extra.VERSION_NAME"
-    private const val EXTRA_APK_URL = "com.openwhisper.android.extra.APK_URL"
-    private const val EXTRA_SHA256 = "com.openwhisper.android.extra.SHA256"
-    private const val EXTRA_RELEASE_NOTES = "com.openwhisper.android.extra.RELEASE_NOTES"
 }
