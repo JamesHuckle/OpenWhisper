@@ -32,6 +32,8 @@ class BufferedDictationBackend(
     private val generation = AtomicLong(0)
     private val activeRecording = AtomicReference<ActiveRecording?>(null)
     private val activeJob = AtomicReference<TranscriptionJob?>(null)
+    /** Held while a stopped recording is handed to [transcriptions], and by [cancel]. */
+    private val handover = Any()
     @Volatile
     private var listener: DictationBackend.Listener? = null
 
@@ -55,17 +57,21 @@ class BufferedDictationBackend(
         background.run {
             try {
                 val saved = recording.stop()
-                val job = transcriptions.submit(saved.id, TranscriptionOrigin.DICTATION) {
-                    TranscriptionAudio(
-                        file = saved.file,
-                        mimeType = "audio/wav",
-                        pcmSampleRate = saved.sampleRate,
-                        pcmDataOffset = WavEncoder.HEADER_BYTES.toLong(),
-                        pcmDataLength = saved.byteCount,
-                    )
+                val job = synchronized(handover) {
+                    // A cancel that came while the microphone was stopping:
+                    // the saved audio is never sent.
+                    if (generation.get() != expectedGeneration) return@run
+                    transcriptions.submit(saved.id, TranscriptionOrigin.DICTATION) {
+                        TranscriptionAudio(
+                            file = saved.file,
+                            mimeType = "audio/wav",
+                            pcmSampleRate = saved.sampleRate,
+                            pcmDataOffset = WavEncoder.HEADER_BYTES.toLong(),
+                            pcmDataLength = saved.byteCount,
+                        )
+                    }.also(activeJob::set)
                 }
-                activeJob.set(job)
-                // A cancel that came while the job was being handed over.
+                // A new dictation that started while the job was being handed over.
                 if (generation.get() != expectedGeneration) job.cancel()
                 job.onFinished { result ->
                     activeJob.compareAndSet(job, null)
@@ -83,8 +89,12 @@ class BufferedDictationBackend(
     }
 
     override fun cancel() {
-        generation.incrementAndGet()
-        listener = null
+        // A job handed over before this sees the cancel below; one after it
+        // is never submitted.
+        synchronized(handover) {
+            generation.incrementAndGet()
+            listener = null
+        }
         activeRecording.getAndSet(null)?.cancel()
         // Stop this dictation's upload too; other transcriptions carry on.
         activeJob.getAndSet(null)?.cancel()

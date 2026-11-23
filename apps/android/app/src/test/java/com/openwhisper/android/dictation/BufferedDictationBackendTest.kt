@@ -109,22 +109,22 @@ class BufferedDictationBackendTest {
     }
 
     @Test
-    fun aCancelWhileTheRecordingIsHandedOverStopsItsUpload() {
+    fun aCancelWhileTheMicrophoneStopsSendsNoAudio() {
         val recorder = FakePcmRecorder(pcmRecording(byteArrayOf(1, 2)))
         val client = FakeTranscriptionClient("late")
-        val runner = QueuedRunner()
+        val dictation = QueuedRunner()
         val listener = CapturingListener()
         lateinit var backend: BufferedDictationBackend
-        // The microphone stops cleanly, then the user cancels before the job
-        // is registered with the backend.
+        // The microphone stops cleanly, then the user cancels before the
+        // recording is handed over. Uploads start the moment they are queued.
         recorder.onStop = { backend.cancel() }
-        backend = BufferedDictationBackend(recorder, manager(client, runner), runner, DirectDispatcher)
+        val uploads = BackgroundRunner { it() }
+        backend = BufferedDictationBackend(recorder, manager(client, uploads), dictation, DirectDispatcher)
 
         backend.start(listener)
         backend.finish()
-        runner.runAll()
+        dictation.runAll()
 
-        assertEquals(1, client.cancelCount)
         assertNull(client.lastWav)
         assertNull(listener.final)
         assertNull(listener.error)
