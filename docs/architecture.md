@@ -39,7 +39,10 @@ WhisperFlow is split into two runtime layers, in one process:
      and start-up. Logic that needs no Tauri sits in files beside it
      (`settings.rs`, `recordings.rs`, `overlay_geometry.rs` and the files
      named above). The `src-tauri/core` crate declares them once: the app
-     uses them from there, and it runs their tests on any system.
+     uses them from there, and it runs their tests on any system
+     (`cargo test --locked -p openwhisper_core` in `src-tauri`). The two
+     crates are one Cargo workspace with one `Cargo.lock`, so the tests
+     build the same dependency versions as the app.
      The Windows-only `text_inserter.rs` and `overlay_positioner.rs` make the
      Win32 calls, all through the `windows` crate's types and functions.
    - transcription: the app calls OpenAI itself, as the Android app does;

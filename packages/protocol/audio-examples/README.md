@@ -10,7 +10,7 @@ which is never sent), the earlier text each part's prompt quotes, the parts
 dropped because they only repeat it, and the transcript pasted.
 
 The desktop's Rust tests (`apps/desktop/src-tauri/src/audio_rules.rs` and
-`transcriber.rs`, run by `cargo test` in `apps/desktop/src-tauri/core`)
+`transcriber.rs`, run by `cargo test -p openwhisper_core` in `apps/desktop/src-tauri`)
 and the Android unit tests (`AudioRulesTest`, `LongAudioChunkingTest`) run
 every case, so the desktop and Android decide the same way. `make_examples.py` writes the WAV files; rerun it from the
 repository root only to change them, and keep `cases.json` in step.

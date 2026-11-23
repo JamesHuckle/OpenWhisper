@@ -3,6 +3,12 @@ name = "openwhisper_desktop"
 version = "0.2.27"
 edition = "2021"
 
+# One workspace, so the app and the core crate's tests share this Cargo.lock
+# and build the same dependency versions.
+[workspace]
+members = ["core"]
+resolver = "2"
+
 [lib]
 name = "openwhisper_desktop_lib"
 crate-type = ["cdylib", "rlib"]

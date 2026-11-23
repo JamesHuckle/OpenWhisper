@@ -400,8 +400,8 @@ mod tests {
     }
 
     /// How long the upload copy of a long dictation takes to make. Run it in
-    /// release mode, as the app is built:
-    /// cargo test --release --manifest-path apps/desktop/src-tauri/core/Cargo.toml -- --ignored --nocapture five_minutes
+    /// release mode, as the app is built, from apps/desktop/src-tauri:
+    /// cargo test --release -p openwhisper_core -- --ignored --nocapture five_minutes
     #[test]
     #[ignore]
     fn five_minutes_of_speech_encode_time() {

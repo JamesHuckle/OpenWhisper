@@ -69,12 +69,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri/core
+          workspaces: apps/desktop/src-tauri
       # The desktop's Rust files that need no Tauri (recordings, the WAV
-      # backup, model settings, the OpenAI transcriber, the write rules).
+      # backup, model settings, the OpenAI transcriber, the write rules),
+      # built from the app's own Cargo.lock, so they test the versions it ships.
       - name: Test desktop Rust logic
-        working-directory: apps/desktop/src-tauri/core
-        run: cargo test --locked
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked -p openwhisper_core
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}

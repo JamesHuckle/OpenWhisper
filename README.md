@@ -225,8 +225,9 @@ base64 -w0 openwhisper-release.jks | gh secret set OPENWHISPER_ANDROID_KEYSTORE_
 **What a release run does:**
 
 1. Test and production-build the website; test the desktop's Rust logic,
-   including the transcriber against local stand-ins for OpenAI (`cargo test`
-   in `apps/desktop/src-tauri/core`, the app's Rust files that need no Tauri), the desktop UI, the Android unit tests and
+   including the transcriber against local stand-ins for OpenAI
+   (`cargo test --locked -p openwhisper_core` in `apps/desktop/src-tauri`, the
+   app's Rust files that need no Tauri, built with the app's own `Cargo.lock`), the desktop UI, the Android unit tests and
    `scripts/release.mjs`.
 2. Decide whether app code changed since the last tag and choose the version
    (`node scripts/release.mjs plan`).

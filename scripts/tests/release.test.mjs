@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -434,7 +434,15 @@ describe("release workflow", () => {
       assert.ok(core.includes(`#[path = "../src/${name}"]`), name);
       assert.ok(!app.includes(`mod ${name.replace(/\.rs$/, "")};`), name);
     }
-    assert.match(job("test-desktop"), /working-directory: apps\/desktop\/src-tauri\/core\s+run: cargo test --locked/);
+    assert.match(job("test-desktop"), /working-directory: apps\/desktop\/src-tauri\s+run: cargo test --locked -p openwhisper_core\n/);
+  });
+
+  it("tests the core crate with the versions the app ships", () => {
+    // The app and the core crate are one Cargo workspace with one Cargo.lock;
+    // a second lock beside core let its tests drift to other reqwest and
+    // rustls versions than the installer builds.
+    assert.match(readRepo("apps/desktop/src-tauri/Cargo.toml"), /^\[workspace\]\nmembers = \["core"\]$/m);
+    assert.ok(!existsSync(join(repositoryRoot, "apps/desktop/src-tauri/core/Cargo.lock")));
   });
 });
 
