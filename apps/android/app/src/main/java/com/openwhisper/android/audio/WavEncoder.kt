@@ -2,6 +2,8 @@ package com.openwhisper.android.audio
 
 import java.io.File
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 data class PcmWavInfo(
     val sampleRate: Int,
@@ -23,43 +25,44 @@ object WavEncoder {
     fun header(pcmBytes: Long, sampleRate: Int): ByteArray {
         require(sampleRate > 0) { "sampleRate must be positive" }
         require(pcmBytes in 0..UInt.MAX_VALUE.toLong() - 36) { "Recording is too large for WAV" }
-        val result = ByteArray(HEADER_BYTES)
-        writeAscii(result, 0, "RIFF")
-        writeUInt(result, 4, 36 + pcmBytes)
-        writeAscii(result, 8, "WAVE")
-        writeAscii(result, 12, "fmt ")
-        writeUInt(result, 16, 16)
-        writeShort(result, 20, 1)
-        writeShort(result, 22, 1)
-        writeUInt(result, 24, sampleRate.toLong())
-        writeUInt(result, 28, sampleRate.toLong() * 2)
-        writeShort(result, 32, 2)
-        writeShort(result, 34, 16)
-        writeAscii(result, 36, "data")
-        writeUInt(result, 40, pcmBytes)
-        return result
+        // putInt keeps the low 32 bits, so sizes up to UInt.MAX_VALUE are written unsigned.
+        return ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN)
+            .put("RIFF".encodeToByteArray())
+            .putInt((36 + pcmBytes).toInt())
+            .put("WAVE".encodeToByteArray())
+            .put("fmt ".encodeToByteArray())
+            .putInt(16)
+            .putShort(1)
+            .putShort(1)
+            .putInt(sampleRate)
+            .putInt(sampleRate * 2)
+            .putShort(2)
+            .putShort(16)
+            .put("data".encodeToByteArray())
+            .putInt(pcmBytes.toInt())
+            .array()
     }
 
     fun inspectPcm16Mono(file: File): PcmWavInfo? = runCatching {
         RandomAccessFile(file, "r").use { wav ->
-            if (wav.length() < HEADER_BYTES || wav.readAscii(4) != "RIFF") return null
-            wav.skipBytes(4)
-            if (wav.readAscii(4) != "WAVE") return null
+            if (wav.length() < HEADER_BYTES) return null
+            val riff = wav.readLittleEndian(12)
+            if (riff.ascii(0) != "RIFF" || riff.ascii(8) != "WAVE") return null
             var sampleRate: Int? = null
             var dataOffset: Long? = null
             var dataLength: Long? = null
             while (wav.filePointer + 8 <= wav.length()) {
-                val chunk = wav.readAscii(4)
-                val size = wav.readUInt32Le()
+                val chunkHeader = wav.readLittleEndian(8)
+                val chunk = chunkHeader.ascii(0)
+                val size = chunkHeader.getInt(4).toUInt().toLong()
                 val contentStart = wav.filePointer
                 if (chunk == "fmt " && size >= 16) {
-                    val format = wav.readUInt16Le()
-                    val channels = wav.readUInt16Le()
-                    val rate = wav.readUInt32Le().toInt()
-                    wav.skipBytes(6)
-                    val bits = wav.readUInt16Le()
+                    val fmt = wav.readLittleEndian(16)
+                    val format = fmt.getShort(0).toInt()
+                    val channels = fmt.getShort(2).toInt()
+                    val bits = fmt.getShort(14).toInt()
                     if (format != 1 || channels != 1 || bits != 16) return null
-                    sampleRate = rate
+                    sampleRate = fmt.getInt(4)
                 } else if (chunk == "data") {
                     dataOffset = contentStart
                     dataLength = size.coerceAtMost(wav.length() - contentStart)
@@ -75,39 +78,9 @@ object WavEncoder {
         }
     }.getOrNull()
 
-    private fun writeAscii(target: ByteArray, offset: Int, value: String) {
-        value.encodeToByteArray().copyInto(target, destinationOffset = offset)
-    }
+    /** Reads [length] bytes, throwing EOFException if the file ends first. */
+    private fun RandomAccessFile.readLittleEndian(length: Int): ByteBuffer =
+        ByteBuffer.wrap(ByteArray(length).also(::readFully)).order(ByteOrder.LITTLE_ENDIAN)
 
-    private fun writeUInt(target: ByteArray, offset: Int, value: Long) {
-        target[offset] = value.toByte()
-        target[offset + 1] = (value ushr 8).toByte()
-        target[offset + 2] = (value ushr 16).toByte()
-        target[offset + 3] = (value ushr 24).toByte()
-    }
-
-    private fun writeShort(target: ByteArray, offset: Int, value: Int) {
-        target[offset] = value.toByte()
-        target[offset + 1] = (value ushr 8).toByte()
-    }
-
-    private fun RandomAccessFile.readAscii(length: Int): String =
-        ByteArray(length).also(::readFully).decodeToString()
-
-    private fun RandomAccessFile.readUInt16Le(): Int {
-        val low = read()
-        val high = read()
-        check(low >= 0 && high >= 0) { "Unexpected end of WAV" }
-        return low or (high shl 8)
-    }
-
-    private fun RandomAccessFile.readUInt32Le(): Long {
-        var value = 0L
-        repeat(4) { shift ->
-            val byte = read()
-            check(byte >= 0) { "Unexpected end of WAV" }
-            value = value or (byte.toLong() shl (shift * 8))
-        }
-        return value
-    }
+    private fun ByteBuffer.ascii(offset: Int): String = array().decodeToString(offset, offset + 4)
 }
