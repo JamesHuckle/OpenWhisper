@@ -13,9 +13,8 @@ const launcherFiles = ["invoke-codex-agent.mjs", "prepare-codex-static-catalog.m
 const launch = (root, args) => [process.execPath, [join(root, "scripts/invoke-codex-agent.mjs"), ...args]];
 const wrapperCommand = "node scripts/invoke-codex-agent.mjs --task 'run codex exec on the tests'";
 
-const runHook = command => JSON.parse(
-  spawnSync(process.execPath, [hook], { input: JSON.stringify({ command }), encoding: "utf8" }).stdout
-);
+const runHookRaw = input => JSON.parse(spawnSync(process.execPath, [hook], { input, encoding: "utf8" }).stdout);
+const runHook = command => runHookRaw(JSON.stringify({ command }));
 
 test("hook allows the checked wrapper and blocks a direct codex launch", () => {
   assert.equal(runHook(wrapperCommand).permission, "allow");
@@ -28,6 +27,19 @@ test("hook allows the checked wrapper and blocks a direct codex launch", () => {
   assert.equal(runHook("codex exec --sandbox workspace-write -").permission, "deny");
   assert.equal(runHook("npx codex exec -").permission, "deny");
   assert.equal(runHook("git commit -m 'mention codex here'").permission, "allow");
+});
+
+test("hook allows empty input and checks input that is not JSON as the raw command", () => {
+  assert.deepEqual(runHookRaw(""), { continue: true, permission: "allow" });
+  assert.deepEqual(runHookRaw("null"), { continue: true, permission: "allow" });
+  assert.deepEqual(runHookRaw("git status"), { continue: true, permission: "allow" });
+  assert.deepEqual(runHookRaw("codex exec -"), {
+    continue: true,
+    permission: "deny",
+    user_message: "Direct Codex execution is blocked in this project.",
+    agent_message: "Use node scripts/invoke-codex-agent.mjs --task '<task>'; do not bypass the A2A wrapper."
+  });
+  assert.equal(runHook("codex exec -").permission, "deny");
 });
 
 // A throwaway Git repository holding a copy of the launcher, with a stub
@@ -68,6 +80,7 @@ process.exit(${stubExit});
     root,
     gitDir,
     record,
+    codexHome: env.CODEX_HOME,
     run: (args, extraEnv = {}) => {
       const [command, commandArgs] = launch(root, args);
       return spawnSync(command, commandArgs, { env: { ...env, ...extraEnv }, encoding: "utf8" });
@@ -108,6 +121,57 @@ test("launcher honours --model, CURSOR_CODEX_MODEL and workspace-write by defaul
   assert.equal(args[args.indexOf("--model") + 1], "env-model");
 });
 
+test("launcher builds the static catalog from the Codex model cache", t => {
+  const box = sandbox();
+  t.after(box.cleanup);
+  const catalog = () => JSON.parse(readFileSync(join(box.gitDir, "cursor-codex-a2a/model-catalog.json"), "utf8")).models;
+  const writeCache = text => {
+    mkdirSync(box.codexHome, { recursive: true });
+    writeFileSync(join(box.codexHome, "models_cache.json"), text);
+  };
+
+  // No cache: one fallback model under the selected slug.
+  assert.equal(box.run(["--task", "x", "--model", "custom-model"]).status, 0);
+  let models = catalog();
+  assert.equal(models.length, 1);
+  assert.equal(models[0].slug, "custom-model");
+  assert.equal(models[0].display_name, "GPT-5.6-Sol");
+  assert.equal(models[0].supports_reasoning_summaries, true);
+  assert.equal(models[0].context_window, 272000);
+
+  // Cached models are filled in and repaired; a missing selected model is put first.
+  writeCache(JSON.stringify({ models: [{
+    slug: "cached", display_name: "Cached", supports_reasoning_summaries: null, default_reasoning_summary: null,
+    supported_reasoning_levels: "bad", experimental_supported_tools: null, shell_type: "", visibility: "",
+    apply_patch_tool_type: "unified", context_window: 1000
+  }] }));
+  assert.equal(box.run(["--task", "x"]).status, 0);
+  models = catalog();
+  assert.deepEqual(models.map(model => model.slug), ["gpt-5.6-sol", "cached"]);
+  assert.equal(models[0].display_name, "GPT-5.6-Sol");
+  assert.deepEqual(
+    [models[1].display_name, models[1].supports_reasoning_summaries, models[1].default_reasoning_summary,
+      models[1].supported_reasoning_levels.length, models[1].experimental_supported_tools, models[1].shell_type,
+      models[1].visibility, models[1].apply_patch_tool_type, models[1].context_window,
+      models[1].availability_nux, models[1].upgrade, models[1].default_verbosity],
+    ["Cached", true, "none", 4, [], "shell_command", "list", "freeform", 1000, null, null, null]
+  );
+
+  // The selected model already cached is not added again.
+  assert.equal(box.run(["--task", "x", "--model", "cached"]).status, 0);
+  assert.deepEqual(catalog().map(model => model.slug), ["cached"]);
+
+  // An empty model list or an unreadable cache falls back, warning about the latter.
+  writeCache(JSON.stringify({ models: [] }));
+  assert.equal(box.run(["--task", "x", "--model", "empty-cache"]).status, 0);
+  assert.deepEqual(catalog().map(model => model.slug), ["empty-cache"]);
+  writeCache("{ not json");
+  const broken = box.run(["--task", "x", "--model", "broken-cache"]);
+  assert.equal(broken.status, 0, broken.stderr);
+  assert.match(broken.stderr, /Warning: could not read .*models_cache\.json/);
+  assert.deepEqual(catalog().map(model => model.slug), ["broken-cache"]);
+});
+
 test("launcher refuses bad arguments, nesting and a held lock", t => {
   const box = sandbox();
   t.after(box.cleanup);
@@ -128,6 +192,17 @@ test("launcher releases the lock when the catalog folder cannot be created", t =
   writeFileSync(join(box.gitDir, "cursor-codex-a2a"), "not a folder");
   const result = box.run(["--task", "x"]);
   assert.equal(result.status, 8, result.stderr);
+  assert.ok(!existsSync(join(box.gitDir, "cursor-codex-a2a.lock")), "lock released");
+  assert.ok(!existsSync(`${box.record}.args`));
+});
+
+test("launcher releases the lock when the catalog file cannot be written", t => {
+  const box = sandbox();
+  t.after(box.cleanup);
+  mkdirSync(join(box.gitDir, "cursor-codex-a2a/model-catalog.json"), { recursive: true });
+  const result = box.run(["--task", "x"]);
+  assert.equal(result.status, 8, result.stderr);
+  assert.match(result.stderr, /Failed to prepare static Codex model catalog at /);
   assert.ok(!existsSync(join(box.gitDir, "cursor-codex-a2a.lock")), "lock released");
   assert.ok(!existsSync(`${box.record}.args`));
 });
