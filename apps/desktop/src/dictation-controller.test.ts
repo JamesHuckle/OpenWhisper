@@ -493,7 +493,7 @@ describe("dictation controller", () => {
 
     await dictation.transcribeImportedFile();
     expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
-      { profileId: "file-import", standardOnly: true },
+      { standardOnly: true },
     ]);
     expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
       { recordingId: "imported-1", sessionId: "s-1" },
@@ -517,7 +517,7 @@ describe("dictation controller", () => {
       error: "",
     });
     expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
-      { profileId: "recording-retry", standardOnly: true },
+      { standardOnly: true },
     ]);
     expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
       { recordingId: "rec-9", sessionId: "s-1" },
@@ -797,8 +797,8 @@ describe("dictation controller", () => {
     async function expectStandardTranscriptPasted(env: Awaited<ReturnType<typeof liveDictationStopped>>) {
       const { app, dictation, failures } = env;
       expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
-        { profileId: "default" },
-        { profileId: "default", standardOnly: true },
+        {},
+        { standardOnly: true },
       ]);
       expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
         { recordingId: "rec-1", sessionId: "s-2" },
@@ -982,8 +982,8 @@ describe("dictation controller", () => {
 
     expect(dictation.state).toBe("recording");
     expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
-      { profileId: "default" },
-      { profileId: "default", standardOnly: true },
+      {},
+      { standardOnly: true },
     ]);
     mic.hear(BATCH);
     await dictation.toggleRecording();
@@ -1005,7 +1005,7 @@ describe("dictation controller", () => {
 
     expect(failures).toEqual([]);
     expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
-      { profileId: "recording-retry", standardOnly: true },
+      { standardOnly: true },
     ]);
     expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
       { recordingId: "rec-9", sessionId: "s-1" },

@@ -140,10 +140,10 @@ export function createDictationController(deps: DictationDeps) {
   // Transcription sessions
   // -------------------------------------------------------------------------
   /** Starts a session and returns its ID; standardOnly opens no Live connection. */
-  async function startSession(profileId: string, standardOnly = false): Promise<string> {
+  async function startSession(standardOnly = false): Promise<string> {
     const session = (await invoke(
       "worker_start_session",
-      standardOnly ? { profileId, standardOnly } : { profileId },
+      standardOnly ? { standardOnly } : {},
     )) as { session_id: string };
     return session.session_id;
   }
@@ -164,10 +164,9 @@ export function createDictationController(deps: DictationDeps) {
    */
   async function transcribeSavedRecording(
     recordingId: string,
-    profileId: string,
     current: (sessionId?: string) => boolean,
   ) {
-    const sessionId = await startSession(profileId, true);
+    const sessionId = await startSession(true);
     if (!current()) {
       // Cancelled while the session was starting; the cancel already tidied up.
       await stopSession(sessionId);
@@ -356,7 +355,7 @@ export function createDictationController(deps: DictationDeps) {
         startSession: async () => {
           if (live) {
             try {
-              const sessionId = await startSession("default");
+              const sessionId = await startSession();
               liveSession = true;
               return sessionId;
             } catch (error) {
@@ -366,10 +365,10 @@ export function createDictationController(deps: DictationDeps) {
               log(`live session start failed=${errorMessage(error)}; using Standard`);
               streamAudioToWorker = false;
               audioQueue.reset();
-              return startSession("default", true);
+              return startSession(true);
             }
           }
-          return startSession("default");
+          return startSession();
         },
       });
       if (!sessionId) return;
@@ -494,7 +493,7 @@ export function createDictationController(deps: DictationDeps) {
       // The failed session may already be gone; stopping it closes its connection.
       if (failedSessionId) await stopSession(failedSessionId);
       if (cancelCount !== cancelsBefore) return;
-      await transcribeSavedRecording(recordingId, "default", () => cancelCount === cancelsBefore);
+      await transcribeSavedRecording(recordingId, () => cancelCount === cancelsBefore);
     } catch (fallbackError) {
       log(`standard fallback error=${errorMessage(fallbackError)}`);
       // A cancel already tidied up; its failure is expected.
@@ -573,7 +572,7 @@ export function createDictationController(deps: DictationDeps) {
       if (refuseWhileBusy()) return;
       storedAudioStarting = true;
       op = ++operationId;
-      await transcribeStoredAudio(stored.id, "file-import", op);
+      await transcribeStoredAudio(stored.id, op);
     } catch (error) {
       if (op === null) {
         // The picker or the copy failed before the import started; a
@@ -597,7 +596,7 @@ export function createDictationController(deps: DictationDeps) {
       if (!settings.hasOpenaiApiKey) {
         throw new Error("Set your OpenAI API key before transcribing saved audio");
       }
-      await transcribeStoredAudio(recordingId, "recording-retry", op);
+      await transcribeStoredAudio(recordingId, op);
     } catch (error) {
       await failStoredAudio(op, error);
     }
@@ -614,7 +613,7 @@ export function createDictationController(deps: DictationDeps) {
     await failAndReset(error, () => op === operationId);
   }
 
-  async function transcribeStoredAudio(recordingId: string, profileId: string, op: number) {
+  async function transcribeStoredAudio(recordingId: string, op: number) {
     deps.clearNotice();
     currentRecordingId = recordingId;
     lastFailedRecordingId = null;
@@ -636,7 +635,6 @@ export function createDictationController(deps: DictationDeps) {
     // connection is opened even when Live is selected.
     await transcribeSavedRecording(
       recordingId,
-      profileId,
       (sessionId) => op === operationId && (!sessionId || currentSessionId === sessionId),
     );
   }
@@ -819,7 +817,7 @@ export function createDictationController(deps: DictationDeps) {
       throw new Error("Choose Live transcription before the realtime smoke test");
     }
     await invoke("capture_paste_target");
-    const sessionId = await startSession("realtime-smoke");
+    const sessionId = await startSession();
     currentSessionId = sessionId;
     liveTranscript = "";
     streamTextToTarget = true;

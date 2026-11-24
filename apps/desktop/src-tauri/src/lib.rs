@@ -488,12 +488,11 @@ async fn app_save_settings(
 #[tauri::command]
 async fn worker_start_session(
     state: State<'_, Arc<AppState>>,
-    profile_id: String,
     standard_only: Option<bool>,
 ) -> Result<SessionStartResponse, String> {
     // The session keeps the settings saved at this moment, so a saved change
     // applies to the next dictation.
-    let mut settings = session_settings(&lock(&state.settings), &profile_id);
+    let mut settings = session_settings(&lock(&state.settings));
     // Saved audio, and a Live dictation whose connection failed, are
     // transcribed from the file with Standard; no Live connection is opened.
     settings.standard_only = standard_only.unwrap_or(false);

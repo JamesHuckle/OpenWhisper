@@ -52,7 +52,6 @@ const APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The settings a dictation uses, read when it starts.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionSettings {
-    pub profile_id: String,
     /// The saved key; the window starts no dictation without one.
     pub openai_api_key: String,
     /// The saved model, already moved off old names and checked when the
@@ -247,9 +246,8 @@ impl Sessions {
         debug_log_line(
             "transcriber",
             &format!(
-                "start_session profile_id={:?} model={model} standard_only={} \
+                "start_session model={model} standard_only={} \
                  transcription_prompt_chars={} refine_enabled={} refine_prompt_chars={}",
-                settings.profile_id,
                 settings.standard_only,
                 settings.prompt.chars().count(),
                 settings.refine_enabled,
@@ -680,7 +678,6 @@ mod tests {
         async fn start(&self, model: &str, refine_enabled: bool, refine_prompt: &str) -> String {
             self.sessions
                 .start(SessionSettings {
-                    profile_id: "default".into(),
                     openai_api_key: "sk-test".into(),
                     transcription_model: model.into(),
                     prompt: PROMPT.into(),

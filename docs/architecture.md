@@ -129,8 +129,8 @@ One-way data flow rule:
 The window calls five commands; they kept the names they had when a Python
 worker did the work:
 
-- `worker_start_session { profileId }` returns `{ session_id }`, using the
-  saved key and model.
+- `worker_start_session { standardOnly? }` returns `{ session_id }`, using the
+  saved key and model; `standardOnly: true` opens no Live connection.
 - `worker_append_audio_chunk` (raw bytes, `session-id` header) sends Live
   audio.
 - `worker_finalize_session_audio { sessionId }` finishes a Live session

@@ -112,9 +112,8 @@ pub fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
 
 /// The settings one dictation uses: the key and model as well as the
 /// prompts, read when it starts, so a later save applies to the next one.
-pub fn session_settings(settings: &AppSettings, profile_id: &str) -> SessionSettings {
+pub fn session_settings(settings: &AppSettings) -> SessionSettings {
     SessionSettings {
-        profile_id: profile_id.to_string(),
         openai_api_key: settings.openai_api_key.trim().to_string(),
         transcription_model: settings.transcription_model.clone(),
         prompt: settings.transcription_prompt.clone(),
@@ -295,9 +294,8 @@ mod tests {
             ..AppSettings::default()
         };
         assert_eq!(
-            session_settings(&settings, "default"),
+            session_settings(&settings),
             SessionSettings {
-                profile_id: "default".into(),
                 openai_api_key: "sk-saved".into(),
                 transcription_model: "gpt-live-transcribe".into(),
                 prompt: "Glossary: Zoon".into(),
@@ -306,7 +304,7 @@ mod tests {
                 standard_only: false,
             }
         );
-        let without_key = session_settings(&AppSettings::default(), "default");
+        let without_key = session_settings(&AppSettings::default());
         assert_eq!(without_key.openai_api_key, "");
     }
 
