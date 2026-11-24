@@ -14,8 +14,6 @@ pub mod automation_client;
 pub mod debug_log;
 #[path = "../src/flac_upload.rs"]
 pub mod flac_upload;
-#[path = "../src/foreground_app.rs"]
-pub mod foreground_app;
 #[path = "../src/json_file.rs"]
 pub mod json_file;
 #[path = "../src/models.rs"]

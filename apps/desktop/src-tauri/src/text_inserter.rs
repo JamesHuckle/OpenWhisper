@@ -11,7 +11,6 @@
 //! is pasted through the clipboard, which is put back afterwards; the temporary
 //! text is kept out of clipboard history and cloud sync.
 
-use openwhisper_core::foreground_app::ForegroundApp;
 use openwhisper_core::overlay_geometry::cursor_entered_new_monitor;
 use crate::overlay_positioner;
 use openwhisper_core::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
@@ -67,7 +66,6 @@ static DEBUG_EVENT_BITS: AtomicU32 = AtomicU32::new(0);
 /// while a piece is being typed is still seen at the next check.
 static USER_INPUT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SESSION: Mutex<Option<PasteSession>> = Mutex::new(None);
-static FOREGROUND_APP: Mutex<ForegroundApp> = Mutex::new(ForegroundApp::new());
 /// Wakes the dispatcher thread in `run()` when a shortcut flag is set.
 /// Nothing polls the flags.
 static DISPATCHER_WAKE: OnceLock<Sender<()>> = OnceLock::new();
@@ -191,7 +189,7 @@ pub fn capture_target() {
 }
 
 /// Returns the executable name (without `.exe`) of the tracked foreground
-/// window, looked up once per process.
+/// window.
 pub fn foreground_app_name() -> Option<String> {
     let hwnd = TRACKED_HWND.load(Ordering::Relaxed);
     if hwnd == 0 {
@@ -199,7 +197,7 @@ pub fn foreground_app_name() -> Option<String> {
     }
     let mut pid: u32 = 0;
     unsafe { GetWindowThreadProcessId(to_hwnd(hwnd), Some(&mut pid)) };
-    lock(&FOREGROUND_APP).name_for(pid, process_name)
+    (pid != 0).then(|| process_name(pid)).flatten()
 }
 
 fn process_name(pid: u32) -> Option<String> {
