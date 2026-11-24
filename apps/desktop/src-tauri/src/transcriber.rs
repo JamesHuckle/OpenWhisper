@@ -346,7 +346,6 @@ impl<A: OpenAiApi> Transcriber<A> {
                     SavedPart {
                         start,
                         end,
-                        prompt: String::new(),
                         text: String::new(),
                     },
                 );
@@ -406,7 +405,6 @@ impl<A: OpenAiApi> Transcriber<A> {
                 SavedPart {
                     start,
                     end,
-                    prompt: contextual_prompt,
                     text: text.clone(),
                 },
             );
@@ -1405,6 +1403,7 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&parts_path).unwrap()).unwrap();
         let older_prompts = ["Zoon", "Zoon\nPrevious segment transcript: First part."];
         let parts = saved["parts"].as_array_mut().unwrap();
+        assert!(parts.iter().all(|part| part.get("prompt").is_none()));
         for (part, prompt) in parts.iter_mut().zip(older_prompts) {
             part["prompt"] = prompt.into();
         }

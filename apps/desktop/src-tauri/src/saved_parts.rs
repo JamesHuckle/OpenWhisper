@@ -34,9 +34,9 @@ pub struct SavedPart {
     /// The part's byte range in the recording's audio data.
     pub start: u64,
     pub end: u64,
-    /// The prompt the part was sent with; empty for a silent part, which is
-    /// never sent.
-    pub prompt: String,
+    /// Empty for a silent part, which is never sent. The next part's prompt
+    /// is rebuilt from it, so no prompt is saved (files from older versions
+    /// that have one are still read).
     pub text: String,
 }
 
@@ -195,11 +195,11 @@ mod tests {
         let part = SavedPart {
             start: 0,
             end: 10,
-            prompt: "Zoon".into(),
             text: "One.".into(),
         };
         let mut saved = SavedParts::new(Some(path.clone()), "key-1".into());
         saved.add(0, part.clone());
+        let written = fs::read_to_string(&path).unwrap();
 
         let again = SavedParts::new(Some(path.clone()), "key-1".into());
         let other = SavedParts::new(Some(path.clone()), "key-2".into());
@@ -207,6 +207,10 @@ mod tests {
         let damaged = SavedParts::new(Some(path.clone()), "key-1".into());
         let _ = fs::remove_file(&path);
 
+        assert_eq!(
+            written,
+            r#"{"key":"key-1","parts":[{"start":0,"end":10,"text":"One."}]}"#
+        );
         assert_eq!(again.get(0, 0, 10), Some(&part));
         assert_eq!(again.get(0, 0, 11), None);
         assert_eq!(other.get(0, 0, 10), None);
@@ -214,17 +218,22 @@ mod tests {
     }
 
     #[test]
-    fn a_file_with_spaced_json_and_a_silent_part_is_read() {
+    fn a_file_with_spaced_json_a_silent_part_and_an_older_saved_prompt_is_read() {
         let path =
             std::env::temp_dir().join(format!("openwhisper-parts-{}.json", uuid::Uuid::new_v4()));
         fs::write(
             &path,
-            r#"{"key": "k", "parts": [{"start": 0, "end": 4, "prompt": "", "text": ""}]}"#,
+            r#"{"key": "k", "parts": [{"start": 0, "end": 4, "text": ""},
+                {"start": 4, "end": 8, "prompt": "Zoon", "text": "Two."}]}"#,
         )
         .unwrap();
         let saved = SavedParts::new(Some(path.clone()), "k".into());
         let _ = fs::remove_file(&path);
 
         assert_eq!(saved.get(0, 0, 4).map(|part| part.text.as_str()), Some(""));
+        assert_eq!(
+            saved.get(1, 4, 8).map(|part| part.text.as_str()),
+            Some("Two.")
+        );
     }
 }

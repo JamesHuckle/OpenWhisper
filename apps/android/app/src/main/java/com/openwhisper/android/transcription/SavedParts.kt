@@ -7,12 +7,14 @@ import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** One finished part of a long recording: its bytes, prompt and text. */
+/**
+ * One finished part of a long recording: its bytes and text. The next part's
+ * prompt is rebuilt from the text, so no prompt is saved (files from older
+ * versions that have one are still read).
+ */
 internal data class SavedPart(
     val start: Long,
     val end: Long,
-    /** Empty for a silent part, which is never sent. */
-    val prompt: String,
     /** May be empty; always empty for a silent part. */
     val text: String,
 )
@@ -52,7 +54,6 @@ internal class SavedParts(private val file: File?, private val key: String) {
                         JSONObject()
                             .put("start", it.start)
                             .put("end", it.end)
-                            .put("prompt", it.prompt)
                             .put("text", it.text)
                     },
                 ),
@@ -82,7 +83,6 @@ internal class SavedParts(private val file: File?, private val key: String) {
                 SavedPart(
                     start = part.getLong("start"),
                     end = part.getLong("end"),
-                    prompt = part.getString("prompt"),
                     text = part.getString("text"),
                 )
             }

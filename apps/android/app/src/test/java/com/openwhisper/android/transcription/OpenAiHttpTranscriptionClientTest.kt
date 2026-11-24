@@ -179,6 +179,7 @@ class OpenAiHttpTranscriptionClientTest {
         // Older versions also saved the prompt each part was sent with.
         val partsFile = requireNotNull(audio.partsFile)
         val saved = JSONObject(partsFile.readText())
+        assertFalse(saved.getJSONArray("parts").getJSONObject(0).has("prompt"))
         saved.getJSONArray("parts").getJSONObject(0).put("prompt", "")
         partsFile.writeText(saved.toString())
 

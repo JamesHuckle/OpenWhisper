@@ -112,7 +112,7 @@ class OpenAiHttpTranscriptionClient(
                 // A silent part is never uploaded: it costs a request and the
                 // model answers it by repeating its prompt. It is saved as
                 // finished and empty, so a retry skips it too.
-                saved.add(index, SavedPart(start, end, prompt = "", text = ""))
+                saved.add(index, SavedPart(start, end, text = ""))
                 transcripts += ""
                 start = end
                 continue
@@ -122,7 +122,7 @@ class OpenAiHttpTranscriptionClient(
             // Each later part is sent with the previous part's text as its
             // prompt; a near-silent part can still make the model repeat it.
             val kept = AudioRules.keptPartText(text, prompt)
-            saved.add(index, SavedPart(start, end, prompt, kept))
+            saved.add(index, SavedPart(start, end, kept))
             transcripts += kept
             start = end
         }

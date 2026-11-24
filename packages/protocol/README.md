@@ -70,22 +70,23 @@ end of the text before it, and a part whose text only repeats that prompt
 a sentence is never pasted twice. Android keeps the same rules; both apps run
 the examples in `audio-examples/cases.json` (`long_recording_parts`).
 
-The desktop saves each finished part's byte range, prompt and text in
-`parts.json` in the recording's folder, written atomically:
+The desktop saves each finished part's byte range and text in `parts.json`
+in the recording's folder, written atomically:
 
 ```json
-{ "key": "<sha256>", "parts": [{ "start": 0, "end": 50331648, "prompt": "Glossary: ...", "text": "..." }] }
+{ "key": "<sha256>", "parts": [{ "start": 0, "end": 50331648, "text": "..." }] }
 ```
+
+Files saved by older versions also hold each part's prompt; it is ignored.
 
 A retry of the same recording skips the saved parts and sends only the rest,
 building the next part's prompt from the saved text. A part that never
 reaches `silent_pcm_peak` is not uploaded: it is saved as finished with no
 text, so a retry skips it too, and the next part's prompt quotes the last
-part that had text. The key is the SHA-256 of
-`{"audio_bytes": ..., "audio_modified_ns": ..., "model": ..., "prompt": ..., "version": 3}`
-(keys sorted, written as Python's `json.dumps` writes it), made from the
-audio's size and modified time, the model, the vocabulary prompt and a
-chunking version; when any of them changes, the transcription starts fresh.
+part that had text. The key is the SHA-256 of the compact JSON array
+`[audio_bytes, "audio_modified_ns", "model", "prompt", 4]`, made from the
+audio's size and modified time (nanoseconds, as a string), the model, the
+vocabulary prompt and the chunking version (4); when any of them changes, the transcription starts fresh.
 The tidy pass is not part of the key, so changing its prompt never uploads
 audio again. The desktop deletes the file when the transcription completes
 (so transcribing a finished recording again starts fresh) and when the
