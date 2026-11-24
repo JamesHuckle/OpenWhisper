@@ -59,21 +59,16 @@ class DictationControlView(context: Context) : View(context) {
         invalidate()
     }
 
-    /** Show the live, mic-reactive equalizer. */
-    fun showListening(color: Int) {
+    /**
+     * Show the bars in [mode]: [Mode.LISTENING] for the live, mic-reactive equalizer or
+     * [Mode.PROCESSING] for the indeterminate processing wave. The bars restart from
+     * rest only when the mode changes.
+     */
+    fun showBars(mode: Mode, color: Int) {
+        require(mode != Mode.ICON) { "showBars needs LISTENING or PROCESSING; use showIcon for a glyph" }
         contentColor = color
-        if (mode != Mode.LISTENING) {
-            mode = Mode.LISTENING
-            resetBars()
-        }
-        startAnimation()
-    }
-
-    /** Show the indeterminate processing wave. */
-    fun showProcessing(color: Int) {
-        contentColor = color
-        if (mode != Mode.PROCESSING) {
-            mode = Mode.PROCESSING
+        if (this.mode != mode) {
+            this.mode = mode
             resetBars()
         }
         startAnimation()

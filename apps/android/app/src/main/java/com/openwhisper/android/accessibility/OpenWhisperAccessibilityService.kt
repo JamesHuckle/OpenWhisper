@@ -141,7 +141,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         if (::coordinator.isInitialized) coordinator.cancel()
-        if (::overlay.isInitialized) overlay.destroy()
+        if (::overlay.isInitialized) overlay.hide()
         backgroundExecutor.shutdownNow()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()

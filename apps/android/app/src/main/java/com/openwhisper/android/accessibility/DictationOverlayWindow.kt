@@ -186,8 +186,6 @@ class DictationOverlayWindow(
         control.onAmplitude(level)
     }
 
-    fun destroy() = hide()
-
     private fun styleIcon(
         icon: Int,
         description: String,
@@ -201,11 +199,7 @@ class DictationOverlayWindow(
 
     private fun styleMeter(mode: DictationControlView.Mode, description: String, colors: ControlColors) {
         prepareControl(description, colors)
-        when (mode) {
-            DictationControlView.Mode.LISTENING -> control.showListening(colors.icon)
-            DictationControlView.Mode.PROCESSING -> control.showProcessing(colors.icon)
-            DictationControlView.Mode.ICON -> Unit
-        }
+        control.showBars(mode, colors.icon)
     }
 
     private fun prepareControl(
