@@ -133,6 +133,9 @@ The test command performs a clean build and runs:
   upload with WAV fallback, multipart requests, response parsing, and microphone shutdown races;
 - Android Keystore instrumentation tests proving encrypted round-trip, clear,
   and absence of plaintext in preferences;
+- a main-screen instrumentation test checking each label's size, colour and
+  spacing, that buttons keep their written capitalisation, and a saved
+  recording's open and transcribe buttons;
 - an offline end-to-end device test that enables the accessibility service,
   launches a real editable activity and software keyboard, finds and taps the
   actual overlay window, inserts the deterministic transcript, then proves the
