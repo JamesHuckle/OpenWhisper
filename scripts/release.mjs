@@ -3,7 +3,7 @@
 // (.github/workflows/release.yml). Every push to main runs it.
 //
 //   node scripts/release.mjs plan
-//     Prints release=, version=, version_code= and tag= lines for
+//     Prints release=, version= and tag= lines for
 //     $GITHUB_OUTPUT. A release is due when the commit comes after the last
 //     release tag and app code changed since that tag. A commit that is
 //     already in the last release (an old run re-run) is not released again,
@@ -343,13 +343,9 @@ function plan() {
     committed: committedVersion(repositoryRoot),
     onMain: !ref || ref === "refs/heads/main",
   });
-  const lines = [
-    `release=${release}`,
-    `version=${version}`,
-    `version_code=${androidVersionCode(version)}`,
-    `tag=v${version}`,
-  ];
-  console.log(lines.join("\n"));
+  // Fails the plan, not the Android build, when the version does not fit a versionCode.
+  androidVersionCode(version);
+  console.log([`release=${release}`, `version=${version}`, `tag=v${version}`].join("\n"));
   console.error(message);
 }
 
@@ -403,7 +399,7 @@ export function checkPublish({ run, version, target, releases, main = "refs/remo
   return publishNew();
 }
 
-// Returns the problems with a published release's files; empty means complete.
+// Returns the problems with a draft's or published release's files; empty means complete.
 export function checkReleaseAssets(release, expected) {
   const problems = [];
   for (const [name, size] of Object.entries(expected)) {
@@ -478,6 +474,9 @@ async function publish(options) {
     version,
     pubDate: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
   });
+  // Each run takes one of the two branches below, so this reads every size once;
+  // a new draft reads them after its upload.
+  const expectedSizes = () => Object.fromEntries(uploads.map((name) => [name, statSync(path(name)).size]));
 
   const releaseList = () =>
     JSON.parse(gh("api", `repos/${repository}/releases`, "--paginate", "--slurp")).flat();
@@ -492,10 +491,7 @@ async function publish(options) {
   if (first.action === "finish") {
     // An earlier run published this tag from this commit and then stopped.
     console.log(`==> ${tag} is already published from ${target}; checking its files`);
-    const problems = checkReleaseAssets(
-      first.release,
-      Object.fromEntries(uploads.map((name) => [name, statSync(path(name)).size])),
-    );
+    const problems = checkReleaseAssets(first.release, expectedSizes());
     if (problems.length) throw new Error(`The published release is incomplete:\n${problems.join("\n")}`);
     if (!first.newest) {
       console.log(`${productName} ${tag} is complete; a newer release has replaced it as latest.`);
@@ -521,12 +517,8 @@ async function publish(options) {
       console.log("==> Checking the draft");
       const draft = JSON.parse(gh("release", "view", tag, "--repo", repository, "--json", "isDraft,assets"));
       if (!draft.isDraft) throw new Error(`Release ${tag} is no longer a draft.`);
-      for (const name of uploads) {
-        const asset = draft.assets.find((candidate) => candidate.name === name);
-        if (!asset || asset.state !== "uploaded" || asset.size !== statSync(path(name)).size) {
-          throw new Error(`The draft is missing a complete ${name}.`);
-        }
-      }
+      const assetProblems = checkReleaseAssets({ tag_name: tag, assets: draft.assets }, expectedSizes());
+      if (assetProblems.length) throw new Error(`The draft is incomplete:\n${assetProblems.join("\n")}`);
       const downloads = join(notesDirectory, "draft");
       gh("release", "download", tag, "--repo", repository, "--dir", downloads,
         "--pattern", names.windowsFeed, "--pattern", names.androidFeed);

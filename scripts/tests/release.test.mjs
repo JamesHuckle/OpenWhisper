@@ -405,8 +405,9 @@ describe("release workflow", () => {
     // publish() runs gh itself; the draft is checked before it is made latest.
     const steps = readRepo("scripts/release.mjs");
     const draft = steps.indexOf('"--draft", "--target"');
+    const assetCheck = steps.indexOf("checkReleaseAssets({ tag_name: tag, assets: draft.assets }", draft);
     const check = steps.indexOf("checkFeeds({", draft);
-    assert.ok(draft > -1 && check > draft && steps.indexOf('"--draft=false", "--latest"') > check);
+    assert.ok(draft > -1 && assetCheck > draft && check > assetCheck && steps.indexOf('"--draft=false", "--latest"') > check);
   });
 
   it("hands only the versioned builds from the build jobs to publish", () => {
