@@ -11,6 +11,7 @@ import {
   COLLAPSED_WIDTH,
   EXPANDED_HEIGHT,
   EXPANDED_WIDTH,
+  createWindowLayoutQueue,
   getOverlayLayout,
   isOverlayVisible,
 } from "./overlay-layout";
@@ -297,8 +298,14 @@ let expandTimeoutId: number | null = null;
 let collapseTimeoutId: number | null = null;
 let noticeWidth = 0;
 let noticeTimeoutId: number | null = null;
-let lastAppliedLayout: { width: number; height: number; anchorOffsetY: number; visible: boolean } | null = null;
-let overlayLayoutQueue: Promise<void> = Promise.resolve();
+const windowLayoutQueue = createWindowLayoutQueue((layout) =>
+  invoke<void>("overlay_apply_layout", {
+    width: layout.width,
+    height: layout.height,
+    anchorOffsetY: layout.anchorOffsetY,
+    visible: layout.visible,
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Dictation: dictation-controller.ts runs the flow and holds its state; the
@@ -443,28 +450,7 @@ function getWindowLayout() {
 
 async function applyOverlayLayout(force = false) {
   syncWidgetFrame();
-  const layout = getWindowLayout();
-  if (
-    !force &&
-    lastAppliedLayout?.width === layout.width &&
-    lastAppliedLayout?.height === layout.height &&
-    lastAppliedLayout?.anchorOffsetY === layout.anchorOffsetY &&
-    lastAppliedLayout?.visible === layout.visible
-  ) {
-    return;
-  }
-
-  lastAppliedLayout = layout;
-  const apply = overlayLayoutQueue
-    .catch(() => {})
-    .then(() => invoke<void>("overlay_apply_layout", {
-      width: layout.width,
-      height: layout.height,
-      anchorOffsetY: layout.anchorOffsetY,
-      visible: layout.visible,
-    }));
-  overlayLayoutQueue = apply;
-  await apply;
+  await windowLayoutQueue.apply(getWindowLayout(), force);
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,7 +1077,8 @@ function applySettingsUi(settings: AppSettings, configuredLabel = "Key configure
     menuRefinePromptInput.value = settings.refinePrompt ?? "";
     syncRefinePromptVisibility();
   }
-  if ((bubbleVisibilityChanged || lastAppliedLayout?.visible !== getWindowLayout().visible) && lastAppliedLayout !== null) {
+  const requestedLayout = windowLayoutQueue.newestRequested();
+  if ((bubbleVisibilityChanged || requestedLayout?.visible !== getWindowLayout().visible) && requestedLayout !== null) {
     void applyOverlayLayout();
   }
 }

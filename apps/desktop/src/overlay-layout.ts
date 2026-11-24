@@ -90,3 +90,60 @@ export function isOverlayVisible(input: OverlayVisibilityInput): boolean {
     input.showIdlePill || !input.idle || input.menuOpen || input.manualReveal || input.noticeShowing
   );
 }
+
+/** What the native overlay window is told: its size, pinned bottom edge and visibility. */
+export type WindowLayout = {
+  width: number;
+  height: number;
+  anchorOffsetY: number;
+  visible: boolean;
+};
+
+function sameWindowLayout(a: WindowLayout, b: WindowLayout): boolean {
+  return (
+    a.width === b.width &&
+    a.height === b.height &&
+    a.anchorOffsetY === b.anchorOffsetY &&
+    a.visible === b.visible
+  );
+}
+
+/**
+ * Sends window layouts to the native side one at a time, in the order they
+ * were asked for. A request matching the newest one is skipped unless forced,
+ * or unless the native side rejected that newest one (Windows placement can
+ * fail to settle), so the next matching request tries again. A failure of an
+ * older request does not undo a newer one still waiting in the queue.
+ */
+export function createWindowLayoutQueue(applyNative: (layout: WindowLayout) => Promise<void>) {
+  let newestRequested: WindowLayout | null = null;
+  let newestRequestFailed = false;
+  let queue: Promise<void> = Promise.resolve();
+
+  return {
+    /** The newest layout sent or waiting to be sent, or null before the first. */
+    newestRequested: () => newestRequested,
+
+    async apply(layout: WindowLayout, force = false): Promise<void> {
+      if (
+        !force &&
+        !newestRequestFailed &&
+        newestRequested !== null &&
+        sameWindowLayout(newestRequested, layout)
+      ) {
+        return;
+      }
+
+      newestRequested = layout;
+      newestRequestFailed = false;
+      const run = queue.catch(() => {}).then(() => applyNative(layout));
+      queue = run;
+      try {
+        await run;
+      } catch (error) {
+        if (newestRequested === layout) newestRequestFailed = true;
+        throw error;
+      }
+    },
+  };
+}
