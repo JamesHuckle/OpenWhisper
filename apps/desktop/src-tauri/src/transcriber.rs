@@ -25,6 +25,7 @@ use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
+use tempfile::TempDir;
 
 const MIN_SENTENCES_PER_POLISH_CHUNK: usize = 4;
 const MAX_PARALLEL_POLISH_CHUNKS: usize = 5;
@@ -169,12 +170,14 @@ impl<A: OpenAiApi> Transcriber<A> {
         prompt: &str,
         on_progress: &(dyn Fn(usize, usize) + Send + Sync),
     ) -> Result<String, TranscribeError> {
+        // Holds the parts' folder until the transcription ends.
         let uploads = if audio.microphone {
             flac_upload_parts(&audio.audio_path).await
         } else {
-            UploadFiles::default()
+            None
         };
-        self.transcribe_with_uploads(audio, prompt, on_progress, &uploads.0)
+        let upload_parts = uploads.as_ref().map_or(&[][..], |(_, parts)| parts);
+        self.transcribe_with_uploads(audio, prompt, on_progress, upload_parts)
             .await
     }
 
@@ -545,53 +548,28 @@ pub struct SavedAudio {
     pub parts_path: Option<PathBuf>,
 }
 
-/// The FLAC upload parts of one transcription, and the folder of its own
-/// they are written to, deleted when it returns, fails or is cancelled.
-#[derive(Default)]
-struct UploadFiles(Vec<UploadPart>, Option<PathBuf>);
-
-impl Drop for UploadFiles {
-    fn drop(&mut self) {
-        for part in &self.0 {
-            let _ = fs::remove_file(&part.path);
-        }
-        if let Some(dir) = &self.1 {
-            let _ = fs::remove_dir_all(dir);
-        }
-    }
-}
-
 /// Writes the smaller, lossless FLAC parts of a microphone recording that are
 /// uploaded in place of its WAV, one request each, in a new folder inside
-/// the recording's. Empty when there are no parts: the WAV is then sent, as
-/// it is for the rest of a recording once the service refuses a part.
+/// the recording's. None when they could not be made, and no parts when the
+/// WAV holds no audio: the WAV is then sent, as it is for the rest of a
+/// recording once the service refuses a part.
 ///
-/// The encoder owns its files until it hands them over, so a transcription
-/// cancelled while it encodes still has them deleted once it finishes, and a
-/// retry meanwhile writes to a folder of its own.
+/// The parts come with their folder, deleted with them when it is dropped:
+/// when the transcription returns, fails or is cancelled, even while it
+/// encodes, and a retry meanwhile writes to a folder of its own.
 ///
 /// Logs how long the encoding took and the sizes before and after, so the
 /// wait it adds between stopping and the text appearing can be checked.
-async fn flac_upload_parts(wav_path: &Path) -> UploadFiles {
+async fn flac_upload_parts(wav_path: &Path) -> Option<(TempDir, Vec<UploadPart>)> {
     let wav_bytes = fs::metadata(wav_path).map(|m| m.len()).unwrap_or(0);
     let started = Instant::now();
     let path = wav_path.to_path_buf();
-    let written = blocking(move || {
-        let dir = path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join(format!("upload-{}", uuid::Uuid::new_v4()));
-        fs::create_dir(&dir)?;
-        let mut uploads = UploadFiles(Vec::new(), Some(dir));
-        let dir = uploads.1.as_deref().unwrap_or(Path::new("."));
-        uploads.0 = flac_upload::write_upload_parts(&path, dir, max_upload_bytes())?;
-        Ok(uploads)
-    })
-    .await;
+    let written =
+        blocking(move || flac_upload::write_upload_parts(&path, max_upload_bytes())).await;
     let encode_ms = started.elapsed().as_millis();
     match written {
         Ok(uploads) => {
-            let parts = &uploads.0;
+            let parts = &uploads.1;
             let flac_bytes: u64 = parts
                 .iter()
                 .filter_map(|part| fs::metadata(&part.path).ok())
@@ -604,11 +582,11 @@ async fn flac_upload_parts(wav_path: &Path) -> UploadFiles {
                     parts.len()
                 ),
             );
-            uploads
+            Some(uploads)
         }
         Err(error) => {
             debug_log_line("recording", &format!("FLAC upload parts failed: {error}"));
-            UploadFiles::default()
+            None
         }
     }
 }
@@ -1574,10 +1552,14 @@ mod tests {
         let dir = TempDir::new();
         let recording = recording(&dir.0);
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        // Cancelled as soon as the encoder has started.
         runtime.block_on(async {
-            let encoding = flac_upload_parts(&recording.audio_path);
-            let _ = tokio::time::timeout(std::time::Duration::ZERO, encoding).await;
+            let mut encoding = std::pin::pin!(flac_upload_parts(&recording.audio_path));
+            // One poll starts the encoder, which then runs on by itself.
+            assert!(futures_util::FutureExt::now_or_never(&mut encoding).is_none());
+            // Cancelled once it has made its folder.
+            while files(&dir.0).len() < 2 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
         });
         // Dropping the runtime waits for the encoder to finish.
         drop(runtime);

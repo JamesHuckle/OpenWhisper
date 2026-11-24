@@ -105,8 +105,9 @@ WhisperFlow is split into two runtime layers, in one process:
    checks the WAV for silence and uploads the parts,
    one request each; a long recording's later parts are prompted with the
    text before them. When the service refuses a FLAC part the rest of the
-   recording goes as WAV parts. The transcriber deletes the FLAC parts when
-   it returns, fails or is cancelled. A recording sent in parts has each finished part saved
+   recording goes as WAV parts. The encoder writes the FLAC parts to a
+   temporary folder of their own beside the WAV, which the transcriber holds
+   and which is deleted when it returns, fails or is cancelled. A recording sent in parts has each finished part saved
    in `parts.json` beside it (`parts_path`), so a retry after a failure reads and sends
    only the parts that did not finish. A silent part (the same silence level
    as the whole-recording check) is never uploaded and is saved as finished

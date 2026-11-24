@@ -15,10 +15,11 @@ use flacenc::component::{BitRepr, Frame, Stream, StreamInfo};
 use flacenc::config;
 use flacenc::error::{Verified, Verify};
 use flacenc::source::{Context, Fill, FrameBuf};
-use std::fs::{self, File};
+use std::fs::File;
 use crate::wav_file::{read_up_to, read_wav_format, WavFormat};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use tempfile::TempDir;
 
 pub const MIME_TYPE: &str = "audio/flac";
 
@@ -29,7 +30,7 @@ const BITS_PER_SAMPLE: usize = 16;
 /// checksum of the part's audio are known.
 const HEADER_BYTES: usize = 42;
 
-/// The name of upload part `number` (from 1), in the recording's folder.
+/// The name of upload part `number` (from 1), in its upload folder.
 pub fn part_file_name(number: usize) -> String {
     format!("audio.part-{number}.flac")
 }
@@ -43,24 +44,21 @@ pub struct UploadPart {
     pub pcm_end: u64,
 }
 
-/// Writes the 16-bit PCM WAV at `wav_path` as FLAC parts in `dir`, each a
-/// whole FLAC file of at most `max_bytes`, in the order they are heard.
+/// Writes the 16-bit PCM WAV at `wav_path` as FLAC parts in a new folder of
+/// their own beside it, each a whole FLAC file of at most `max_bytes`, in the
+/// order they are heard. Dropping the folder deletes it and the parts.
 ///
 /// Returns no parts when the WAV holds no audio. On an error no part file is
 /// left: the transcriber then sends the WAV itself, in parts when it is long.
 pub fn write_upload_parts(
     wav_path: &Path,
-    dir: &Path,
     max_bytes: u64,
-) -> io::Result<Vec<UploadPart>> {
-    let mut parts = Vec::new();
-    let result = encode_parts(wav_path, dir, max_bytes, &mut parts);
-    if result.is_err() {
-        for part in &parts {
-            let _ = fs::remove_file(&part.path);
-        }
-    }
-    result.map(|()| parts)
+) -> io::Result<(TempDir, Vec<UploadPart>)> {
+    let dir = tempfile::Builder::new()
+        .prefix("upload-")
+        .tempdir_in(wav_path.parent().unwrap_or(Path::new(".")))?;
+    let parts = encode_parts(wav_path, dir.path(), max_bytes)?;
+    Ok((dir, parts))
 }
 
 /// The FLAC part being written: its file, and the length and checksum of
@@ -135,12 +133,7 @@ fn encode_frame(
     Ok((frame, sink))
 }
 
-fn encode_parts(
-    wav_path: &Path,
-    dir: &Path,
-    max_bytes: u64,
-    parts: &mut Vec<UploadPart>,
-) -> io::Result<()> {
+fn encode_parts(wav_path: &Path, dir: &Path, max_bytes: u64) -> io::Result<Vec<UploadPart>> {
     let mut wav = File::open(wav_path)?;
     let format = read_pcm16_format(&mut wav)?;
     wav.seek(SeekFrom::Start(format.data_offset))?;
@@ -151,6 +144,7 @@ fn encode_parts(
         .map_err(|(_, error)| encode_error(error))?;
     let mut framebuf =
         FrameBuf::with_size(usize::from(format.channels), BLOCK_SIZE).map_err(encode_error)?;
+    let mut parts = Vec::new();
     let mut current: Option<PartFile> = None;
     let mut pcm_offset = 0_u64;
     let sample_frame_bytes = format.frame_bytes() as usize;
@@ -209,7 +203,7 @@ fn encode_parts(
     if let Some(part) = current {
         part.finish()?;
     }
-    Ok(())
+    Ok(parts)
 }
 
 /// Finds the format and audio of a 16-bit PCM WAV file. Leaves `file` at an
@@ -234,6 +228,7 @@ mod tests {
     use super::*;
     use crate::audio_rules::max_upload_bytes;
     use crate::recording_store::wav_header;
+    use std::fs;
     use std::path::PathBuf;
 
     struct TempDir(PathBuf);
@@ -299,9 +294,10 @@ mod tests {
         let original = samples(24_000 * 3 + 1_234);
         write_wav(&wav, &original);
 
-        let parts = write_upload_parts(&wav, &dir.0, max_upload_bytes()).unwrap();
+        let (folder, parts) = write_upload_parts(&wav, max_upload_bytes()).unwrap();
 
-        let flac = dir.0.join("audio.part-1.flac");
+        assert_eq!(folder.path().parent(), Some(dir.0.as_path()));
+        let flac = folder.path().join("audio.part-1.flac");
         assert_eq!(
             parts,
             vec![UploadPart {
@@ -326,7 +322,7 @@ mod tests {
         write_wav(&wav, &original);
         let limit = 40_000;
 
-        let parts = write_upload_parts(&wav, &dir.0, limit).unwrap();
+        let (folder, parts) = write_upload_parts(&wav, limit).unwrap();
 
         assert!(parts.len() > 2, "{} parts", parts.len());
         let mut joined = Vec::new();
@@ -334,7 +330,7 @@ mod tests {
         for (index, part) in parts.iter().enumerate() {
             assert_eq!(
                 part.path,
-                dir.0.join(format!("audio.part-{}.flac", index + 1))
+                folder.path().join(format!("audio.part-{}.flac", index + 1))
             );
             assert_eq!(part.pcm_start, next_start);
             assert!(fs::metadata(&part.path).unwrap().len() <= limit);
@@ -365,7 +361,7 @@ mod tests {
         bytes.push(7);
         fs::write(&wav, bytes).unwrap();
 
-        let parts = write_upload_parts(&wav, &dir.0, max_upload_bytes()).unwrap();
+        let (_folder, parts) = write_upload_parts(&wav, max_upload_bytes()).unwrap();
 
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].pcm_end, original.len() as u64 * 2);
@@ -378,24 +374,25 @@ mod tests {
         let wav = dir.0.join("audio.wav");
         write_wav(&wav, &[]);
 
-        assert_eq!(
-            write_upload_parts(&wav, &dir.0, max_upload_bytes()).unwrap(),
-            vec![]
-        );
+        let (folder, parts) = write_upload_parts(&wav, max_upload_bytes()).unwrap();
+        assert_eq!(parts, vec![]);
+        assert!(files_in(folder.path()).is_empty());
+        drop(folder);
         assert_eq!(files_in(&dir.0), vec!["audio.wav"]);
     }
 
     #[test]
-    fn errors_leave_no_part_files() {
+    fn errors_leave_no_upload_folder() {
         let dir = TempDir::new();
         let wav = dir.0.join("audio.wav");
-        // A limit too small for one frame fails after a part file was created.
+        // A limit too small for one frame fails after a part file was
+        // created: the folder holding it goes too.
         write_wav(&wav, &samples(24_000));
-        assert!(write_upload_parts(&wav, &dir.0, 1_000).is_err());
+        assert!(write_upload_parts(&wav, 1_000).is_err());
         assert_eq!(files_in(&dir.0), vec!["audio.wav"]);
 
         fs::write(&wav, b"ID3 not a wav file at all").unwrap();
-        assert!(write_upload_parts(&wav, &dir.0, max_upload_bytes()).is_err());
+        assert!(write_upload_parts(&wav, max_upload_bytes()).is_err());
         assert_eq!(files_in(&dir.0), vec!["audio.wav"]);
     }
 
@@ -411,7 +408,7 @@ mod tests {
         write_wav(&wav, &samples(24_000 * 60 * minutes));
 
         let started = std::time::Instant::now();
-        let parts = write_upload_parts(&wav, &dir.0, max_upload_bytes()).unwrap();
+        let (_folder, parts) = write_upload_parts(&wav, max_upload_bytes()).unwrap();
         let elapsed = started.elapsed();
 
         let flac_bytes: u64 = parts
