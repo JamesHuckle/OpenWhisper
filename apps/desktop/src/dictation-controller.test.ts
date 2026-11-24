@@ -29,15 +29,41 @@ function fakeInvoke() {
   const holding = new Set<string>();
   const failing = new Map<string, unknown>();
   const answers = { ...ANSWERS };
+  // With trackWriters, the app's open WAV writers, as lib.rs keeps them:
+  // recording_begin closes any left open as it opens its own, an audio chunk
+  // for a closed recording is refused, and recording_finish closes it.
+  let writers: Set<string> | null = null;
+  const refusedChunks: string[] = [];
+
+  // What the app does as it answers a command; a held one does it when answered.
+  function runInApp(command: string, value: unknown) {
+    if (writers && command === "recording_begin") {
+      writers.clear();
+      writers.add((value as { id: string }).id);
+    }
+  }
 
   const invoke = (command: string, args?: unknown, options?: { headers?: unknown }) => {
-    calls.push({ command, args, headers: options?.headers as Record<string, string> | undefined });
+    const headers = options?.headers as Record<string, string> | undefined;
+    calls.push({ command, args, headers });
     if (failing.has(command)) return Promise.reject(failing.get(command));
+    if (writers && command === "recording_append_chunk" && !writers.has(headers!["recording-id"])) {
+      refusedChunks.push(headers!["recording-id"]);
+      return Promise.reject(new Error("This recording is no longer being saved"));
+    }
+    if (writers && command === "recording_finish") {
+      writers.delete((args as { recordingId: string }).recordingId);
+    }
     if (holding.has(command)) {
       return new Promise((resolve, reject) => {
-        held.set(command, [...(held.get(command) ?? []), { resolve, reject }]);
+        const answer = (value: unknown) => {
+          runInApp(command, value);
+          resolve(value);
+        };
+        held.set(command, [...(held.get(command) ?? []), { resolve: answer, reject }]);
       });
     }
+    runInApp(command, answers[command]);
     return Promise.resolve(answers[command]);
   };
 
@@ -46,6 +72,13 @@ function fakeInvoke() {
     calls,
     answers,
     hold: (command: string) => holding.add(command),
+    /** Answers later calls of a held command at once; calls already held stay held. */
+    stopHolding: (command: string) => holding.delete(command),
+    trackWriters: () => {
+      writers = new Set();
+    },
+    /** Recordings whose audio chunks the app refused because their writer was closed. */
+    refusedChunks,
     fail: (command: string, error: unknown) => failing.set(command, error),
     /** Fails the oldest held call of a command. */
     reject(command: string, error: unknown) {
@@ -263,6 +296,49 @@ describe("dictation controller", () => {
       { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
     ]);
     expect(app.commands()).not.toContain("worker_start_session");
+  });
+
+  it("opens the next recording only once a cancelled start's backup has opened and closed", async () => {
+    const { app, mic, dictation, failures } = setup();
+    app.trackWriters();
+    app.hold("recording_begin");
+    void dictation.toggleRecording();
+    await settle();
+    mic.hear(100, 7);
+    await dictation.stopRecording();
+    await dictation.cancelTranscription();
+    expect(dictation.state).toBe("idle");
+
+    // The hold shortcut starts the next recording while the first file is still opening.
+    app.stopHolding("recording_begin");
+    app.answers.recording_begin = { id: "rec-2" };
+    void dictation.pressToTalkStart();
+    await settle();
+    expect(dictation.state).toBe("recording");
+    expect(app.named("recording_begin")).toHaveLength(1);
+
+    // The first file opens and is closed as cancelled; only then does the second open.
+    app.release("recording_begin", { id: "rec-1" });
+    await settle();
+    expect(app.named("recording_begin")).toHaveLength(2);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
+
+    mic.hear(BATCH, 9);
+    await dictation.pressToTalkStop();
+    await settle();
+
+    const saved = app.named("recording_append_chunk");
+    expect(saved.map((call) => call.headers)).toEqual([
+      { "recording-id": "rec-1" },
+      { "recording-id": "rec-2" },
+    ]);
+    expect(app.refusedChunks).toEqual([]);
+    expect(failures).toEqual([]);
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-2", sessionId: "s-1" },
+    ]);
   });
 
   it("logs a cancelled backup whose metadata could not be saved and still lists it", async () => {

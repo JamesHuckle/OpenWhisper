@@ -99,6 +99,11 @@ export function createDictationController(deps: DictationDeps) {
   let currentRecordingId: string | null = null;
   let lastFailedRecordingId: string | null = null;
   let backupTail: Promise<void> = Promise.resolve();
+  // Settles once the latest start's recording_begin has answered and, if that
+  // start was cancelled meanwhile, its file is closed. The next start opens
+  // its file only then: the app closes every file left open as it opens a new
+  // one, so an earlier begin answering later would close the newer file.
+  let backupOpened: Promise<void> = Promise.resolve();
   let backupError: unknown = null;
   let pendingAudioParts: Uint8Array[] = [];
   let pendingAudioBytes = 0;
@@ -276,6 +281,8 @@ export function createDictationController(deps: DictationDeps) {
     if (state !== "idle" || storedAudioStarting) return;
     const op = ++operationId;
     const cancelsBefore = cancelCount;
+    // Settles this start's backupOpened; called on every way the start ends.
+    let markBackupOpened = () => undefined as void;
     // Show the pill before anything is awaited, so it appears as the shortcut
     // is pressed. A missing key, when already known, shows only its toast.
     // The notice is cleared after, so a pill already showing one stays up.
@@ -306,6 +313,10 @@ export function createDictationController(deps: DictationDeps) {
       // current, so a cancelled start that answers late never marks a newer
       // recording Live.
       let liveSession = false;
+      const earlierBackupOpened = backupOpened;
+      backupOpened = new Promise((resolve) => {
+        markBackupOpened = resolve;
+      });
 
       const sessionId = await startCaptureFirst({
         lockPasteTarget: () => invoke("capture_paste_target"),
@@ -323,34 +334,41 @@ export function createDictationController(deps: DictationDeps) {
             await stopRecording();
           }
         },
-        openBackup: () => invoke("recording_begin", {
-          source: "microphone",
-          name: `Recording ${new Date().toLocaleString()}`,
-        }) as Promise<{ id: string }>,
+        openBackup: async () => {
+          await earlierBackupOpened;
+          return invoke("recording_begin", {
+            source: "microphone",
+            name: `Recording ${new Date().toLocaleString()}`,
+          }) as Promise<{ id: string }>;
+        },
         onBackupOpened: async (backup) => {
-          if (cancelCount !== cancelsBefore) {
-            // Cancelled while the file was opening; the cancel already tidied
-            // up, and a new recording may have started since.
-            const cancelled = audioCancelledBeforeBackup.get(cancelsBefore + 1);
-            audioCancelledBeforeBackup.delete(cancelsBefore + 1);
-            if (cancelled?.stopping) await cancelled.stopping.catch(() => undefined);
-            const audio = cancelled?.parts;
-            if (audio?.length) {
-              await sendAudioChunk(
-                invoke,
-                "recording_append_chunk",
-                backup.id,
-                joinAudioParts(audio),
-              ).catch((error) => {
-                log(`recording append failed=${errorMessage(error)}`);
-              });
+          try {
+            if (cancelCount !== cancelsBefore) {
+              // Cancelled while the file was opening; the cancel already tidied
+              // up, and a new recording may have started since.
+              const cancelled = audioCancelledBeforeBackup.get(cancelsBefore + 1);
+              audioCancelledBeforeBackup.delete(cancelsBefore + 1);
+              if (cancelled?.stopping) await cancelled.stopping.catch(() => undefined);
+              const audio = cancelled?.parts;
+              if (audio?.length) {
+                await sendAudioChunk(
+                  invoke,
+                  "recording_append_chunk",
+                  backup.id,
+                  joinAudioParts(audio),
+                ).catch((error) => {
+                  log(`recording append failed=${errorMessage(error)}`);
+                });
+              }
+              await finishRecording(backup.id, "cancelled", "", "Cancelled by user");
+              return false;
             }
-            await finishRecording(backup.id, "cancelled", "", "Cancelled by user");
-            return false;
+            currentRecordingId = backup.id;
+            flushAudioBatch();
+            return true;
+          } finally {
+            markBackupOpened();
           }
-          currentRecordingId = backup.id;
-          flushAudioBatch();
-          return true;
         },
         startSession: async () => {
           if (live) {
@@ -394,6 +412,9 @@ export function createDictationController(deps: DictationDeps) {
       }
       log(`startRecording ready session=${currentSessionId ?? "none"} held=${pressToTalkHeld}`);
     } catch (err) {
+      // A start that failed before its backup file opened never reached
+      // onBackupOpened; the next start must not wait on it.
+      markBackupOpened();
       audioCancelledBeforeBackup.delete(cancelsBefore + 1);
       log(`startRecording error=${errorMessage(err)}`);
       // A cancel already tidied this recording up, and the microphone and
