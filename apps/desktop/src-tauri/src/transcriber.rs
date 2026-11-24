@@ -1385,6 +1385,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_retry_resumes_parts_saved_with_their_prompts_by_an_older_version() {
+        let dir = TempDir::new();
+        let path = long_wav(&dir.0, &[SPEECH; 3]);
+        let failed = transcribe_long(
+            &path,
+            vec![
+                Ok("First part.".into()),
+                Ok("Second part.".into()),
+                Err(ApiError::Connection("reset".into())),
+            ],
+            "Zoon",
+            &[],
+        )
+        .await;
+        // Older versions also saved the prompt each part was sent with.
+        let parts_path = path.with_file_name("parts.json");
+        let mut saved: Value =
+            serde_json::from_str(&fs::read_to_string(&parts_path).unwrap()).unwrap();
+        let older_prompts = ["Zoon", "Zoon\nPrevious segment transcript: First part."];
+        let parts = saved["parts"].as_array_mut().unwrap();
+        for (part, prompt) in parts.iter_mut().zip(older_prompts) {
+            part["prompt"] = prompt.into();
+        }
+        fs::write(&parts_path, saved.to_string()).unwrap();
+
+        let retry = transcribe_long(&path, ok(&["Third part."]), "Zoon", &[]).await;
+
+        assert!(failed.result.is_err());
+        assert_eq!(
+            retry.result.unwrap(),
+            "First part. Second part. Third part."
+        );
+        assert_eq!(
+            retry.prompts,
+            ["Zoon\nPrevious segment transcript: Second part."]
+        );
+        assert_eq!(retry.sent.len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_recording_cut_short_is_reused_on_a_retry() {
         let dir = TempDir::new();
         let path = long_wav(&dir.0, &[SPEECH; 3]);

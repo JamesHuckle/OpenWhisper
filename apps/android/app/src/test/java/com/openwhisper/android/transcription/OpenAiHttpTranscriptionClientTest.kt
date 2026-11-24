@@ -13,6 +13,7 @@ import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -164,6 +165,27 @@ class OpenAiHttpTranscriptionClientTest {
 
         assertEquals(1, retry.uploads.size)
         // Its prompt is rebuilt from the saved text of the part before it.
+        assertEquals("Hello from the first part.", promptOf(retry.uploads.single()))
+    }
+
+    @Test
+    fun aRetryResumesPartsSavedWithTheirPromptsByAnOlderVersion() {
+        val audio = twoPartAudio()
+        val failing = FakeService(
+            "Hello from the first part.", *FAILED_PART,
+            statuses = listOf(200) + FAILED_STATUSES,
+        )
+        assertThrows(TranscriptionHttpException::class.java) { failing.client.transcribe(audio) }
+        // Older versions also saved the prompt each part was sent with.
+        val partsFile = requireNotNull(audio.partsFile)
+        val saved = JSONObject(partsFile.readText())
+        saved.getJSONArray("parts").getJSONObject(0).put("prompt", "")
+        partsFile.writeText(saved.toString())
+
+        val retry = FakeService("And the second.")
+        assertEquals("Hello from the first part. And the second.", retry.client.transcribe(audio))
+
+        assertEquals(1, retry.uploads.size)
         assertEquals("Hello from the first part.", promptOf(retry.uploads.single()))
     }
 
