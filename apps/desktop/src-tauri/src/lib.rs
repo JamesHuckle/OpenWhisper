@@ -13,8 +13,8 @@ use anyhow::{anyhow, Result};
 use debug_log::debug_log_line;
 use models::{is_supported_transcription_model, migrate_transcription_model};
 use overlay_geometry::{
-    move_overlay_hidden, overlay_placement, settle_hidden, MonitorTransitionDebouncer,
-    OverlayAnchor, OverlayLayoutSpec, OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
+    overlay_placement, MonitorTransitionDebouncer, OverlayAnchor, OverlayLayoutSpec,
+    OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
 };
 use recording_store::PcmWavWriter;
 use recordings::{
@@ -122,15 +122,7 @@ fn sync_overlay_window_to_anchor(app: &AppHandle, anchor: OverlayAnchor) -> Resu
     // move fails, so a failed move never hides it for good.
     let restore = was_visible
         .then(|| previous.map_or(placement, |previous| overlay_placement(previous, layout)));
-    let moved = move_overlay_hidden(
-        placement,
-        restore,
-        |placement, visibility| {
-            overlay_positioner::set_window_placement(hwnd, placement, visibility)
-        },
-        |placement| overlay_positioner::placement_matches(hwnd, placement),
-        || std::thread::sleep(std::time::Duration::from_millis(8)),
-    );
+    let moved = overlay_positioner::move_hidden(hwnd, placement, restore);
     if was_visible {
         overlay_positioner::reassert_topmost(hwnd);
     }
@@ -680,15 +672,8 @@ async fn overlay_apply_layout(
                 // its placement. The checks sleep (at most about 100 ms), so
                 // they run off the async runtime's threads.
                 tauri::async_runtime::spawn_blocking(move || {
-                    settle_hidden(
-                        placement,
-                        |placement, visibility| {
-                            overlay_positioner::set_window_placement(hwnd, placement, visibility)
-                        },
-                        |placement| overlay_positioner::placement_matches(hwnd, placement),
-                        || std::thread::sleep(std::time::Duration::from_millis(8)),
-                    )?
-                    .ok_or_else(|| "Initial overlay placement did not settle".to_string())?;
+                    overlay_positioner::settle_hidden_at(hwnd, placement)?
+                        .ok_or_else(|| "Initial overlay placement did not settle".to_string())?;
                     overlay_positioner::set_window_placement(
                         hwnd,
                         placement,

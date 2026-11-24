@@ -4,10 +4,12 @@
 //! `HWND` and `HMONITOR` only here.
 
 use openwhisper_core::overlay_geometry::{
-    overlay_bottom_anchor, OverlayAnchor, OverlayPlacement, PlacementVisibility, Position, Size,
+    move_overlay_hidden, overlay_bottom_anchor, settle_hidden, OverlayAnchor, OverlayPlacement,
+    PlacementVisibility, Position, Size,
 };
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::time::Duration;
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONULL,
@@ -127,15 +129,49 @@ pub fn reassert_topmost(hwnd: isize) {
 }
 
 /// Whether the window is at `expected`: its position, size and DPI.
-pub fn placement_matches(hwnd: isize, expected: OverlayPlacement) -> Result<bool, String> {
+fn placement_matches(hwnd: isize, expected: OverlayPlacement) -> Result<bool, String> {
     let hwnd = to_hwnd(hwnd);
     let mut rect = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut rect) }
         .map_err(|_| "GetWindowRect failed while verifying overlay placement".to_string())?;
-    Ok(Position::new(rect.left, rect.top) == expected.position
-        && Size::new(
-            rect.right.saturating_sub(rect.left) as u32,
-            rect.bottom.saturating_sub(rect.top) as u32,
-        ) == expected.size
+    Ok(Position {
+        x: rect.left,
+        y: rect.top,
+    } == expected.position
+        && Size {
+            width: rect.right.saturating_sub(rect.left) as u32,
+            height: rect.bottom.saturating_sub(rect.top) as u32,
+        } == expected.size
         && unsafe { GetDpiForWindow(hwnd) } == expected.dpi)
+}
+
+/// The pause between checks while Windows settles a hidden placement.
+fn wait_for_placement_to_settle() {
+    std::thread::sleep(Duration::from_millis(8));
+}
+
+/// `settle_hidden` on the real window. Sleeps between checks (at most about
+/// 100 ms), so async callers run it off the runtime's threads.
+pub fn settle_hidden_at(hwnd: isize, target: OverlayPlacement) -> Result<Option<u8>, String> {
+    settle_hidden(
+        target,
+        |placement, visibility| set_window_placement(hwnd, placement, visibility),
+        |placement| placement_matches(hwnd, placement),
+        wait_for_placement_to_settle,
+    )
+}
+
+/// `move_overlay_hidden` on the real window.
+pub fn move_hidden(
+    hwnd: isize,
+    target: OverlayPlacement,
+    restore: Option<OverlayPlacement>,
+) -> Result<u8, String> {
+    move_overlay_hidden(
+        target,
+        restore,
+        |placement, visibility| set_window_placement(hwnd, placement, visibility),
+        |placement| placement_matches(hwnd, placement),
+        wait_for_placement_to_settle,
+    )
 }

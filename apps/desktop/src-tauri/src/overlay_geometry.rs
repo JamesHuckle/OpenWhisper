@@ -16,23 +16,11 @@ pub struct Position {
     pub y: i32,
 }
 
-impl Position {
-    pub const fn new(x: i32, y: i32) -> Self {
-        Self { x, y }
-    }
-}
-
 /// A window size in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Size {
     pub width: u32,
     pub height: u32,
-}
-
-impl Size {
-    pub const fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
-    }
 }
 
 const SECONDARY_MONITOR_VERTICAL_OFFSET_LOGICAL: f64 = 2.0;
@@ -122,45 +110,25 @@ pub fn cursor_entered_new_monitor(last: &AtomicIsize, monitor: isize) -> bool {
     last.swap(monitor, Ordering::Relaxed) != monitor && monitor != 0
 }
 
-fn overlay_window_position_for_anchor(
-    anchor: OverlayAnchor,
-    physical_width: i32,
-    physical_height: i32,
-) -> Position {
-    let x = anchor.center_x.saturating_sub(physical_width / 2);
-    let y = anchor.bottom_y.saturating_sub(physical_height);
-
-    Position::new(x, y)
-}
-
-fn overlay_window_position_for_anchor_offset(
-    anchor: OverlayAnchor,
-    physical_width: i32,
-    physical_height: i32,
-    physical_bottom_offset: i32,
-) -> Position {
-    let mut position = overlay_window_position_for_anchor(anchor, physical_width, physical_height);
-    position.y = position.y.saturating_add(physical_bottom_offset);
-    position
-}
-
 fn physical_dimension(logical: f64, dpi: u32) -> u32 {
     (logical * dpi as f64 / 96.0).round().max(1.0) as u32
 }
 
 pub fn overlay_placement(anchor: OverlayAnchor, layout: OverlayLayoutSpec) -> OverlayPlacement {
-    let size = Size::new(
-        physical_dimension(layout.width, anchor.dpi),
-        physical_dimension(layout.height, anchor.dpi),
-    );
+    let size = Size {
+        width: physical_dimension(layout.width, anchor.dpi),
+        height: physical_dimension(layout.height, anchor.dpi),
+    };
     let offset = (layout.anchor_offset_y * anchor.dpi as f64 / 96.0).round() as i32;
     OverlayPlacement {
-        position: overlay_window_position_for_anchor_offset(
-            anchor,
-            size.width as i32,
-            size.height as i32,
-            offset,
-        ),
+        // Bottom centre on the anchor, then moved down by the offset.
+        position: Position {
+            x: anchor.center_x.saturating_sub(size.width as i32 / 2),
+            y: anchor
+                .bottom_y
+                .saturating_sub(size.height as i32)
+                .saturating_add(offset),
+        },
         size,
         dpi: anchor.dpi,
     }
@@ -262,7 +230,12 @@ mod tests {
 
     /// Where `overlay_placement` puts a pill of this logical size and
     /// offset; at 96 DPI logical and physical pixels are the same.
-    fn position_at(anchor: OverlayAnchor, width: f64, height: f64, anchor_offset_y: f64) -> Position {
+    fn position_at(
+        anchor: OverlayAnchor,
+        width: f64,
+        height: f64,
+        anchor_offset_y: f64,
+    ) -> Position {
         overlay_placement(
             anchor,
             OverlayLayoutSpec {
@@ -281,8 +254,8 @@ mod tests {
         let collapsed = position_at(anchor, 100.0, 28.0, 0.0);
         let expanded = position_at(anchor, 360.0, 520.0, 0.0);
 
-        assert_eq!(collapsed, Position::new(-1330, 1402));
-        assert_eq!(expanded, Position::new(-1460, 910));
+        assert_eq!(collapsed, Position { x: -1330, y: 1402 });
+        assert_eq!(expanded, Position { x: -1460, y: 910 });
         assert_eq!(collapsed.x + 50, anchor.center_x);
         assert_eq!(expanded.x + 180, anchor.center_x);
         assert_eq!(collapsed.y + 28, anchor.bottom_y);
@@ -294,7 +267,7 @@ mod tests {
         let anchor = test_anchor(1, 960, -10, 96);
         assert_eq!(
             position_at(anchor, 188.0, 72.0, 0.0),
-            Position::new(866, -82)
+            Position { x: 866, y: -82 }
         );
     }
 
@@ -308,10 +281,10 @@ mod tests {
         let at_125 = overlay_placement(test_anchor(1, 1000, 900, 120), layout);
         let at_200 = overlay_placement(test_anchor(2, 2000, 1700, 192), layout);
 
-        assert_eq!(at_125.size, Size::new(115, 35));
-        assert_eq!(at_125.position, Position::new(943, 868));
-        assert_eq!(at_200.size, Size::new(184, 56));
-        assert_eq!(at_200.position, Position::new(1908, 1648));
+        assert_eq!(at_125.size, Size { width: 115, height: 35 });
+        assert_eq!(at_125.position, Position { x: 943, y: 868 });
+        assert_eq!(at_200.size, Size { width: 184, height: 56 });
+        assert_eq!(at_200.position, Position { x: 1908, y: 1648 });
     }
 
     #[test]
@@ -332,7 +305,7 @@ mod tests {
 
         assert_eq!(
             position_at(anchor, 100.0, 28.0, 6.0),
-            Position::new(i32::MIN, i32::MIN + 6)
+            Position { x: i32::MIN, y: i32::MIN + 6 }
         );
     }
 
@@ -451,8 +424,8 @@ mod tests {
 
     fn placement_at(x: i32, dpi: u32) -> OverlayPlacement {
         OverlayPlacement {
-            position: Position::new(x, 900),
-            size: Size::new(100, 28),
+            position: Position { x, y: 900 },
+            size: Size { width: 100, height: 28 },
             dpi,
         }
     }
@@ -501,7 +474,7 @@ mod tests {
                 }
                 if window.drifts > 0 {
                     window.drifts -= 1;
-                    window.placement.size = Size::new(150, 42);
+                    window.placement.size = Size { width: 150, height: 42 };
                 }
                 Ok(window.placement == placement)
             },
