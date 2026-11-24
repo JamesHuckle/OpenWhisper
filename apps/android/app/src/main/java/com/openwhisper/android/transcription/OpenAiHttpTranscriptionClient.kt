@@ -6,6 +6,8 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -29,19 +31,18 @@ class OpenAiHttpTranscriptionClient(
      */
     private val flacRefused: AtomicBoolean = AtomicBoolean(false),
     /**
-     * True once the job this client belongs to is cancelled, even before
-     * [transcribe] starts: then nothing is encoded or uploaded.
+     * Counted down once this client's job, or [cancel], cancels it, even
+     * before [transcribe] starts: then nothing is encoded or uploaded, and a
+     * wait before a retry ends at once. Each job builds its own client, so
+     * once counted down, this client never sends again.
      */
-    private val isCancelled: () -> Boolean = { false },
+    private val cancelled: CountDownLatch = CountDownLatch(1),
     /**
      * The waits before the second and third tries of a request that failed
      * for a passing reason (see [isTemporary]). Tests use shorter ones.
      */
     private val retryDelaysMillis: List<Long> = RETRY_DELAYS_MILLIS,
 ) : TranscriptionClient {
-    // Each job builds its own client and calls [transcribe] on it once, so
-    // one flag is enough: once set, this client never sends again.
-    @Volatile private var cancelCalled = false
     private val activeConnection = AtomicReference<HttpURLConnection?>(null)
 
     // Makes cancelling and registering a connection one step each, so a
@@ -54,7 +55,7 @@ class OpenAiHttpTranscriptionClient(
      */
     override fun cancel() {
         synchronized(connectionLock) {
-            cancelCalled = true
+            cancelled.countDown()
             activeConnection.getAndSet(null)
         }?.disconnect()
     }
@@ -147,7 +148,7 @@ class OpenAiHttpTranscriptionClient(
             null
         } else {
             try {
-                encodeFlac(file, offset, length, sampleRate) { cancelled() }
+                encodeFlac(file, offset, length, sampleRate) { isCancelled() }
                     .takeIf(ByteArray::isNotEmpty)
             } catch (_: Exception) {
                 // A cancel is reported as one, never answered with the WAV.
@@ -185,7 +186,7 @@ class OpenAiHttpTranscriptionClient(
                 return sendOnce(key, audio, prompt)
             } catch (error: TranscriptionException) {
                 val delay = retryDelaysMillis.getOrNull(tries)
-                    ?.takeIf { isTemporary(error) && !cancelled() }
+                    ?.takeIf { isTemporary(error) && !isCancelled() }
                     ?: throw error
                 tries += 1
                 val asked = (error as? TranscriptionHttpException)?.retryAfterSeconds
@@ -206,7 +207,7 @@ class OpenAiHttpTranscriptionClient(
         val connection = openConnection(request.url)
         val registered = synchronized(connectionLock) {
             // A cancel that came just before the connection was registered.
-            (!cancelled()).also { if (it) activeConnection.set(connection) }
+            (!isCancelled()).also { if (it) activeConnection.set(connection) }
         }
         if (!registered) {
             connection.disconnect()
@@ -246,21 +247,17 @@ class OpenAiHttpTranscriptionClient(
         }
     }
 
-    /** Sleeps for [millis], in short steps so a cancel ends it at once. */
+    /** Waits for [millis]; a cancel ends the wait at once. */
     private fun waitUnlessCancelled(millis: Long) {
-        val until = System.nanoTime() + millis * 1_000_000
-        while (true) {
-            throwIfCancelled()
-            val left = (until - System.nanoTime()) / 1_000_000
-            if (left <= 0) return
-            Thread.sleep(minOf(left, 50))
+        if (cancelled.await(millis, TimeUnit.MILLISECONDS)) {
+            throw TranscriptionException(CANCELLED_MESSAGE)
         }
     }
 
-    private fun cancelled(): Boolean = cancelCalled || isCancelled()
+    private fun isCancelled(): Boolean = cancelled.count == 0L
 
     private fun throwIfCancelled() {
-        if (cancelled()) throw TranscriptionException(CANCELLED_MESSAGE)
+        if (isCancelled()) throw TranscriptionException(CANCELLED_MESSAGE)
     }
 
     companion object {

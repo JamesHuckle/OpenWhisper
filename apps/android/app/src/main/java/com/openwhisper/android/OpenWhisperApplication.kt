@@ -4,12 +4,11 @@ import android.app.Application
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import com.openwhisper.android.dictation.BackgroundRunner
-import com.openwhisper.android.dictation.CallbackDispatcher
 import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.settings.SecureApiKeyStore
 import com.openwhisper.android.transcription.OpenAiHttpTranscriptionClient
 import com.openwhisper.android.transcription.TranscriptionManager
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -43,16 +42,16 @@ class OpenWhisperApplication : Application() {
         recordings = RecordingStore(this)
         transcriptions = TranscriptionManager(
             store = recordings,
-            newClient = { isCancelled ->
+            newClient = { cancelled ->
                 OpenAiHttpTranscriptionClient(
                     secrets::load,
                     flacRefused = flacRefused,
-                    isCancelled = isCancelled,
+                    cancelled = cancelled,
                 )
             },
-            dictationRunner = BackgroundRunner { dictationExecutor.execute(it) },
-            bulkRunner = BackgroundRunner { bulkExecutor.execute(it) },
-            callbacks = CallbackDispatcher { mainThread.post(it) },
+            dictationRunner = dictationExecutor,
+            bulkRunner = bulkExecutor,
+            callbacks = Executor { mainThread.post(it) },
         )
         // Recordings an earlier process was transcribing wait for the user to
         // tap Transcribe; their finished parts are kept.

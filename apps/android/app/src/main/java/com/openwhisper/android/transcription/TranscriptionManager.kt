@@ -1,11 +1,11 @@
 package com.openwhisper.android.transcription
 
 import com.openwhisper.android.audio.WavEncoder
-import com.openwhisper.android.dictation.BackgroundRunner
-import com.openwhisper.android.dictation.CallbackDispatcher
 import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.recordings.StoredRecording
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 
 /**
  * Every transcription upload in the app, one job per recording. The app
@@ -33,13 +33,16 @@ import java.util.concurrent.CopyOnWriteArraySet
  */
 class TranscriptionManager(
     private val store: RecordingStore,
-    /** A client for one job; it stops before any upload once the argument returns true. */
-    private val newClient: (isCancelled: () -> Boolean) -> TranscriptionClient,
+    /**
+     * A client for one job; it stops before any upload, and wakes from any
+     * wait, once the job counts the argument down.
+     */
+    private val newClient: (cancelled: CountDownLatch) -> TranscriptionClient,
     /** Runs dictation jobs, apart from imports and retries. */
-    private val dictationRunner: BackgroundRunner,
+    private val dictationRunner: Executor,
     /** Runs imports and retries. */
-    private val bulkRunner: BackgroundRunner,
-    private val callbacks: CallbackDispatcher,
+    private val bulkRunner: Executor,
+    private val callbacks: Executor,
 ) {
     interface Listener {
         /** A job started; its recording is now "transcribing". */
@@ -96,12 +99,12 @@ class TranscriptionManager(
                 }
             }
         }
-        callbacks.dispatch { listeners.forEach { it.onStarted(job) } }
+        callbacks.execute { listeners.forEach { it.onStarted(job) } }
         val runner = when (origin) {
             TranscriptionOrigin.DICTATION -> dictationRunner
             TranscriptionOrigin.BULK -> bulkRunner
         }
-        runner.run { run(job, recording) }
+        runner.execute { run(job, recording) }
         return job
     }
 
@@ -129,7 +132,7 @@ class TranscriptionManager(
             // Past the newest recordings, it goes at the store's next cleanup.
             store.release(job.recordingId)
         }
-        callbacks.dispatch {
+        callbacks.execute {
             job.finish(result)
             listeners.forEach { it.onFinished(job, result) }
         }
@@ -227,26 +230,29 @@ enum class TranscriptionOrigin {
 class TranscriptionJob internal constructor(
     val recordingId: String,
     val origin: TranscriptionOrigin,
-    newClient: (isCancelled: () -> Boolean) -> TranscriptionClient,
-    private val callbacks: CallbackDispatcher,
+    newClient: (cancelled: CountDownLatch) -> TranscriptionClient,
+    private val callbacks: Executor,
 ) {
-    @Volatile
-    var isCancelled = false
-        private set
+    /** Counted down once, when the job is cancelled; its client sees it too. */
+    private val cancelled = CountDownLatch(1)
+
+    val isCancelled: Boolean
+        get() = cancelled.count == 0L
 
     /** Whether the app screen shows this job's result when it ends. */
     @Volatile
     var showResultInApp = false
         internal set
 
-    internal val client: TranscriptionClient = newClient { isCancelled }
+    internal val client: TranscriptionClient = newClient(cancelled)
 
     private var result: Result<String>? = null
     private val finishCallbacks = mutableListOf<(Result<String>) -> Unit>()
 
     /** Stops this job's upload; other jobs carry on. */
     fun cancel() {
-        isCancelled = true
+        // Seen by the client's upload thread before client.cancel() runs.
+        cancelled.countDown()
         client.cancel()
     }
 
@@ -258,7 +264,7 @@ class TranscriptionJob internal constructor(
         val ended = synchronized(this) {
             result ?: return@synchronized null.also { finishCallbacks += callback }
         }
-        if (ended != null) callbacks.dispatch { callback(ended) }
+        if (ended != null) callbacks.execute { callback(ended) }
     }
 
     /** Called on the callback thread. */

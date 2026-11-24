@@ -6,16 +6,9 @@ import com.openwhisper.android.transcription.NoSpeechException
 import com.openwhisper.android.transcription.TranscriptionJob
 import com.openwhisper.android.transcription.TranscriptionManager
 import com.openwhisper.android.transcription.TranscriptionOrigin
+import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-
-fun interface BackgroundRunner {
-    fun run(task: () -> Unit)
-}
-
-fun interface CallbackDispatcher {
-    fun dispatch(task: () -> Unit)
-}
 
 /**
  * Records on the microphone, then hands the recording to the app's
@@ -24,8 +17,8 @@ fun interface CallbackDispatcher {
 class BufferedDictationBackend(
     private val recorder: PcmRecorder,
     private val transcriptions: TranscriptionManager,
-    private val background: BackgroundRunner,
-    private val callbacks: CallbackDispatcher,
+    private val background: Executor,
+    private val callbacks: Executor,
 ) : DictationBackend {
     private val generation = AtomicLong(0)
     private val activeRecording = AtomicReference<ActiveRecording?>(null)
@@ -52,13 +45,13 @@ class BufferedDictationBackend(
         // Stops this recording only, even if a cancel and a new recording
         // come before the background thread gets to it.
         val recording = activeRecording.get() ?: return
-        background.run {
+        background.execute {
             try {
                 val saved = recording.stop()
                 val job = synchronized(handover) {
                     // A cancel that came while the microphone was stopping:
                     // the saved audio is never sent.
-                    if (generation.get() != expectedGeneration) return@run
+                    if (generation.get() != expectedGeneration) return@execute
                     transcriptions.submit(saved, TranscriptionOrigin.DICTATION).also(activeJob::set)
                 }
                 // A new dictation that started while the job was being handed over.
@@ -73,7 +66,7 @@ class BufferedDictationBackend(
                     )
                 }
             } catch (error: Exception) {
-                callbacks.dispatch { fail(expectedGeneration, expectedListener, error) }
+                callbacks.execute { fail(expectedGeneration, expectedListener, error) }
             }
         }
     }

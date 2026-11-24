@@ -378,6 +378,36 @@ class OpenAiHttpTranscriptionClientTest {
     }
 
     @Test
+    fun theJobsCancelEndsTheWaitAtOnce() {
+        val jobCancelled = CountDownLatch(1)
+        val service = FakeService(
+            "Busy",
+            "Unused.",
+            statuses = listOf(503),
+            retryDelaysMillis = listOf(10_000L),
+            cancelled = jobCancelled,
+        )
+        var error: Throwable? = null
+        val upload = thread {
+            error = runCatching { service.client.transcribe(pcmAudio()) }.exceptionOrNull()
+        }
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (service.uploads.isEmpty() && System.nanoTime() < deadline) Thread.sleep(5)
+        Thread.sleep(100)
+
+        // Only the job's signal: the client's own cancel has not run yet.
+        val cancelledAt = System.nanoTime()
+        jobCancelled.countDown()
+        upload.join(2_000)
+        val endedAfterMillis = (System.nanoTime() - cancelledAt) / 1_000_000
+
+        assertFalse(upload.isAlive)
+        assertEquals(OpenAiHttpTranscriptionClient.CANCELLED_MESSAGE, error?.message)
+        assertEquals(1, service.uploads.size)
+        assertTrue("The wait ended $endedAfterMillis ms after the cancel", endedAfterMillis < 1_000)
+    }
+
+    @Test
     fun theWaitForAnAnswerGrowsWithTheUpload() {
         // A five-second dictation as WAV: about two minutes.
         assertEquals(123_200, OpenAiHttpTranscriptionClient.readTimeoutMillis(160_000))
@@ -485,7 +515,8 @@ class OpenAiHttpTranscriptionClientTest {
                 check(!cancelled()) { "FLAC encoding cancelled" }
                 ByteArray(8)
             },
-            isCancelled = { true },
+            // The job is cancelled, but has not told the client yet.
+            cancelled = CountDownLatch(0),
         )
 
         val error = assertThrows(TranscriptionException::class.java) {
@@ -506,6 +537,7 @@ class OpenAiHttpTranscriptionClientTest {
         private val code: String? = null,
         private val retryAfter: String? = null,
         retryDelaysMillis: List<Long> = listOf(0L, 0L),
+        cancelled: CountDownLatch = CountDownLatch(1),
     ) {
         private val texts = ArrayDeque(responses.toList())
         private val statuses = ArrayDeque(statuses)
@@ -525,6 +557,7 @@ class OpenAiHttpTranscriptionClientTest {
                 ).also(connections::add)
             },
             encodeFlac = encodeFlac,
+            cancelled = cancelled,
             retryDelaysMillis = retryDelaysMillis,
         )
     }

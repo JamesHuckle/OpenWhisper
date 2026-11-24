@@ -2,9 +2,7 @@ package com.openwhisper.android.transcription
 
 import com.openwhisper.android.audio.ActiveRecording
 import com.openwhisper.android.audio.PcmRecorder
-import com.openwhisper.android.dictation.BackgroundRunner
 import com.openwhisper.android.dictation.BufferedDictationBackend
-import com.openwhisper.android.dictation.CallbackDispatcher
 import com.openwhisper.android.dictation.DictationBackend
 import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.recordings.StoredRecording
@@ -12,7 +10,7 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -43,7 +41,7 @@ class TranscriptionManagerTest {
     @Test
     fun recreatingTheScreenDuringAnUploadSendsNoSecondRequest() {
         val client = BlockingClient("Hello from the first screen")
-        val manager = manager(newClient = { client }, background = threads())
+        val manager = manager(newClient = { client }, background = bulkExecutor)
         val recording = imported("memo.mp3")
 
         // The first screen starts the upload, then Android recreates it.
@@ -72,7 +70,7 @@ class TranscriptionManagerTest {
     @Test
     fun aRetryOfTheOldestRecordingSurvivesNewImportsAndGoesAtTheNextCleanup() {
         val client = BlockingClient("The oldest memo")
-        val manager = manager(newClient = { client }, background = threads())
+        val manager = manager(newClient = { client }, background = bulkExecutor)
         val oldest = imported("oldest.mp3")
         repeat(RecordingStore.RETAIN_COUNT - 1) { index ->
             Thread.sleep(2)
@@ -161,8 +159,8 @@ class TranscriptionManagerTest {
         val manager = TranscriptionManager(
             store,
             { BlockingClient("text ${clients.size + 1}").also(clients::add) },
-            threads(dictationExecutor),
-            threads(bulkExecutor),
+            dictationExecutor,
+            bulkExecutor,
             Direct,
         )
         val listener = CapturingListener(expected = 2)
@@ -240,7 +238,7 @@ class TranscriptionManagerTest {
     @Test
     fun aStatusThatCannotBeSavedStillEndsTheJobAndDeliversItsTranscript() {
         val client = BlockingClient("Paid for")
-        val manager = manager(newClient = { client }, background = threads())
+        val manager = manager(newClient = { client }, background = bulkExecutor)
         val listener = CapturingListener()
         manager.addListener(listener)
         val recording = imported("full-disk.mp3")
@@ -284,11 +282,11 @@ class TranscriptionManagerTest {
         // cancel, the client's upload thread must already see the cancel.
         var seenWhenTold: Boolean? = null
         val manager = manager(
-            newClient = { isCancelled ->
+            newClient = { cancelled ->
                 object : TranscriptionClient {
                     override fun transcribe(audio: TranscriptionAudio) = "unused"
                     override fun cancel() {
-                        seenWhenTold = isCancelled()
+                        seenWhenTold = cancelled.count == 0L
                     }
                 }
             },
@@ -326,8 +324,8 @@ class TranscriptionManagerTest {
         val manager = TranscriptionManager(
             store,
             { clients.removeFirst() },
-            threads(dictationExecutor),
-            threads(bulkExecutor),
+            dictationExecutor,
+            bulkExecutor,
             Direct,
         )
 
@@ -364,12 +362,9 @@ class TranscriptionManagerTest {
 
     /** A manager that runs dictations and bulk jobs on [background] alike. */
     private fun manager(
-        newClient: (() -> Boolean) -> TranscriptionClient,
-        background: BackgroundRunner,
+        newClient: (CountDownLatch) -> TranscriptionClient,
+        background: Executor,
     ) = TranscriptionManager(store, newClient, background, background, Direct)
-
-    private fun threads(executor: ExecutorService = bulkExecutor) =
-        BackgroundRunner { task -> executor.execute(task) }
 
     private fun imported(name: String): StoredRecording = store.import(
         name = name,
@@ -439,20 +434,18 @@ private class OneRecording(private val recording: StoredRecording) : PcmRecorder
     }
 }
 
-private class QueuedRunner : BackgroundRunner {
-    private val tasks = ArrayDeque<() -> Unit>()
+private class QueuedRunner : Executor {
+    private val tasks = ArrayDeque<Runnable>()
 
-    override fun run(task: () -> Unit) {
+    override fun execute(task: Runnable) {
         tasks.add(task)
     }
 
     fun runAll() {
-        while (tasks.isNotEmpty()) tasks.removeFirst().invoke()
+        while (tasks.isNotEmpty()) tasks.removeFirst().run()
     }
 
     fun isEmpty() = tasks.isEmpty()
 }
 
-private data object Direct : CallbackDispatcher {
-    override fun dispatch(task: () -> Unit) = task()
-}
+private val Direct = Executor { it.run() }

@@ -11,6 +11,7 @@ import com.openwhisper.android.transcription.TranscriptionAudio
 import com.openwhisper.android.transcription.TranscriptionClient
 import com.openwhisper.android.transcription.TranscriptionManager
 import java.io.File
+import java.util.concurrent.Executor
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -35,12 +36,12 @@ class BufferedDictationBackendTest {
     private fun pcmRecording(bytes: ByteArray): StoredRecording =
         store.beginPcm("Dictation", 16_000).apply { write(bytes, bytes.size) }.finish("saved")
 
-    private fun manager(client: TranscriptionClient, runner: BackgroundRunner) = TranscriptionManager(
+    private fun manager(client: TranscriptionClient, runner: Executor) = TranscriptionManager(
         store = store,
         newClient = { client },
         dictationRunner = runner,
         // A dictation never waits behind imports and retries.
-        bulkRunner = BackgroundRunner { error("A dictation ran on the bulk thread") },
+        bulkRunner = Executor { error("A dictation ran on the bulk thread") },
         callbacks = DirectDispatcher,
     )
 
@@ -166,7 +167,7 @@ class BufferedDictationBackendTest {
         // The microphone stops cleanly, then the user cancels before the
         // recording is handed over. Uploads start the moment they are queued.
         recorder.onStop = { backend.cancel() }
-        val uploads = BackgroundRunner { it() }
+        val uploads = Executor { it.run() }
         backend = BufferedDictationBackend(recorder, manager(client, uploads), dictation, DirectDispatcher)
 
         backend.start(listener)
@@ -284,21 +285,19 @@ private class FakeTranscriptionClient(
     }
 }
 
-private class QueuedRunner : BackgroundRunner {
-    private val tasks = ArrayDeque<() -> Unit>()
-    override fun run(task: () -> Unit) {
+private class QueuedRunner : Executor {
+    private val tasks = ArrayDeque<Runnable>()
+    override fun execute(task: Runnable) {
         tasks.add(task)
     }
 
     /** Runs every task, including tasks the running ones queue. */
     fun runAll() {
-        while (tasks.isNotEmpty()) tasks.removeFirst().invoke()
+        while (tasks.isNotEmpty()) tasks.removeFirst().run()
     }
 }
 
-private data object DirectDispatcher : CallbackDispatcher {
-    override fun dispatch(task: () -> Unit) = task()
-}
+private val DirectDispatcher = Executor { it.run() }
 
 private class CapturingListener : DictationBackend.Listener {
     var final: String? = null

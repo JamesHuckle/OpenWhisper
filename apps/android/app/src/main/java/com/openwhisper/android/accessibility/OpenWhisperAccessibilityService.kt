@@ -24,9 +24,7 @@ import androidx.annotation.RequiresApi
 import com.openwhisper.android.MainActivity
 import com.openwhisper.android.OpenWhisperApplication
 import com.openwhisper.android.audio.AndroidAudioRecorder
-import com.openwhisper.android.dictation.BackgroundRunner
 import com.openwhisper.android.dictation.BufferedDictationBackend
-import com.openwhisper.android.dictation.CallbackDispatcher
 import com.openwhisper.android.dictation.DeterministicDemoBackend
 import com.openwhisper.android.dictation.DictationCoordinator
 import com.openwhisper.android.dictation.DictationState
@@ -41,6 +39,7 @@ import com.openwhisper.android.overlay.OverlayPolicy
 import com.openwhisper.android.overlay.ScreenRect
 import com.openwhisper.android.settings.SettingsRepository
 import com.openwhisper.android.update.UpdateNotifier
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
 class OpenWhisperAccessibilityService : AccessibilityService() {
@@ -87,8 +86,9 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
                 handler.post { if (::overlay.isInitialized) overlay.onAmplitude(level) }
             },
             transcriptions = OpenWhisperApplication.transcriptions(this),
-            background = BackgroundRunner { backgroundExecutor.execute(it) },
-            callbacks = CallbackDispatcher { handler.post(it) },
+            background = backgroundExecutor,
+            // Posted on the service's handler, whose queue onDestroy clears.
+            callbacks = Executor { handler.post(it) },
         )
         val demoBackend = DeterministicDemoBackend(handler)
         val backend = SelectingDictationBackend {
