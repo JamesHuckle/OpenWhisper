@@ -6,7 +6,8 @@
 // and a static model catalog, then `codex exec` with the task on stdin.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -58,6 +59,80 @@ export function resolveCodex(platform = process.platform, env = process.env, exi
   return exe ? { command: exe, prefixArgs: [] } : { error: "codex is not installed (expected codex.cmd or codex.exe on PATH)." };
 }
 
+// Desktop/CLI version skew often writes models_cache.json without fields the
+// CLI deserializer requires (e.g. supports_reasoning_summaries), which forces a
+// cold refresh child every ~TTL that times out, leaks pipe fds and kills long
+// delegations (exit 4294967295 on Windows). A static catalog built from the
+// cache, with those fields filled in, skips that refresh loop.
+const FALLBACK_MODEL = {
+  slug: "gpt-5.6-sol",
+  display_name: "GPT-5.6-Sol",
+  description: "Latest frontier agentic coding model.",
+  default_reasoning_level: "high",
+  supported_reasoning_levels: [
+    { effort: "low", description: "Fast responses with lighter reasoning" },
+    { effort: "medium", description: "Balances speed and reasoning depth" },
+    { effort: "high", description: "Greater reasoning depth for complex problems" },
+    { effort: "xhigh", description: "Extra high reasoning depth" }
+  ],
+  shell_type: "shell_command",
+  visibility: "list",
+  supported_in_api: true,
+  priority: 1,
+  availability_nux: null,
+  upgrade: null,
+  base_instructions: "",
+  supports_reasoning_summaries: true,
+  default_reasoning_summary: "none",
+  support_verbosity: false,
+  default_verbosity: null,
+  apply_patch_tool_type: "freeform",
+  truncation_policy: { mode: "tokens", limit: 10000 },
+  supports_parallel_tool_calls: true,
+  context_window: 272000,
+  max_context_window: 272000,
+  effective_context_window_percent: 95,
+  experimental_supported_tools: [],
+  input_modalities: ["text", "image"]
+};
+
+function normalizeModel(raw) {
+  const model = { ...FALLBACK_MODEL, ...raw };
+  model.supports_reasoning_summaries ??= true;
+  model.default_reasoning_summary ??= "none";
+  if (!Array.isArray(model.supported_reasoning_levels)) {
+    model.supported_reasoning_levels = FALLBACK_MODEL.supported_reasoning_levels;
+  }
+  if (!Array.isArray(model.experimental_supported_tools)) model.experimental_supported_tools = [];
+  if (!model.shell_type) model.shell_type = "shell_command";
+  if (!model.visibility) model.visibility = "list";
+  if (model.apply_patch_tool_type === "unified") model.apply_patch_tool_type = "freeform";
+  return model;
+}
+
+// The cached models with the selected one first if the cache lacks it; just
+// the selected one when there is no usable cache.
+function loadModels(slug) {
+  const fallback = () => [normalizeModel({ slug })];
+  const cachePath = resolve(process.env.CODEX_HOME || resolve(homedir(), ".codex"), "models_cache.json");
+  if (!existsSync(cachePath)) return fallback();
+  try {
+    const parsed = JSON.parse(readFileSync(cachePath, "utf8"));
+    const models = Array.isArray(parsed?.models) ? parsed.models.map(normalizeModel) : [];
+    if (!models.length) return fallback();
+    if (!models.some(model => model.slug === slug)) models.unshift(...fallback());
+    return models;
+  } catch (error) {
+    console.error(`Warning: could not read ${cachePath}: ${error.message}`);
+    return fallback();
+  }
+}
+
+function writeStaticCatalog(path, slug) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ models: loadModels(slug) }, null, 2)}\n`, "utf8");
+}
+
 function fail(message, code) {
   console.error(message);
   process.exit(code);
@@ -98,16 +173,9 @@ function main() {
 
   const catalogPath = join(gitDir, "cursor-codex-a2a", "model-catalog.json");
   try {
-    mkdirSync(dirname(catalogPath), { recursive: true });
+    writeStaticCatalog(catalogPath, options.model);
   } catch (error) {
-    console.error(`Could not create ${dirname(catalogPath)}: ${error.message}`);
-    exit(8);
-  }
-  const prepared = spawnSync(process.execPath, [join(scriptDir, "prepare-codex-static-catalog.mjs"), catalogPath, options.model], {
-    stdio: ["ignore", "ignore", "inherit"]
-  });
-  if (prepared.status !== 0 || !existsSync(catalogPath)) {
-    console.error(`Failed to prepare static Codex model catalog at ${catalogPath}.`);
+    console.error(`Failed to prepare static Codex model catalog at ${catalogPath}: ${error.message}`);
     exit(8);
   }
 

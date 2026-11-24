@@ -38,40 +38,18 @@ function launchesCodexDirectly(command) {
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => { input += chunk; });
+// Input that is not JSON is checked as the raw command.
 process.stdin.on("end", () => {
+  let command = input;
   try {
-    const trimmed = input.trim();
-    if (!trimmed) {
-      respond({ continue: true, permission: "allow" });
-      return;
+    command = String(JSON.parse(input.trim() || "{}").command || "");
+  } catch {}
+  respond(launchesCodexDirectly(command)
+    ? {
+      continue: true,
+      permission: "deny",
+      user_message: "Direct Codex execution is blocked in this project.",
+      agent_message: "Use node scripts/invoke-codex-agent.mjs --task '<task>'; do not bypass the A2A wrapper."
     }
-
-    const payload = JSON.parse(trimmed);
-    const command = String(payload.command || "");
-
-    if (launchesCodexDirectly(command)) {
-      respond({
-        continue: true,
-        permission: "deny",
-        user_message: "Direct Codex execution is blocked in this project.",
-        agent_message: "Use node scripts/invoke-codex-agent.mjs --task '<task>'; do not bypass the A2A wrapper."
-      });
-      return;
-    }
-
-    respond({ continue: true, permission: "allow" });
-  } catch (error) {
-    const raw = String(input || "");
-    if (launchesCodexDirectly(raw)) {
-      respond({
-        continue: true,
-        permission: "deny",
-        user_message: "Direct Codex execution is blocked in this project.",
-        agent_message: "Use node scripts/invoke-codex-agent.mjs --task '<task>'; do not bypass the A2A wrapper."
-      });
-      return;
-    }
-
-    respond({ continue: true, permission: "allow" });
-  }
+    : { continue: true, permission: "allow" });
 });

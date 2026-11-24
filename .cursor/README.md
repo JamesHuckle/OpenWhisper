@@ -41,8 +41,7 @@ option). Install and authenticate Codex separately in each environment
 | `.cursor/rules/codex-orchestrator.mdc` | Always-on: Cursor-first policy |
 | `.cursor/commands/delegate-to-codex.md` | Slash command for opt-in handoff |
 | `.cursor/hooks.json` + `hooks/enforce-codex-wrapper.js` | Block bare `codex` in Agent shell |
-| `scripts/invoke-codex-agent.mjs` | Checked launcher + lock |
-| `scripts/prepare-codex-static-catalog.mjs` | Static model catalog for long exec |
+| `scripts/invoke-codex-agent.mjs` | Checked launcher + lock + static model catalog for long exec |
 | `scripts/setup-cursor-codex-a2a.mjs` | Install / login helper |
 
 ## Setup (only if you want Codex available)

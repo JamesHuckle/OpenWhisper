@@ -9,7 +9,6 @@ import { parseArgs, resolveCodex } from "../invoke-codex-agent.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const hook = join(repoRoot, ".cursor/hooks/enforce-codex-wrapper.js");
-const launcherFiles = ["invoke-codex-agent.mjs", "prepare-codex-static-catalog.mjs"];
 const launch = (root, args) => [process.execPath, [join(root, "scripts/invoke-codex-agent.mjs"), ...args]];
 const wrapperCommand = "node scripts/invoke-codex-agent.mjs --task 'run codex exec on the tests'";
 
@@ -50,7 +49,7 @@ function sandbox(stubExit = 0) {
   const dir = mkdtempSync(join(tmpdir(), "codex-a2a-"));
   const root = join(dir, "repo");
   mkdirSync(join(root, "scripts"), { recursive: true });
-  for (const file of launcherFiles) copyFileSync(join(repoRoot, "scripts", file), join(root, "scripts", file));
+  copyFileSync(join(repoRoot, "scripts/invoke-codex-agent.mjs"), join(root, "scripts/invoke-codex-agent.mjs"));
   spawnSync("git", ["init", "-q", root]);
   const bin = join(dir, "bin");
   mkdirSync(bin);

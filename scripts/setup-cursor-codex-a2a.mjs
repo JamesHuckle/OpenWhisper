@@ -52,8 +52,7 @@ const required = [
   ".cursor/rules/codex-orchestrator.mdc",
   ".cursor/codex-a2a-user-rule.txt",
   ".cursor/commands/delegate-to-codex.md",
-  "scripts/invoke-codex-agent.mjs",
-  "scripts/prepare-codex-static-catalog.mjs"
+  "scripts/invoke-codex-agent.mjs"
 ];
 
 const run = (command, commandArgs, options = {}) => {
