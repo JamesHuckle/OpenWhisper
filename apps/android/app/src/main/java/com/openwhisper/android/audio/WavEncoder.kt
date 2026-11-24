@@ -15,9 +15,6 @@ object WavEncoder {
     /** The size of the header [header] writes, before the PCM samples. */
     const val HEADER_BYTES = 44
 
-    fun encodePcm16Mono(pcm: ByteArray, sampleRate: Int): ByteArray =
-        header(pcm.size.toLong(), sampleRate) + pcm
-
     /**
      * The header of a 16-bit mono PCM WAV file holding [pcmBytes] of samples.
      * A recording in progress writes it again as it grows.

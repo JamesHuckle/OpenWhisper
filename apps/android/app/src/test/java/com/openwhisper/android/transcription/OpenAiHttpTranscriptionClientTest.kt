@@ -1,6 +1,7 @@
 package com.openwhisper.android.transcription
 
 import com.openwhisper.android.audio.WavEncoder
+import com.openwhisper.android.audio.pcm16MonoWav
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -608,7 +609,7 @@ class OpenAiHttpTranscriptionClientTest {
     ): TranscriptionAudio {
         val file = File.createTempFile("openwhisper-upload-", ".wav").apply {
             deleteOnExit()
-            writeBytes(WavEncoder.encodePcm16Mono(pcm, 16_000))
+            writeBytes(pcm16MonoWav(pcm, 16_000))
         }
         return TranscriptionAudio(
             file = file,

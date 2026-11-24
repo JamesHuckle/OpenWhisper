@@ -1,6 +1,6 @@
 package com.openwhisper.android.transcription
 
-import com.openwhisper.android.audio.WavEncoder
+import com.openwhisper.android.audio.pcm16MonoWav
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.File
@@ -77,7 +77,7 @@ class OpenAiRequestFactoryTest {
                 "Content-Disposition: form-data; name=\"file\"; filename=\"dictation.wav\"\r\n" +
                 "Content-Type: audio/wav\r\n\r\n"
             ).encodeToByteArray() +
-            WavEncoder.encodePcm16Mono(pcm, 16_000) +
+            pcm16MonoWav(pcm, 16_000) +
             "\r\n--test-boundary--\r\n".encodeToByteArray()
         val body = request.body()
         assertArrayEquals(expected, body)

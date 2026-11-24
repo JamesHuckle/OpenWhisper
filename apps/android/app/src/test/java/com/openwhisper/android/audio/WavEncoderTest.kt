@@ -16,7 +16,7 @@ class WavEncoderTest {
     @Test
     fun encodesMono16BitPcmWithValidLittleEndianHeader() {
         val pcm = byteArrayOf(0x01, 0x02, 0x03, 0x04)
-        val wav = WavEncoder.encodePcm16Mono(pcm, sampleRate = 16_000)
+        val wav = pcm16MonoWav(pcm, sampleRate = 16_000)
 
         assertEquals("RIFF", wav.copyOfRange(0, 4).decodeToString())
         assertEquals(40, littleEndianInt(wav, 4))
@@ -69,7 +69,7 @@ class WavEncoderTest {
     @Test
     fun inspectsTheWavTheEncoderWrites() {
         val pcm = ByteArray(10) { it.toByte() }
-        val info = inspect(WavEncoder.encodePcm16Mono(pcm, sampleRate = 48_000))
+        val info = inspect(pcm16MonoWav(pcm, sampleRate = 48_000))
 
         assertEquals(PcmWavInfo(48_000, 44, 10), info)
     }
@@ -114,8 +114,8 @@ class WavEncoderTest {
         assertNull(inspect(withFmt(channels = 2)))
         assertNull(inspect(withFmt(bits = 8)))
         assertNull(inspect(ByteArray(43)))
-        assertNull(inspect(ascii("RIFX") + WavEncoder.encodePcm16Mono(pcm, 16_000).copyOfRange(4, 52)))
-        assertNull(inspect(WavEncoder.encodePcm16Mono(pcm, 16_000).also { it[8] = 'X'.code.toByte() }))
+        assertNull(inspect(ascii("RIFX") + pcm16MonoWav(pcm, 16_000).copyOfRange(4, 52)))
+        assertNull(inspect(pcm16MonoWav(pcm, 16_000).also { it[8] = 'X'.code.toByte() }))
         // No fmt chunk before the data chunk.
         assertNull(
             inspect(

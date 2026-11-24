@@ -3,6 +3,7 @@ package com.openwhisper.android.dictation
 import com.openwhisper.android.audio.ActiveRecording
 import com.openwhisper.android.audio.PcmRecorder
 import com.openwhisper.android.audio.WavEncoder
+import com.openwhisper.android.audio.pcm16MonoWav
 import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.recordings.StoredRecording
 import com.openwhisper.android.transcription.AudioRules
@@ -82,7 +83,7 @@ class BufferedDictationBackendTest {
         assertEquals(16_000, audio.pcmSampleRate)
         assertEquals(WavEncoder.HEADER_BYTES.toLong(), audio.pcmDataOffset)
         assertEquals(pcm.size.toLong(), audio.pcmDataLength)
-        assertArrayEquals(WavEncoder.encodePcm16Mono(pcm, 16_000), client.lastWav)
+        assertArrayEquals(pcm16MonoWav(pcm, 16_000), client.lastWav)
     }
 
     @Test
