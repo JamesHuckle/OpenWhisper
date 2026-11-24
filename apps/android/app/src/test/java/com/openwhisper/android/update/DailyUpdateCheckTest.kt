@@ -14,10 +14,16 @@ class DailyUpdateCheckTest {
     private val shown = mutableListOf<UpdateManifest>()
     private val waiting = mutableListOf<Runnable>()
     private val logged = mutableListOf<String>()
+    /** Runs once, just after the next read of the last attempt. */
+    private var onReadLastAttempt: (() -> Unit)? = null
 
     private val check = DailyUpdateCheck(
         currentTimeMillis = { now },
-        lastAttemptMillis = { lastAttempt },
+        lastAttemptMillis = {
+            val read = lastAttempt
+            onReadLastAttempt?.also { onReadLastAttempt = null }?.invoke()
+            read
+        },
         recordAttemptMillis = { lastAttempt = it },
         findUpdate = { fetches[fetchCount++]() },
         showUpdate = { shown += it },
@@ -57,6 +63,23 @@ class DailyUpdateCheckTest {
         check.runIfDue()
 
         assertEquals(1, waiting.size)
+    }
+
+    @Test
+    fun aCallerThatReadTheOldAttemptDoesNotCheckAgainAfterAnotherCheckFinished() {
+        fetches += { null }
+        fetches += { null }
+
+        // While this caller reads the last attempt, another caller runs a
+        // whole check and records its attempt.
+        onReadLastAttempt = {
+            check.runIfDue()
+            runWaiting()
+        }
+        check.runIfDue()
+        runWaiting()
+
+        assertEquals(1, fetchCount)
     }
 
     @Test

@@ -23,8 +23,12 @@ internal class DailyUpdateCheck(
 
     fun runIfDue() {
         val now = currentTimeMillis()
-        if (now - lastAttemptMillis() < CHECK_INTERVAL_MS) return
         if (!checking.compareAndSet(false, true)) return
+        // Read while holding the flag, so a check that just finished is seen.
+        if (now - lastAttemptMillis() < CHECK_INTERVAL_MS) {
+            checking.set(false)
+            return
+        }
         recordAttemptMillis(now)
         runInBackground {
             try {
