@@ -279,6 +279,28 @@ class TranscriptionManagerTest {
     }
 
     @Test
+    fun aJobsClientSeesTheCancelBeforeItIsToldToStop() {
+        // Between the job marking itself cancelled and calling the client's
+        // cancel, the client's upload thread must already see the cancel.
+        var seenWhenTold: Boolean? = null
+        val manager = manager(
+            newClient = { isCancelled ->
+                object : TranscriptionClient {
+                    override fun transcribe(audio: TranscriptionAudio) = "unused"
+                    override fun cancel() {
+                        seenWhenTold = isCancelled()
+                    }
+                }
+            },
+            background = QueuedRunner(),
+        )
+
+        manager.submit(imported("queued.mp3"), TranscriptionOrigin.BULK).cancel()
+
+        assertEquals(true, seenWhenTold)
+    }
+
+    @Test
     fun aJobCancelledBeforeItRunsIsNeverSent() {
         val client = BlockingClient("unused")
         val uploads = QueuedRunner()
