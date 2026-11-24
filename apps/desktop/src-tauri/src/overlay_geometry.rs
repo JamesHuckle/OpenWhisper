@@ -260,12 +260,26 @@ mod tests {
         }
     }
 
+    /// Where `overlay_placement` puts a pill of this logical size and
+    /// offset; at 96 DPI logical and physical pixels are the same.
+    fn position_at(anchor: OverlayAnchor, width: f64, height: f64, anchor_offset_y: f64) -> Position {
+        overlay_placement(
+            anchor,
+            OverlayLayoutSpec {
+                width,
+                height,
+                anchor_offset_y,
+            },
+        )
+        .position
+    }
+
     #[test]
     fn overlay_geometry_keeps_bottom_center_anchor_on_negative_monitor() {
         let anchor = test_anchor(1, -1280, 1430, 96);
 
-        let collapsed = overlay_window_position_for_anchor(anchor, 100, 28);
-        let expanded = overlay_window_position_for_anchor(anchor, 360, 520);
+        let collapsed = position_at(anchor, 100.0, 28.0, 0.0);
+        let expanded = position_at(anchor, 360.0, 520.0, 0.0);
 
         assert_eq!(collapsed, Position::new(-1330, 1402));
         assert_eq!(expanded, Position::new(-1460, 910));
@@ -279,7 +293,7 @@ mod tests {
     fn overlay_geometry_handles_monitor_above_primary() {
         let anchor = test_anchor(1, 960, -10, 96);
         assert_eq!(
-            overlay_window_position_for_anchor(anchor, 188, 72),
+            position_at(anchor, 188.0, 72.0, 0.0),
             Position::new(866, -82)
         );
     }
@@ -303,11 +317,23 @@ mod tests {
     #[test]
     fn expanded_layout_grows_around_compact_anchor() {
         let anchor = test_anchor(1, 960, 1070, 96);
-        let compact = overlay_window_position_for_anchor(anchor, 38, 14);
-        let expanded = overlay_window_position_for_anchor_offset(anchor, 92, 26, 6);
+        let compact = position_at(anchor, 38.0, 14.0, 0.0);
+        let expanded = position_at(anchor, 92.0, 26.0, 6.0);
 
         assert_eq!(compact.x + 19, expanded.x + 46);
         assert_eq!(compact.y + 7, expanded.y + 13);
+    }
+
+    #[test]
+    fn position_saturates_before_the_offset_is_added() {
+        // The height is taken off the anchor first, saturating at i32::MIN,
+        // and only then is the offset added, so the pill keeps its offset.
+        let anchor = test_anchor(1, i32::MIN + 10, i32::MIN + 10, 96);
+
+        assert_eq!(
+            position_at(anchor, 100.0, 28.0, 6.0),
+            Position::new(i32::MIN, i32::MIN + 6)
+        );
     }
 
     #[test]
