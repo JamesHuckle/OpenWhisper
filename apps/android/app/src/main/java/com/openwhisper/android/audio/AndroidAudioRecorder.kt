@@ -128,20 +128,29 @@ internal class MicrophoneRecording(
     }
 
     private fun release(joinMillis: Long) {
+        var interrupted = false
         try {
             capturing.set(false)
             runCatching { recorder.stop() }
-            try {
-                readThread.join(joinMillis)
-            } catch (_: InterruptedException) {
-                // Still free the microphone and save the file; the caller
-                // sees the interrupt afterwards.
-                Thread.currentThread().interrupt()
+            // An interrupt does not end the wait early: the read thread may
+            // still be about to write, so it gets its whole time to finish.
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(joinMillis)
+            while (readThread.isAlive) {
+                val left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
+                if (left <= 0) break
+                try {
+                    readThread.join(left)
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
             }
             recorder.release()
         } finally {
             onReleased()
             released.countDown()
+            // Still free the microphone and save the file; the caller sees
+            // the interrupt afterwards.
+            if (interrupted) Thread.currentThread().interrupt()
         }
     }
 
@@ -152,7 +161,15 @@ internal class MicrophoneRecording(
         while (capturing.get()) {
             val count = recorder.read(buffer, 0, readLength, AudioRecord.READ_BLOCKING)
             if (count > 0) {
-                sink.write(buffer, count)
+                try {
+                    sink.write(buffer, count)
+                } catch (error: IllegalStateException) {
+                    // A read that outlived the stop's wait: the stop has
+                    // already saved and closed the file, so these samples are
+                    // dropped instead of crashing the app.
+                    if (capturing.get()) throw error
+                    return
+                }
                 emitAmplitude(buffer, count)
             } else {
                 audioReadFailure(count, capturing.get())?.let { failure ->

@@ -9,9 +9,11 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -52,23 +54,35 @@ class AndroidAudioRecorderTest {
     @Test
     fun anInterruptedStopStillFreesTheMicrophoneAndSavesTheFile() {
         val store = store()
-        val microphone = FakeAudioRecord(stopBlocks = false, readBlocks = true)
+        // The stuck read returns samples only after the stop has closed the file.
+        val microphone = FakeAudioRecord(stopBlocks = false, readBlocks = true, bytesRead = 2_048)
         val freed = AtomicInteger()
         val recording = MicrophoneRecording(microphone, store.beginPcm("A", 16_000), 8_192, null) {
             freed.incrementAndGet()
         }
         recording.startReading()
         assertTrue(microphone.readEntered.await(5, TimeUnit.SECONDS))
+        val reader = microphone.reader!!
+        val readerFailure = AtomicReference<Throwable?>(null)
+        reader.setUncaughtExceptionHandler { _, error -> readerFailure.set(error) }
 
         var saved: StoredRecording? = null
-        val stopping = thread { saved = recording.stop() }
+        var interruptKept = false
+        val stopping = thread {
+            saved = recording.stop()
+            interruptKept = Thread.currentThread().isInterrupted
+        }
         // The stop is waiting for the read thread, which is stuck in a read.
         awaitState(stopping, Thread.State.TIMED_WAITING)
         stopping.interrupt()
         stopping.join(5_000)
         microphone.unblockRead.countDown()
+        reader.join(5_000)
 
         assertFalse(stopping.isAlive)
+        assertTrue(interruptKept)
+        assertFalse(reader.isAlive)
+        assertNull(readerFailure.get())
         assertEquals(1, microphone.releaseCount.get())
         assertEquals(1, freed.get())
         assertEquals("saved", store.get(saved!!.id)?.status)
@@ -98,10 +112,11 @@ class AndroidAudioRecorderTest {
     }
 }
 
-/** The microphone, with reads that return nothing and a stop that can be held. */
+/** The microphone, with reads that return [bytesRead] and a stop that can be held. */
 private class FakeAudioRecord(
     private val stopBlocks: Boolean,
     private val readBlocks: Boolean = false,
+    private val bytesRead: Int = 0,
 ) : AudioRecord(
     MediaRecorder.AudioSource.MIC,
     16_000,
@@ -114,12 +129,15 @@ private class FakeAudioRecord(
     val readEntered = CountDownLatch(1)
     val unblockRead = CountDownLatch(1)
     val releaseCount = AtomicInteger()
+    @Volatile
+    var reader: Thread? = null
 
     override fun read(audioData: ByteArray, offsetInBytes: Int, sizeInBytes: Int, readMode: Int): Int {
+        reader = Thread.currentThread()
         readEntered.countDown()
         if (readBlocks) unblockRead.await(5, TimeUnit.SECONDS)
         Thread.sleep(5)
-        return 0
+        return bytesRead
     }
 
     override fun stop() {
