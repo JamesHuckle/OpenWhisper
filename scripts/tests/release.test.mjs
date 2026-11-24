@@ -318,7 +318,8 @@ describe("update feeds", () => {
       writeFileSync(join(directory, names.windowsInstaller), "installer bytes");
       writeFileSync(join(directory, names.windowsSignature), signature);
       writeFileSync(join(directory, names.androidApk), "apk bytes");
-      writeFileSync(join(directory, names.androidChecksum), "checksum line\n");
+      const builtApkSha256 = createHash("sha256").update("apk bytes").digest("hex");
+      writeFileSync(join(directory, names.androidChecksum), `${builtApkSha256}  ${names.androidApk}\n`);
       const staged = stageRelease({ directory, repository, version, pubDate: "2026-11-15T10:00:00Z" });
 
       assert.deepEqual(readdirSync(directory).sort(), Object.values(names).sort());
@@ -342,7 +343,7 @@ describe("update feeds", () => {
     }
   });
 
-  it("refuses to stage without a versioned build or with an empty signature", () => {
+  it("refuses to stage without a versioned build, with an empty signature or an APK unlike its checksum", () => {
     const directory = mkdtempSync(join(tmpdir(), "openwhisper-stage-"));
     try {
       const names = releaseAssetNames(version);
@@ -353,6 +354,12 @@ describe("update feeds", () => {
       assert.throws(stage, /Missing release file: OpenWhisper-Android-v0\.2\.28\.apk\.sha256/);
       writeFileSync(join(directory, names.androidChecksum), "checksum line\n");
       assert.throws(stage, /signature is empty/);
+      writeFileSync(join(directory, names.windowsSignature), signature);
+      // An APK that changed after the build wrote its checksum.
+      const builtSha256 = createHash("sha256").update("signed apk bytes").digest("hex");
+      writeFileSync(join(directory, names.androidChecksum), `${builtSha256}  ${names.androidApk}\n`);
+      assert.throws(stage, /does not match OpenWhisper-Android-v0\.2\.28\.apk\.sha256/);
+      assert.equal(existsSync(join(directory, names.androidFeed)), false);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

@@ -428,6 +428,11 @@ export function stageRelease({ directory, repository, version, pubDate }) {
   const signature = readFileSync(path(names.windowsSignature), "utf8").trim();
   if (!signature) throw new Error("The Windows updater signature is empty.");
   const apkSha256 = sha256(path(names.androidApk));
+  // The build wrote "<sha256>  <apk name>"; the feed may only carry the bytes it signed.
+  const builtSha256 = readFileSync(path(names.androidChecksum), "utf8").trim().split(/\s+/)[0]?.toLowerCase();
+  if (builtSha256 !== apkSha256) {
+    throw new Error(`${names.androidApk} does not match ${names.androidChecksum} from the build.`);
+  }
 
   copyFileSync(path(names.windowsInstaller), path(names.windowsStableInstaller));
   copyFileSync(path(names.androidApk), path(names.androidStableApk));
