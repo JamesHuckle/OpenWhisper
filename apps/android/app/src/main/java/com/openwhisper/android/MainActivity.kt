@@ -126,39 +126,20 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 247, 250))
         }
 
-        content.addView(TextView(this).apply {
-            text = getString(R.string.app_name)
-            textSize = 30f
-            setTextColor(Color.rgb(24, 24, 32))
-        })
-        content.addView(TextView(this).apply {
-            text = getString(R.string.main_tagline)
-            textSize = 16f
-            setTextColor(Color.rgb(82, 82, 96))
-            setPadding(0, dp(8), 0, dp(24))
-        })
+        content.addView(label(getString(R.string.app_name), TITLE_TEXT, sizeSp = 30f))
+        content.addView(label(getString(R.string.main_tagline), sizeSp = 16f, paddingTopDp = 8, paddingBottomDp = 24))
 
         accessibilityStatus = statusRow(getString(R.string.accessibility_service_label))
         content.addView(accessibilityStatus)
-        content.addView(Button(this).apply {
-            text = getString(R.string.enable_accessibility)
-            isAllCaps = false
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
+        content.addView(button(getString(R.string.enable_accessibility)) {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         })
 
-        microphoneStatus = statusRow(getString(R.string.microphone_permission_label))
-        microphoneStatus.setPadding(0, dp(22), 0, dp(8))
+        microphoneStatus = statusRow(getString(R.string.microphone_permission_label), paddingTopDp = 22)
         content.addView(microphoneStatus)
-        content.addView(Button(this).apply {
-            text = getString(R.string.grant_microphone)
-            isAllCaps = false
-            setOnClickListener { requestAudioPermissions() }
-        })
+        content.addView(button(getString(R.string.grant_microphone)) { requestAudioPermissions() })
 
-        keyStatus = statusRow(getString(R.string.api_key_label))
-        keyStatus.setPadding(0, dp(22), 0, dp(8))
+        keyStatus = statusRow(getString(R.string.api_key_label), paddingTopDp = 22)
         content.addView(keyStatus)
         val apiKey = EditText(this).apply {
             hint = getString(R.string.api_key_hint)
@@ -171,24 +152,16 @@ class MainActivity : Activity() {
         content.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END
-            addView(Button(context).apply {
-                text = getString(R.string.clear)
-                isAllCaps = false
-                setOnClickListener {
-                    secretStore.clear()
-                    apiKey.text.clear()
-                    refreshStatus()
-                }
+            addView(button(getString(R.string.clear)) {
+                secretStore.clear()
+                apiKey.text.clear()
+                refreshStatus()
             })
-            addView(Button(context).apply {
-                text = getString(R.string.save_securely)
-                isAllCaps = false
-                setOnClickListener {
-                    secretStore.save(apiKey.text.toString())
-                    apiKey.setText(secretStore.load().orEmpty())
-                    apiKey.setSelection(apiKey.text.length)
-                    refreshStatus()
-                }
+            addView(button(getString(R.string.save_securely)) {
+                secretStore.save(apiKey.text.toString())
+                apiKey.setText(secretStore.load().orEmpty())
+                apiKey.setSelection(apiKey.text.length)
+                refreshStatus()
             })
         })
 
@@ -199,44 +172,25 @@ class MainActivity : Activity() {
             setPadding(0, dp(22), 0, dp(10))
             setOnCheckedChangeListener { _, checked -> settingsRepository.demoMode = checked }
         })
-        content.addView(TextView(this).apply {
-            text = getString(R.string.demo_mode_explanation)
-            setTextColor(Color.rgb(82, 82, 96))
-        })
+        content.addView(label(getString(R.string.demo_mode_explanation)))
 
-        content.addView(Button(this).apply {
-            text = getString(R.string.open_demo)
-            isAllCaps = false
-            setPadding(0, dp(20), 0, 0)
-            setOnClickListener { startActivity(Intent(this@MainActivity, DemoTargetActivity::class.java)) }
-        })
+        content.addView(button(getString(R.string.open_demo)) {
+            startActivity(Intent(this, DemoTargetActivity::class.java))
+        }.apply { setPadding(0, dp(20), 0, 0) })
 
-        content.addView(TextView(this).apply {
-            text = getString(R.string.audio_and_recovery)
-            textSize = 19f
-            setTextColor(Color.rgb(35, 35, 45))
-            setPadding(0, dp(26), 0, dp(8))
-        })
-        content.addView(Button(this).apply {
-            text = getString(R.string.transcribe_audio_file)
-            isAllCaps = false
-            setOnClickListener { chooseAudioFile() }
-        })
-        importStatus = TextView(this).apply {
-            setTextColor(Color.rgb(82, 82, 96))
-            setPadding(0, dp(7), 0, dp(7))
-        }
+        content.addView(
+            label(getString(R.string.audio_and_recovery), HEADING_TEXT, 19f, paddingTopDp = 26, paddingBottomDp = 8),
+        )
+        content.addView(button(getString(R.string.transcribe_audio_file)) { chooseAudioFile() })
+        // Its text is set by importAndTranscribe and refreshRecordings.
+        importStatus = label("", paddingTopDp = 7, paddingBottomDp = 7)
         content.addView(importStatus)
         recordingsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
         content.addView(recordingsContainer)
 
-        content.addView(Button(this).apply {
-            text = getString(R.string.check_for_updates)
-            isAllCaps = false
-            setOnClickListener { checkForUpdates(showUpToDate = true) }
-        })
+        content.addView(button(getString(R.string.check_for_updates)) { checkForUpdates(showUpToDate = true) })
 
         return ScrollView(this).apply { addView(content) }
     }
@@ -296,32 +250,28 @@ class MainActivity : Activity() {
                 .orEmpty()
         }
         if (recordings.isEmpty()) {
-            recordingsContainer.addView(TextView(this).apply {
-                text = getString(R.string.no_saved_recordings)
-                setTextColor(Color.rgb(82, 82, 96))
-                setPadding(0, dp(5), 0, dp(5))
-            })
+            recordingsContainer.addView(
+                label(getString(R.string.no_saved_recordings), paddingTopDp = 5, paddingBottomDp = 5),
+            )
             return
         }
         recordings.take(10).forEach { recording ->
-            val openButton = Button(this).apply {
-                text = getString(
+            val openButton = button(
+                getString(
                     R.string.saved_recording_format,
                     recording.name,
                     recording.status,
                     formatBytes(recording.bytes),
-                )
-                isAllCaps = false
+                ),
+            ) { openRawRecording(recording) }.apply {
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
                 contentDescription = getString(R.string.open_raw_recording, recording.name)
-                setOnClickListener { openRawRecording(recording) }
             }
-            val transcribeButton = Button(this).apply {
-                text = getString(R.string.quick_transcribe)
-                isAllCaps = false
+            val transcribeButton = button(getString(R.string.quick_transcribe)) {
+                retranscribeRecording(recording)
+            }.apply {
                 contentDescription = getString(R.string.retranscribe_recording, recording.name)
                 isEnabled = !transcriptions.isRunning(recording.id)
-                setOnClickListener { retranscribeRecording(recording) }
             }
             recordingsContainer.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -347,7 +297,7 @@ class MainActivity : Activity() {
             .setMessage(transcript)
             .setPositiveButton(R.string.copy_transcript) { _, _ ->
                 getSystemService(ClipboardManager::class.java)
-                    .setPrimaryClip(ClipData.newPlainText("OpenWhisper transcript", transcript))
+                    .setPrimaryClip(ClipData.newPlainText(getString(R.string.clipboard_transcript_label), transcript))
             }
             .setNeutralButton(R.string.view_raw_audio) { _, _ ->
                 recording?.let(::openRawRecording)
@@ -415,11 +365,31 @@ class MainActivity : Activity() {
         if (bytes < 1024 * 1024) "${(bytes / 1024).coerceAtLeast(1)} KB"
         else String.format("%.1f MB", bytes / (1024.0 * 1024.0))
 
-    private fun statusRow(label: String) = TextView(this).apply {
-        text = label
-        textSize = 17f
-        setTextColor(Color.rgb(35, 35, 45))
-        setPadding(0, 0, 0, dp(8))
+    private fun statusRow(text: String, paddingTopDp: Int = 0) =
+        label(text, HEADING_TEXT, 17f, paddingTopDp, paddingBottomDp = 8)
+
+    /** A text line in [color]; with no [sizeSp] it keeps the platform's default size. */
+    private fun label(
+        text: CharSequence,
+        color: Int = SECONDARY_TEXT,
+        sizeSp: Float? = null,
+        paddingTopDp: Int = 0,
+        paddingBottomDp: Int = 0,
+    ) = TextView(this).apply {
+        this.text = text
+        sizeSp?.let { textSize = it }
+        setTextColor(color)
+        setPadding(0, dp(paddingTopDp), 0, dp(paddingBottomDp))
+    }
+
+    /**
+     * A button showing [text] as written: the theme's default would capitalise
+     * it. Set here, not in the theme, so dialog buttons keep their capitals.
+     */
+    private fun button(text: CharSequence, onClick: () -> Unit) = Button(this).apply {
+        this.text = text
+        isAllCaps = false
+        setOnClickListener { onClick() }
     }
 
     private fun requestAudioPermissions() {
@@ -589,6 +559,9 @@ class MainActivity : Activity() {
 
     companion object {
         const val EXTRA_DICTATION_ERROR = "com.openwhisper.android.extra.DICTATION_ERROR"
+        private val TITLE_TEXT = Color.rgb(24, 24, 32)
+        private val HEADING_TEXT = Color.rgb(35, 35, 45)
+        private val SECONDARY_TEXT = Color.rgb(82, 82, 96)
         private const val REQUEST_AUDIO = 100
         const val REQUEST_IMPORT_AUDIO = 101
     }
