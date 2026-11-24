@@ -213,7 +213,8 @@ checks that feed daily while the accessibility service is enabled and whenever
 the app is opened. A daily check that fails (no network, an HTTP error, a bad
 feed) only logs one line and tries again the next day; it never stops dictation.
 A system update notification opens the app, which fetches the feed again and
-shows the in-app prompt for the latest release (no prompt if that fetch fails);
+shows the in-app prompt for the latest release (or the update-failed message,
+with the Check for updates button to retry, if that fetch fails);
 one tap downloads the APK, verifies its SHA-256 digest, and opens Android's installer.
 Android still requires the user to approve the install (and, on first use, to
 allow OpenWhisper as an install source). Silent sideloaded updates are not

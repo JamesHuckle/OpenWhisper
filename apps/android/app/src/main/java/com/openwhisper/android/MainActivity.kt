@@ -93,7 +93,7 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (UpdateNotifier.isUpdateIntent(intent)) checkForUpdates(showUpToDate = false)
+        if (UpdateNotifier.isUpdateIntent(intent)) checkForUpdates(showUpToDate = false, showFailure = true)
         showDictationRecoveryFrom(intent)
     }
 
@@ -106,7 +106,10 @@ class MainActivity : Activity() {
             pendingUpdateFile?.takeIf(File::exists)?.let(::launchPackageInstaller)
             return
         }
-        if (!automaticUpdateCheckCompleted) checkForUpdates(showUpToDate = false)
+        if (!automaticUpdateCheckCompleted) {
+            // Opened from an update notification: a failed refresh is shown.
+            checkForUpdates(showUpToDate = false, showFailure = UpdateNotifier.isUpdateIntent(intent))
+        }
     }
 
     override fun onDestroy() {
@@ -459,7 +462,7 @@ class MainActivity : Activity() {
             }
     }
 
-    private fun checkForUpdates(showUpToDate: Boolean) {
+    private fun checkForUpdates(showUpToDate: Boolean, showFailure: Boolean = showUpToDate) {
         if (updateCheckInFlight) return
         updateCheckInFlight = true
         updateExecutor.execute {
@@ -477,7 +480,7 @@ class MainActivity : Activity() {
                         )
                     },
                     onFailure = {
-                        if (showUpToDate) showMessage(
+                        if (showFailure) showMessage(
                             R.string.update_failed_title,
                             R.string.update_failed_message,
                         )
