@@ -201,6 +201,11 @@ describe("release order", () => {
         "v0.2.28 has a b.apk of 20 bytes, not 21.",
         "v0.2.28 is missing c.json.",
       ]);
+      // A file GitHub has not finished receiving counts as missing.
+      assert.deepEqual(
+        checkReleaseAssets({ tag_name: "v0.2.28", assets: [{ name: "a.exe", state: "starter", size: 10 }] }, { "a.exe": 10 }),
+        ["v0.2.28 is missing a.exe."],
+      );
       assert.equal(
         checkPublish({
           run: history.run, version: "0.2.28", target: history.next, releases: [release, published("v0.2.29")],
