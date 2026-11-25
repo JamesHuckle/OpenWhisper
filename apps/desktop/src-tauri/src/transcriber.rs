@@ -564,8 +564,13 @@ async fn flac_upload_parts(wav_path: &Path) -> Option<(TempDir, Vec<UploadPart>)
     let wav_bytes = fs::metadata(wav_path).map(|m| m.len()).unwrap_or(0);
     let started = Instant::now();
     let path = wav_path.to_path_buf();
-    let written =
-        blocking(move || flac_upload::write_upload_parts(&path, max_upload_bytes())).await;
+    let written = blocking(move || {
+        let written = flac_upload::write_upload_parts(&path, max_upload_bytes());
+        #[cfg(test)]
+        tests::pause_encoder(&path);
+        written
+    })
+    .await;
     let encode_ms = started.elapsed().as_millis();
     match written {
         Ok(uploads) => {
@@ -845,11 +850,31 @@ mod tests {
     use serde_json::Value;
     use std::collections::VecDeque;
     use std::io::Write;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     const SPEECH: i16 = 8_000;
 
     /// Every WAV byte range `read_audio` read, with its file.
     pub(super) static AUDIO_READS: Mutex<Vec<(PathBuf, u64, u64)>> = Mutex::new(Vec::new());
+
+    /// The WAVs whose encoder, once it has written its parts, tells the test
+    /// and waits for it before handing them over.
+    #[allow(clippy::type_complexity)]
+    static ENCODER_PAUSES: Mutex<Vec<(PathBuf, mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+        Mutex::new(Vec::new());
+
+    pub(super) fn pause_encoder(wav_path: &Path) {
+        let pause = {
+            let mut pauses = lock(&ENCODER_PAUSES);
+            let index = pauses.iter().position(|(path, _, _)| path == wav_path);
+            index.map(|index| pauses.remove(index))
+        };
+        if let Some((_, written, release)) = pause {
+            written.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
 
     fn part_bytes() -> u64 {
         (max_upload_bytes() - 128) / 2 * 2
@@ -1552,15 +1577,20 @@ mod tests {
         let dir = TempDir::new();
         let recording = recording(&dir.0);
         let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (written, wait_for_written) = mpsc::channel();
+        let (release, wait_for_release) = mpsc::channel();
+        lock(&ENCODER_PAUSES).push((recording.audio_path.clone(), written, wait_for_release));
         runtime.block_on(async {
             let mut encoding = std::pin::pin!(flac_upload_parts(&recording.audio_path));
             // One poll starts the encoder, which then runs on by itself.
             assert!(futures_util::FutureExt::now_or_never(&mut encoding).is_none());
-            // Cancelled once it has made its folder.
-            while files(&dir.0).len() < 2 {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            // Cancelled while the encoder still holds the parts it wrote.
+            wait_for_written
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the encoder wrote its parts");
+            assert_eq!(files(&dir.0).len(), 2);
         });
+        release.send(()).unwrap();
         // Dropping the runtime waits for the encoder to finish.
         drop(runtime);
 
