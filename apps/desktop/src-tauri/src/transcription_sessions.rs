@@ -31,7 +31,7 @@ use crate::transcriber::{
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -290,14 +290,9 @@ impl Sessions {
     fn cancel(session: &Session) {
         // Under the state lock, so a Live rotation either sees the cancel or
         // has its new connection closed here.
-        let stream = {
-            let mut state = lock(&session.state);
-            session.cancel.cancel();
-            state.stream.take()
-        };
-        if let Some(stream) = stream {
-            stream.close();
-        }
+        let state = lock(&session.state);
+        session.cancel.cancel();
+        Self::close_stream(state);
     }
 
     /// Sends a Live session's next chunk of 16-bit PCM.
@@ -417,7 +412,7 @@ impl Sessions {
                 // A Live session given its saved recording (its connection
                 // failed) is done with the connection; the file is read below
                 // with Standard transcription.
-                Self::close_stream(session);
+                Self::close_stream(lock(&session.state));
                 Some(saved)
             }
             FinalizeAudio::Live => {
@@ -577,8 +572,11 @@ impl Sessions {
         self.emit(session, json!({ "type": "final", "text": text }));
     }
 
-    fn close_stream(session: &Session) {
-        let stream = lock(&session.state).stream.take();
+    /// Takes the Live stream out of the locked state and closes it once the
+    /// lock is released.
+    fn close_stream(mut state: MutexGuard<'_, SessionState>) {
+        let stream = state.stream.take();
+        drop(state);
         if let Some(stream) = stream {
             stream.close();
         }
@@ -589,7 +587,7 @@ impl Sessions {
             "transcriber",
             &format!("finalize session_id={:?} no_audio={reason}", session.id),
         );
-        Self::close_stream(session);
+        Self::close_stream(lock(&session.state));
         self.emit(
             session,
             json!({ "type": "error", "text": rules().no_audio_message }),
