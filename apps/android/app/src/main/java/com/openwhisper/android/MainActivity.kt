@@ -59,6 +59,9 @@ class MainActivity : Activity() {
     }
     private var automaticUpdateCheckCompleted = false
     private var updateCheckInFlight = false
+    // Set by any request that shows a failure, including one that arrives
+    // while a silent check runs; cleared when that check finishes.
+    private var updateCheckShowsFailure = false
     private var promptedVersionCode: Int? = null
     private var pendingUpdateFile: File? = null
     private var waitingForInstallPermission = false
@@ -433,6 +436,7 @@ class MainActivity : Activity() {
     }
 
     private fun checkForUpdates(showUpToDate: Boolean, showFailure: Boolean = showUpToDate) {
+        if (showFailure) updateCheckShowsFailure = true
         if (updateCheckInFlight) return
         updateCheckInFlight = true
         updateExecutor.execute {
@@ -440,6 +444,8 @@ class MainActivity : Activity() {
             runOnUiThread {
                 updateCheckInFlight = false
                 automaticUpdateCheckCompleted = true
+                val reportFailure = updateCheckShowsFailure
+                updateCheckShowsFailure = false
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 result.fold(
                     onSuccess = { update ->
@@ -450,7 +456,7 @@ class MainActivity : Activity() {
                         )
                     },
                     onFailure = {
-                        if (showFailure) showMessage(
+                        if (reportFailure) showMessage(
                             R.string.update_failed_title,
                             R.string.update_failed_message,
                         )
