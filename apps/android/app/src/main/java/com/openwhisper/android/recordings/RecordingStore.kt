@@ -43,6 +43,11 @@ data class StoredRecording(
  * recording with [reserve] until [release]. A released recording past the
  * limit goes at the next cleanup, so an import on the app screen never deletes
  * a recording the dictation overlay or a retry is still using.
+ *
+ * Cleanup runs when an import or a status change is saved, never when a
+ * capture begins, so the microphone starts without reading any recording's
+ * details. A capture can so hold one recording over the limit until it
+ * finishes, and its finish deletes the oldest unreserved one.
  */
 class RecordingStore private constructor(
     private val root: File,
@@ -98,9 +103,8 @@ class RecordingStore private constructor(
             ),
         )
         // Held until the writer finishes, so a long capture survives any
-        // number of newer imports.
+        // number of newer imports. No cleanup here: the microphone is waiting.
         reserve(id)
-        prune()
         try {
             PcmRecordingWriter(this, id, file, sampleRate)
         } catch (failure: Throwable) {
@@ -171,16 +175,7 @@ class RecordingStore private constructor(
         finished
     }
 
-    fun list(): List<StoredRecording> = synchronized(lock) {
-        if (!root.exists()) return emptyList()
-        root.listFiles()
-            .orEmpty()
-            .asSequence()
-            .filter(File::isDirectory)
-            .mapNotNull(::readMetadata)
-            .sortedByDescending(StoredRecording::createdAtMs)
-            .toList()
-    }
+    fun list(): List<StoredRecording> = synchronized(lock) { newestFirst(recordingFolders()) }
 
     /** One recording's details, read from its own folder only. */
     fun get(id: String): StoredRecording? = synchronized(lock) {
@@ -192,6 +187,11 @@ class RecordingStore private constructor(
 
     /** Where the finished parts of this recording's transcription are saved. */
     fun partsFile(id: String): File = File(File(root, id), PARTS_FILE)
+
+    private fun recordingFolders(): List<File> = root.listFiles().orEmpty().filter(File::isDirectory)
+
+    private fun newestFirst(folders: List<File>): List<StoredRecording> =
+        folders.mapNotNull(::readMetadata).sortedByDescending(StoredRecording::createdAtMs)
 
     private fun metadataFile(directory: File) = AtomicFile(File(directory, METADATA_FILE))
 
@@ -255,9 +255,15 @@ class RecordingStore private constructor(
         )
     }
 
-    /** Deletes every recording past the newest [RETAIN_COUNT] that is not reserved. */
+    /**
+     * Deletes every recording past the newest [RETAIN_COUNT] that is not
+     * reserved. Each recording has its own folder, so with at most
+     * [RETAIN_COUNT] folders there is nothing to delete and no details are read.
+     */
     private fun prune() {
-        list().drop(RETAIN_COUNT).filter { it.id !in reservations }.forEach { recording ->
+        val folders = recordingFolders()
+        if (folders.size <= RETAIN_COUNT) return
+        newestFirst(folders).drop(RETAIN_COUNT).filter { it.id !in reservations }.forEach { recording ->
             File(root, recording.id).takeIf { it.parentFile == root }?.deleteRecursively()
         }
     }

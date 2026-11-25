@@ -93,6 +93,52 @@ class RecordingStoreTest {
     }
 
     @Test
+    fun aCaptureStartsWithoutReadingAnyDetailsAndItsFinishRestoresTheLimit() {
+        withRoot { root ->
+            val reads = mutableListOf<String>()
+            val store = RecordingStore.forDirectory(root) { id -> reads += id }
+            val oldest = importInto(store, "oldest.wav")
+            repeat(RecordingStore.RETAIN_COUNT - 1) { index -> importInto(store, "clip-$index.wav") }
+            Thread.sleep(2)
+
+            reads.clear()
+            val writer = store.beginPcm("Dictation", 16_000)
+            assertEquals(emptyList<String>(), reads)
+            assertEquals(RecordingStore.RETAIN_COUNT + 1, store.list().size)
+
+            val oneSecond = ByteArray(32_000)
+            writer.write(oneSecond, oneSecond.size)
+            val recording = writer.finish("saved")
+            val retained = store.list()
+            assertEquals(RecordingStore.RETAIN_COUNT, retained.size)
+            assertEquals(recording.id, retained.first().id)
+            assertNull(store.get(oldest.id))
+        }
+    }
+
+    @Test
+    fun atTheLimitAStatusUpdateReadsOnlyItsOwnRecordingAndAnImportReadsNone() {
+        withRoot { root ->
+            val reads = mutableListOf<String>()
+            val store = RecordingStore.forDirectory(root) { id -> reads += id }
+            repeat(RecordingStore.RETAIN_COUNT - 1) { index -> importInto(store, "clip-$index.wav") }
+            reads.clear()
+            val tenth = importInto(store, "tenth.wav")
+            assertEquals(emptyList<String>(), reads)
+
+            store.finish(tenth.id, "complete", transcript = "Hello.")
+            assertEquals(listOf(tenth.id), reads)
+
+            // One past the limit, cleanup reads every recording and deletes the oldest.
+            reads.clear()
+            val eleventh = importInto(store, "eleventh.wav")
+            assertEquals(RecordingStore.RETAIN_COUNT + 1, reads.size)
+            assertEquals(RecordingStore.RETAIN_COUNT, store.list().size)
+            assertNotNull(store.get(eleventh.id))
+        }
+    }
+
+    @Test
     fun activePcmRecordingIsCheckpointedAsPlayableWav() {
         withStore { store ->
             val writer = store.beginPcm("Long recording", 16_000)

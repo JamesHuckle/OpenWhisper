@@ -29,7 +29,9 @@ WhisperFlow is split into two runtime layers, in one process:
      app screen, the dictation overlay and transcriptions share. It keeps
      the newest ten recordings, plus any older one still being captured or
      transcribed (`RecordingStore.reserve`), which goes at the next cleanup
-     once done.
+     once done. Cleanup runs when an import or a status change is saved,
+     never when a capture begins, so the microphone starts without reading
+     every recording's details; at ten folders or fewer it reads none.
    - debug log: `src-tauri/src/debug_log.rs` writes each line to stderr and
      to `openwhisper.log` in the app log folder (release builds on Windows
      have no console). Past 1 MB the file becomes `openwhisper.log.1`,
