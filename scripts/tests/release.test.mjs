@@ -374,8 +374,9 @@ describe("update feeds", () => {
     const windows = windowsFeed({ repository, version: "0.2.27", signature, pubDate: "2026-11-15T10:00:00Z" });
     const android = { ...androidFeed({ repository, version, sha256: apkSha256 }), sha256: "00".repeat(32) };
     const problems = checkFeeds({ repository, version, signature, apkSha256, windows, android });
-    assert.ok(problems.some((problem) => problem.includes("latest.json reports 0.2.27")));
-    assert.ok(problems.some((problem) => problem.includes("wrong APK checksum")));
+    assert.equal(problems.length, 2);
+    assert.match(problems[0], /^latest\.json is wrong\.[\s\S]*actual {3}\{"version":"0\.2\.27"/);
+    assert.match(problems[1], /^OpenWhisper-Android-update\.json is wrong\.[\s\S]*actual .*"sha256":"(00){32}"/);
   });
 
   it("refuses a feed with any of its version, link, signature or checksum changed", () => {
@@ -397,6 +398,30 @@ describe("update feeds", () => {
       const feed = feeds();
       change(feed);
       assert.notDeepEqual(checkFeeds({ repository, version, signature, apkSha256, ...feed }), [], change.toString());
+    }
+  });
+
+  it("refuses changed release notes, added fields or platforms and a bad publish date", () => {
+    const feeds = (pubDate = "2026-11-15T10:00:00Z") => ({
+      windows: windowsFeed({ repository, version, signature, pubDate }),
+      android: androidFeed({ repository, version, sha256: apkSha256 }),
+    });
+    const check = (feed) => checkFeeds({ repository, version, signature, apkSha256, ...feed });
+    assert.deepEqual(check(feeds("2027-01-31T23:59:59Z")), []);
+    const changes = [
+      (feed) => { feed.windows.notes = "Other notes"; },
+      (feed) => { feed.windows.platforms["darwin-aarch64"] = feed.windows.platforms["windows-x86_64"]; },
+      (feed) => { feed.android.releaseNotes = "Other notes"; },
+      (feed) => { feed.android.minSdk = 28; },
+      (feed) => { delete feed.windows.pub_date; },
+    ];
+    for (const change of changes) {
+      const feed = feeds();
+      change(feed);
+      assert.equal(check(feed).length >= 1, true, change.toString());
+    }
+    for (const pubDate of ["not-a-date", "2026-02-30T10:00:00Z", "2026-11-15", "2026-11-15T10:00:00.123Z", 20261115]) {
+      assert.deepEqual(check(feeds(pubDate)), [`latest.json has the publish date ${JSON.stringify(pubDate)}.`], String(pubDate));
     }
   });
 });

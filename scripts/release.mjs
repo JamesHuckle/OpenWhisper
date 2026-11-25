@@ -33,6 +33,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 export const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const productName = "OpenWhisper";
@@ -121,47 +122,31 @@ export const versionFiles = {
   androidGradle: "apps/android/app/build.gradle.kts",
 };
 
-function replaceExactly(text, pattern, replacement, count, description) {
-  let replaced = 0;
-  const result = text.replace(pattern, (...groups) => {
-    if (replaced >= count) return groups[0];
-    replaced += 1;
-    return replacement(...groups);
-  });
-  if (replaced !== count) throw new Error(`Unable to set the version in ${description}.`);
-  return result;
-}
-
-const setters = {
-  tauriConfig: (text, version) =>
-    replaceExactly(text, /("version"\s*:\s*")[^"]+(")/g, (_, a, b) => `${a}${version}${b}`, 1, versionFiles.tauriConfig),
-  cargoToml: (text, version) =>
-    replaceExactly(text, /^(version\s*=\s*")[^"]+(")/gm, (_, a, b) => `${a}${version}${b}`, 1, versionFiles.cargoToml),
-  cargoLock: (text, version) =>
-    replaceExactly(
-      text,
-      /(\[\[package\]\]\s+name\s*=\s*"openwhisper_desktop"\s+version\s*=\s*")[^"]+(")/g,
-      (_, a, b) => `${a}${version}${b}`,
-      1,
-      versionFiles.cargoLock,
-    ),
-  packageJson: (text, version) =>
-    replaceExactly(text, /("version"\s*:\s*")[^"]+(")/g, (_, a, b) => `${a}${version}${b}`, 1, versionFiles.packageJson),
-  // The lock file names the app's version twice: at the top and for "".
-  packageLock: (text, version) =>
-    replaceExactly(text, /^(\s*"version"\s*:\s*")[^"]+(")/gm, (_, a, b) => `${a}${version}${b}`, 2, versionFiles.packageLock),
-  androidGradle: (text, version, versionCode) =>
-    replaceExactly(
-      replaceExactly(text, /(versionCode\s*=\s*)\d+/g, (_, a) => `${a}${versionCode}`, 1, versionFiles.androidGradle),
-      /(versionName\s*=\s*")[^"]+(")/g,
-      (_, a, b) => `${a}${version}${b}`,
-      1,
-      versionFiles.androidGradle,
-    ),
+// Each file's version lines: [pattern, how many matches to replace, "code"
+// for the Android versionCode]. Only the first matches are replaced, and a
+// file with fewer fails. The lock file names the app's version twice, at the
+// top and for "", before any dependency's.
+const versionPatterns = {
+  tauriConfig: [[/("version"\s*:\s*")[^"]+(")/g, 1]],
+  cargoToml: [[/^(version\s*=\s*")[^"]+(")/gm, 1]],
+  cargoLock: [[/(\[\[package\]\]\s+name\s*=\s*"openwhisper_desktop"\s+version\s*=\s*")[^"]+(")/g, 1]],
+  packageJson: [[/("version"\s*:\s*")[^"]+(")/g, 1]],
+  packageLock: [[/^(\s*"version"\s*:\s*")[^"]+(")/gm, 2]],
+  androidGradle: [[/(versionCode\s*=\s*)\d+()/g, 1, "code"], [/(versionName\s*=\s*")[^"]+(")/g, 1]],
 };
 
 export function applyVersion(name, text, version) {
-  return setters[name](text, version, androidVersionCode(version));
+  const values = { version, code: androidVersionCode(version) };
+  return versionPatterns[name].reduce((result, [pattern, count, value = "version"]) => {
+    let replaced = 0;
+    const updated = result.replace(pattern, (line, before, after) => {
+      if (replaced >= count) return line;
+      replaced += 1;
+      return `${before}${values[value]}${after}`;
+    });
+    if (replaced !== count) throw new Error(`Unable to set the version in ${versionFiles[name]}.`);
+    return updated;
+  }, text);
 }
 
 export function setVersion(root, version) {
@@ -234,27 +219,30 @@ SHA-256 checksums are included in the release assets. This APK is signed with th
 `;
 }
 
-// Returns a list of problems; an empty list means both feeds match the files.
+// A feed the updater can read has its publish date as stageRelease writes it,
+// such as 2026-11-15T10:00:00Z, and the date must exist.
+function isPublishDate(text) {
+  return typeof text === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(text) &&
+    !Number.isNaN(Date.parse(text)) && new Date(text).toISOString() === text.replace("Z", ".000Z");
+}
+
+// Returns a list of problems; an empty list means both feeds are exactly what
+// stageRelease builds for these files, with no field or platform changed,
+// missing or added. Only the publish date comes from the feed itself, so it
+// is checked on its own.
 export function checkFeeds({ repository, version, signature, apkSha256, windows, android }) {
   const problems = [];
   const names = releaseAssetNames(version);
-  const tag = `v${version}`;
-  const platform = windows?.platforms?.["windows-x86_64"];
-  if (windows?.version !== version) problems.push(`latest.json reports ${windows?.version}, expected ${version}.`);
-  if (platform?.url !== downloadUrl(repository, tag, names.windowsInstaller)) {
-    problems.push(`latest.json points to ${platform?.url}.`);
+  const pubDate = windows?.pub_date;
+  if (!isPublishDate(pubDate)) problems.push(`${names.windowsFeed} has the publish date ${JSON.stringify(pubDate)}.`);
+  for (const [name, actual, expected] of [
+    [names.windowsFeed, windows, windowsFeed({ repository, version, signature, pubDate })],
+    [names.androidFeed, android, androidFeed({ repository, version, sha256: apkSha256 })],
+  ]) {
+    if (!isDeepStrictEqual(actual, expected)) {
+      problems.push(`${name} is wrong.\n  expected ${JSON.stringify(expected)}\n  actual   ${JSON.stringify(actual)}`);
+    }
   }
-  if (platform?.signature !== signature.trim()) problems.push("latest.json has the wrong installer signature.");
-  if (android?.versionName !== version) {
-    problems.push(`${names.androidFeed} reports ${android?.versionName}, expected ${version}.`);
-  }
-  if (android?.versionCode !== androidVersionCode(version)) {
-    problems.push(`${names.androidFeed} has versionCode ${android?.versionCode}.`);
-  }
-  if (android?.apkUrl !== downloadUrl(repository, tag, names.androidStableApk)) {
-    problems.push(`${names.androidFeed} points to ${android?.apkUrl}.`);
-  }
-  if (android?.sha256 !== apkSha256) problems.push(`${names.androidFeed} has the wrong APK checksum.`);
   return problems;
 }
 

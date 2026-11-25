@@ -241,7 +241,8 @@ base64 -w0 openwhisper-release.jks | gh secret set OPENWHISPER_ANDROID_KEYSTORE_
    from the versioned builds, then upload the installers, APKs, checksum and
    both update feeds (`latest.json` and `OpenWhisper-Android-update.json`) to a
    draft release, check that every
-   file finished uploading and that both feeds match the builds.
+   file finished uploading and that both feeds are exactly the ones built for
+   these files, with a valid publish date.
 5. Publish the draft as latest, which tags the pushed commit, then re-download
    and check both public feeds and the public APK
    (`node scripts/release.mjs publish`).
