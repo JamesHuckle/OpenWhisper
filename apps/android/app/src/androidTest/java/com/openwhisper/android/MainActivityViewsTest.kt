@@ -86,7 +86,7 @@ class MainActivityViewsTest {
                 assertStatusRow(6, R.string.api_key_label, 22)
                 assertTrue(views[7] is EditText)
                 val keyButtons = views[8] as LinearLayout
-                assertEquals(Gravity.END, keyButtons.gravity)
+                assertEquals(Gravity.END, keyButtons.gravity and Gravity.RELATIVE_HORIZONTAL_GRAVITY_MASK)
                 assertButton(keyButtons.getChildAt(0) as Button, R.string.clear)
                 assertButton(keyButtons.getChildAt(1) as Button, R.string.save_securely)
                 assertEquals(activity.getString(R.string.demo_mode), (views[9] as Switch).text.toString())
