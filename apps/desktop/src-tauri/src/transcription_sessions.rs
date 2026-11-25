@@ -1218,6 +1218,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_closes_the_live_connection() {
+        let server = RealtimeServer::start(vec![Script::default()]).await;
+        let h = harness(&server.base_url);
+        let id = h.start("gpt-live-transcribe", false, "").await;
+        let session = h.sessions.session(&id).unwrap();
+        let stream = lock(&session.state).stream.clone().unwrap();
+
+        h.sessions.stop(&id).unwrap();
+
+        assert!(session.cancel.is_cancelled());
+        assert!(lock(&session.state).stream.is_none());
+        assert_eq!(
+            stream.append(&[1, 2]).await.unwrap_err(),
+            "Realtime transcription session is closed"
+        );
+    }
+
+    #[tokio::test]
     async fn a_live_session_given_its_saved_file_is_transcribed_with_standard() {
         // The Live connection opens on the Realtime stand-in; the saved file
         // then goes to the HTTP stand-in.
@@ -1227,8 +1245,17 @@ mod tests {
         let id = h.start("gpt-live-transcribe", false, "").await;
         Arc::get_mut(&mut h.sessions).unwrap().base_url = server.base_url.clone();
         let path = h.wav(1.0, 6_000);
+        let session = h.sessions.session(&id).unwrap();
+        let stream = lock(&session.state).stream.clone().unwrap();
 
         h.finalize_saved(&id, path).await;
+
+        // Its Live connection was closed, not left open beside the upload.
+        assert!(lock(&session.state).stream.is_none());
+        assert_eq!(
+            stream.append(&[1, 2]).await.unwrap_err(),
+            "Realtime transcription session is closed"
+        );
 
         assert_eq!(h.events(), [("final".into(), DICTATED.into(), true)]);
         let received = server.received();
