@@ -122,8 +122,14 @@ class RecordingStore private constructor(
         val directory = File(root, id).apply { mkdirs() }
         val safeExtension = extension.lowercase().takeIf { it in SUPPORTED_EXTENSIONS } ?: "audio"
         val file = File(directory, "audio.$safeExtension")
-        input.use { source -> file.outputStream().buffered().use(source::copyTo) }
-        check(file.length() > 0) { "The selected audio file is empty" }
+        try {
+            input.use { source -> file.outputStream().buffered().use(source::copyTo) }
+            check(file.length() > 0) { "The selected audio file is empty" }
+        } catch (failure: Throwable) {
+            // Never listed or pruned without its details, so removed here.
+            directory.deleteRecursively()
+            throw failure
+        }
         return synchronized(lock) {
             val recording = StoredRecording(
                 id = id,

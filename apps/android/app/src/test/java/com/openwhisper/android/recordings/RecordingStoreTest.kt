@@ -2,6 +2,7 @@ package com.openwhisper.android.recordings
 
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -297,6 +298,41 @@ class RecordingStoreTest {
             }
             assertEquals(2, service.list().size)
             assertNotNull(service.get(imported!!.id))
+        }
+    }
+
+    @Test
+    fun anImportThatFailsHalfwayLeavesNoFolderBehind() {
+        withRoot { root ->
+            val store = RecordingStore.forDirectory(root)
+            val brokenInput = object : InputStream() {
+                private var sent = 0
+
+                override fun read(): Int {
+                    if (sent == 4096) throw IOException("The document provider went away")
+                    sent++
+                    return 7
+                }
+            }
+
+            val failure = runCatching { store.import("broken.wav", "audio/wav", "wav", brokenInput) }
+
+            assertEquals("The document provider went away", failure.exceptionOrNull()?.message)
+            assertEquals(emptyList<File>(), root.listFiles().orEmpty().toList())
+        }
+    }
+
+    @Test
+    fun anEmptyImportIsRefusedAndLeavesNoFolderBehind() {
+        withRoot { root ->
+            val store = RecordingStore.forDirectory(root)
+
+            val failure = runCatching {
+                store.import("empty.wav", "audio/wav", "wav", ByteArrayInputStream(ByteArray(0)))
+            }
+
+            assertEquals("The selected audio file is empty", failure.exceptionOrNull()?.message)
+            assertEquals(emptyList<File>(), root.listFiles().orEmpty().toList())
         }
     }
 
