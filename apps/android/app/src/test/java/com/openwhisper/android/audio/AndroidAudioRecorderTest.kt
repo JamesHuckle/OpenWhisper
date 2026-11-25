@@ -3,6 +3,7 @@ package com.openwhisper.android.audio
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import com.openwhisper.android.recordings.PcmRecordingWriter
 import com.openwhisper.android.recordings.RecordingStore
 import com.openwhisper.android.recordings.StoredRecording
 import java.io.File
@@ -16,6 +17,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class AndroidAudioRecorderTest {
@@ -86,6 +88,35 @@ class AndroidAudioRecorderTest {
         assertEquals(1, microphone.releaseCount.get())
         assertEquals(1, freed.get())
         assertEquals("saved", store.get(saved!!.id)?.status)
+    }
+
+    @Test
+    fun aFailedWriteEndsTheRecordingWithoutCrashingTheApp() {
+        // Every write to /dev/full fails as a full phone's storage does.
+        val fullStorage = File("/dev/full")
+        assumeTrue(fullStorage.canWrite())
+        val microphone = FakeAudioRecord(stopBlocks = false, bytesRead = 2_048)
+        val freed = AtomicInteger()
+        val sink = PcmRecordingWriter(store(), "full", fullStorage, 16_000)
+        val recording = MicrophoneRecording(microphone, sink, 8_192, null) { freed.incrementAndGet() }
+        recording.startReading()
+        assertTrue(microphone.readEntered.await(5, TimeUnit.SECONDS))
+        val reader = microphone.reader!!
+        val readerFailure = AtomicReference<Throwable?>(null)
+        reader.setUncaughtExceptionHandler { _, error -> readerFailure.set(error) }
+        reader.join(5_000)
+
+        assertFalse(reader.isAlive)
+        assertNull(readerFailure.get())
+        try {
+            recording.stop()
+            fail("A recording that could not be written was stopped as saved")
+        } catch (error: IllegalStateException) {
+            // Saving the file fails too, so it must not claim the audio was saved.
+            assertEquals("Could not save the rest of the recording", error.message)
+        }
+        assertEquals(1, microphone.releaseCount.get())
+        assertEquals(1, freed.get())
     }
 
     @Test

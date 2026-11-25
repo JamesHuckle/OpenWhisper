@@ -61,10 +61,15 @@ class AndroidAudioRecorder(
             throw IllegalStateException("Microphone could not be initialized")
         }
 
-        val sink = recordingStore.beginPcm(
-            "Recording ${DateFormat.getDateTimeInstance().format(Date())}",
-            SAMPLE_RATE,
-        )
+        val sink = try {
+            recordingStore.beginPcm(
+                "Recording ${DateFormat.getDateTimeInstance().format(Date())}",
+                SAMPLE_RATE,
+            )
+        } catch (error: Exception) {
+            recorder.release()
+            throw error
+        }
         try {
             recorder.startRecording()
         } catch (error: Exception) {
@@ -112,7 +117,13 @@ internal class MicrophoneRecording(
     override fun stop(): StoredRecording {
         check(ended.compareAndSet(false, true)) { "Microphone was not recording" }
         release(joinMillis = 2_000)
-        val recording = sink.finish(if (readFailure == null) "saved" else "capture_failed")
+        val recording = try {
+            sink.finish(if (readFailure == null) "saved" else "capture_failed")
+        } catch (error: Exception) {
+            // The capture's own failure is the one to report, not the save's.
+            readFailure?.let { throw IllegalStateException(it, error) }
+            throw error
+        }
         readFailure?.let { throw IllegalStateException("$it. Raw audio was saved in OpenWhisper.") }
         return recording
     }
@@ -163,11 +174,12 @@ internal class MicrophoneRecording(
             if (count > 0) {
                 try {
                     sink.write(buffer, count)
-                } catch (error: IllegalStateException) {
-                    // A read that outlived the stop's wait: the stop has
-                    // already saved and closed the file, so these samples are
-                    // dropped instead of crashing the app.
-                    if (capturing.get()) throw error
+                } catch (_: Exception) {
+                    // A read that outlived the stop's wait finds the file
+                    // already saved and closed, so its samples are dropped.
+                    // A write that fails while capturing (full storage) ends
+                    // the recording; the stop reports it. Neither crashes the app.
+                    if (capturing.getAndSet(false)) readFailure = "Could not save the rest of the recording"
                     return
                 }
                 emitAmplitude(buffer, count)
