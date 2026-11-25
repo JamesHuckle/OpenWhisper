@@ -231,12 +231,14 @@ class MainActivity : Activity() {
             }
             // Handed over even if this screen has gone meanwhile: the screen
             // Android recreates shows the result.
-            imported.onSuccess { transcriptions.submit(it, TranscriptionOrigin.BULK, showResultInApp = true) }
+            val submitted = imported.mapCatching {
+                transcriptions.submit(it, TranscriptionOrigin.BULK, showResultInApp = true)
+            }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 importInFlight = false
                 refreshRecordings()
-                imported.onFailure { error -> showAudioFailure(error, null) }
+                submitted.onFailure { error -> showAudioFailure(error, imported.getOrNull()) }
             }
         }
     }
@@ -291,7 +293,8 @@ class MainActivity : Activity() {
     private fun retranscribeRecording(recording: StoredRecording) {
         // A recording already being transcribed (by the overlay, say) is not
         // sent again; its result shows here when it ends.
-        transcriptions.submit(recording, TranscriptionOrigin.BULK, showResultInApp = true)
+        runCatching { transcriptions.submit(recording, TranscriptionOrigin.BULK, showResultInApp = true) }
+            .onFailure { error -> showAudioFailure(error, recording) }
     }
 
     private fun showImportedTranscript(transcript: String, recording: StoredRecording?) {
