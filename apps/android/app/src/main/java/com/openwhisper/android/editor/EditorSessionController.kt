@@ -59,8 +59,8 @@ fun interface InputConnectionEditorProvider {
 
 data class EditorSession(
     val stableId: String,
-    val snapshot: EditorSnapshot? = null,
-    val channel: EditorSessionChannel = EditorSessionChannel.Accessibility,
+    val snapshot: EditorSnapshot,
+    val channel: EditorSessionChannel,
 )
 
 enum class EditorSessionChannel {
@@ -113,13 +113,12 @@ class EditorSessionController(
                 if (accessibilityEditor == null) inputConnection.currentEditor() else null
         } ?: return EditorCommitResult.FocusChanged
         if (field.stableId != session.stableId) return EditorCommitResult.FocusChanged
-        val captured = session.snapshot ?: return EditorCommitResult.Unsupported
         val current = field.snapshot() ?: return EditorCommitResult.Unsupported
-        if (current != captured) return EditorCommitResult.ContentChanged
+        if (current != session.snapshot) return EditorCommitResult.ContentChanged
 
-        return when (val plan = planner.plan(captured, transcript)) {
+        return when (val plan = planner.plan(session.snapshot, transcript)) {
             is InsertionPlan.SetText ->
-                if (field.write(captured, plan)) {
+                if (field.write(session.snapshot, plan)) {
                     EditorCommitResult.Committed
                 } else {
                     EditorCommitResult.Unsupported

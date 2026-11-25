@@ -170,7 +170,6 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             dictationActive = coordinator.currentState.let {
                 it is DictationState.Listening ||
                     it is DictationState.Finalizing ||
-                    it is DictationState.ReadyToInsert ||
                     // A failure while floating stays until the user opens recovery.
                     (it is DictationState.Failed && overlay.isFloating)
             },

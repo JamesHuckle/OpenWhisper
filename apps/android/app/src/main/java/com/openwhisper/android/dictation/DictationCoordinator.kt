@@ -33,9 +33,7 @@ class DictationCoordinator(
             is DictationState.Failed,
             -> start()
             DictationState.Listening -> finish()
-            DictationState.Finalizing,
-            DictationState.ReadyToInsert,
-            -> Unit
+            DictationState.Finalizing -> Unit
         }
     }
 
@@ -48,29 +46,18 @@ class DictationCoordinator(
     override fun onFinal(text: String) {
         if (state !is DictationState.Finalizing) return
         onTranscriptReady(text)
-        transition(DictationState.ReadyToInsert)
-        // The render callback may have cancelled the session; then nothing is inserted.
-        if (state !is DictationState.ReadyToInsert) return
-        val captured = session
-        if (captured == null) {
-            transition(DictationState.Failed("Captured editor session was lost"))
-            return
+        // The transcript callback may have cancelled the session; then nothing is inserted.
+        if (state !is DictationState.Finalizing) return
+        val captured = session ?: return onError("Captured editor session was lost")
+        val failure = when (editor.commit(captured, text)) {
+            EditorCommitResult.Committed -> null
+            EditorCommitResult.FocusChanged -> "Focused field changed; transcript was not inserted"
+            EditorCommitResult.ContentChanged -> "Text changed while recording; transcript was not inserted"
+            EditorCommitResult.Unsupported -> "This field does not support safe text insertion"
         }
-        when (editor.commit(captured, text)) {
-            EditorCommitResult.Committed -> {
-                session = null
-                transition(DictationState.Idle)
-            }
-            EditorCommitResult.FocusChanged -> failCommit(
-                "Focused field changed; transcript was not inserted",
-            )
-            EditorCommitResult.ContentChanged -> failCommit(
-                "Text changed while recording; transcript was not inserted",
-            )
-            EditorCommitResult.Unsupported -> failCommit(
-                "This field does not support safe text insertion",
-            )
-        }
+        if (failure != null) return onError(failure)
+        session = null
+        transition(DictationState.Idle)
     }
 
     override fun onError(message: String) {
@@ -92,11 +79,6 @@ class DictationCoordinator(
     private fun finish() {
         transition(DictationState.Finalizing)
         backend.finish()
-    }
-
-    private fun failCommit(message: String) {
-        session = null
-        transition(DictationState.Failed(message))
     }
 
     private fun transition(next: DictationState) {

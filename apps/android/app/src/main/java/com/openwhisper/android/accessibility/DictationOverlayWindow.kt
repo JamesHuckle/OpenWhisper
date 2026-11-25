@@ -154,9 +154,7 @@ class DictationOverlayWindow(
                     darkIcon = Color.rgb(255, 179, 191),
                 ),
             )
-            is DictationState.Finalizing,
-            is DictationState.ReadyToInsert,
-            -> styleMeter(
+            is DictationState.Finalizing -> styleMeter(
                 DictationControlView.Mode.PROCESSING,
                 context.getString(R.string.transcribing),
                 palette(

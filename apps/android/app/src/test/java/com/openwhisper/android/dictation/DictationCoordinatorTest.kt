@@ -2,7 +2,9 @@ package com.openwhisper.android.dictation
 
 import com.openwhisper.android.editor.EditorCommitResult
 import com.openwhisper.android.editor.EditorSession
+import com.openwhisper.android.editor.EditorSessionChannel
 import com.openwhisper.android.editor.EditorSessionPort
+import com.openwhisper.android.editor.EditorSnapshot
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -41,7 +43,6 @@ class DictationCoordinatorTest {
             listOf(
                 DictationState.Listening,
                 DictationState.Finalizing,
-                DictationState.ReadyToInsert,
                 DictationState.Idle,
             ),
             states,
@@ -119,15 +120,12 @@ class DictationCoordinatorTest {
     }
 
     @Test
-    fun cancellingWhileReadyToInsertDoesNotCommit() {
+    fun cancellingWhenTheTranscriptArrivesDoesNotCommit() {
         val backend = FakeDictationBackend()
         val editor = FakeEditorSessionPort()
         val states = mutableListOf<DictationState>()
         lateinit var coordinator: DictationCoordinator
-        coordinator = DictationCoordinator(backend, editor, { state ->
-            states += state
-            if (state is DictationState.ReadyToInsert) coordinator.cancel()
-        })
+        coordinator = DictationCoordinator(backend, editor, states::add, { coordinator.cancel() })
 
         coordinator.onMicPressed()
         coordinator.onMicPressed()
@@ -201,7 +199,11 @@ private class FakeDictationBackend : DictationBackend {
 }
 
 private class FakeEditorSessionPort(
-    private val session: EditorSession? = EditorSession("field-1"),
+    private val session: EditorSession? = EditorSession(
+        "field-1",
+        EditorSnapshot("", 0, 0),
+        EditorSessionChannel.Accessibility,
+    ),
     private val commitResult: EditorCommitResult = EditorCommitResult.Committed,
 ) : EditorSessionPort {
     var committedText: String? = null
