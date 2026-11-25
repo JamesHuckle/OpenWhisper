@@ -18,6 +18,9 @@ function stripQuotedRegions(command) {
 }
 
 function isDirectCodex(command) {
+  // The caller has already stripped once; this second pass still changes
+  // decisions: it turns the @"""@ the first pass can leave into "", so a
+  // codex written right after it is still caught.
   const bare = stripQuotedRegions(command);
   return /(^|[;&|\s"'])(codex(?:\.exe)?)(?=\s|$|[;&|"'])/i.test(bare) ||
     /\bnpx(?:\.cmd)?\s+[^\r\n]*\bcodex\b/i.test(bare);

@@ -26,6 +26,8 @@ test("hook allows the checked wrapper and blocks a direct codex launch", () => {
   assert.equal(runHook("codex exec --sandbox workspace-write -").permission, "deny");
   assert.equal(runHook("npx codex exec -").permission, "deny");
   assert.equal(runHook("git commit -m 'mention codex here'").permission, "allow");
+  // Denied only because isDirectCodex strips quotes a second time.
+  assert.equal(runHook("|\n||'@<<EOF\n\nE\n\"@codex").permission, "deny");
 });
 
 test("hook allows empty input and checks input that is not JSON as the raw command", () => {
