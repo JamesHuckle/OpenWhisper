@@ -314,8 +314,10 @@ export function createDictationController(deps: DictationDeps) {
       // recording Live.
       let liveSession = false;
       const earlierBackupOpened = backupOpened;
+      // Settles only after the earlier start's, so a start that fails before
+      // opening its file never lets the next one open before an older one.
       backupOpened = new Promise((resolve) => {
-        markBackupOpened = resolve;
+        markBackupOpened = () => resolve(earlierBackupOpened);
       });
 
       const sessionId = await startCaptureFirst({

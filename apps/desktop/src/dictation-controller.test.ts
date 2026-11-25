@@ -341,6 +341,50 @@ describe("dictation controller", () => {
     ]);
   });
 
+  it("keeps a start whose microphone failed from opening the next recording before a cancelled one", async () => {
+    const { app, mic, dictation } = setup();
+    app.trackWriters();
+    app.hold("recording_begin");
+    void dictation.toggleRecording();
+    await settle();
+    mic.hear(100, 7);
+    await dictation.stopRecording();
+    await dictation.cancelTranscription();
+    expect(dictation.state).toBe("idle");
+
+    // The second start fails at the microphone, before it opens a file.
+    const start = mic.capture.start;
+    mic.capture.start = async () => {
+      throw new Error("microphone busy");
+    };
+    await dictation.pressToTalkStart();
+    await dictation.pressToTalkStop();
+    await settle();
+    mic.capture.start = start;
+    expect(dictation.state).toBe("idle");
+
+    // The third start still waits for the first file to open and close.
+    app.stopHolding("recording_begin");
+    app.answers.recording_begin = { id: "rec-3" };
+    void dictation.pressToTalkStart();
+    await settle();
+    expect(dictation.state).toBe("recording");
+    expect(app.named("recording_begin")).toHaveLength(1);
+
+    app.release("recording_begin", { id: "rec-1" });
+    await settle();
+    expect(app.named("recording_begin")).toHaveLength(2);
+
+    mic.hear(BATCH, 9);
+    await dictation.pressToTalkStop();
+    await settle();
+    expect(app.named("recording_append_chunk").map((call) => call.headers)).toEqual([
+      { "recording-id": "rec-1" },
+      { "recording-id": "rec-3" },
+    ]);
+    expect(app.refusedChunks).toEqual([]);
+  });
+
   it("logs a cancelled backup whose metadata could not be saved and still lists it", async () => {
     const { app, dictation, logs, changes } = setup();
     app.hold("recording_begin");
