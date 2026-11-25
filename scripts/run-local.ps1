@@ -11,12 +11,6 @@ if (Test-Path $cargoBin) {
     $env:Path = "$cargoBin;$env:Path"
 }
 
-# Ensure .env exists
-if (-not (Test-Path .env)) {
-    Copy-Item .env.example .env
-    Write-Host "Created .env from .env.example"
-}
-
 # Run desktop app
 Push-Location apps\desktop
 npm install

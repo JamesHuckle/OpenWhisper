@@ -1,9 +1,10 @@
 # Load .env file into process environment variables.
 # Supports KEY=value and KEY="value" (expands \n to newlines).
-# Usage: . "$PSScriptRoot/load-env.ps1" (dot-source from another script)
+# Usage: . "$PSScriptRoot/load-env.ps1" -Path <file> (dot-source from another script)
 
 param(
-  [string]$Path = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) ".env")
+  [Parameter(Mandatory = $true)]
+  [string]$Path
 )
 
 if (-not (Test-Path $Path)) {

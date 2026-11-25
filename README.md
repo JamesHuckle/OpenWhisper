@@ -170,19 +170,18 @@ This repository holds:
 
 ## Quick start
 
-1. Create environment file:
-   - `cp .env.example .env`
-   - The OpenAI API key is not read from `.env`: paste it in the desktop app's Settings.
-2. Install desktop dependencies:
+The OpenAI API key is not read from `.env`: paste it in the desktop app's Settings.
+
+1. Install desktop dependencies:
    - `cd apps/desktop`
    - `npm install`
-3. Install Rust toolchain (required by Tauri):
+2. Install Rust toolchain (required by Tauri):
    - `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
    - Restart shell, then verify with `cargo --version`.
-4. Install Linux native dependencies (Linux/WSL only):
+3. Install Linux native dependencies (Linux/WSL only):
    - `sudo apt-get update`
    - `sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf`
-5. Run desktop app:
+4. Run desktop app:
    - `npm run tauri:dev`
    - On WSL GPU-constrained setups, use software rendering:
      - `LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe WEBKIT_DISABLE_DMABUF_RENDERER=1 npm run tauri:dev`

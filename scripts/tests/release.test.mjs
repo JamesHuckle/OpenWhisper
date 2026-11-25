@@ -531,6 +531,16 @@ describe("build scripts", () => {
     assert.match(readRepo(".gitignore"), /^target\*\/\s*$/m);
     assert.ok(readRepo("scripts/run-local.ps1").includes('"target\\desktop-dev"'));
   });
+
+  it("never seeds the repo-root .env with the placeholder signing key", () => {
+    // The Windows installer loads that .env, so a copied placeholder replaced
+    // a valid TAURI_SIGNING_PRIVATE_KEY already set in the environment.
+    for (const launcher of ["scripts/run-local.ps1", "scripts/run-local.sh"]) {
+      assert.ok(!readRepo(launcher).includes(".env.example"), launcher);
+    }
+    assert.ok(!readRepo("README.md").includes("cp .env.example .env"));
+    assert.match(readRepo("scripts/load-env.ps1"), /\[Parameter\(Mandatory = \$true\)\]\s+\[string\]\$Path\s*\)/);
+  });
 });
 
 describe("build caches", () => {
