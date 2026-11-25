@@ -229,6 +229,33 @@ class EditorSessionControllerTest {
     }
 
     @Test
+    fun refusesAnInputConnectionWithTheSameIdAsTheCapturedAccessibilityEditor() {
+        val node = FakeEditableNode("same", EditorSnapshot("Hi", 2, 2))
+        val input = FakeInputConnectionEditor("same", EditorSnapshot("Hi", 2, 2))
+        accessibilityEditor = node
+        inputConnectionEditor = input
+        val session = requireNotNull(controller.begin())
+
+        accessibilityEditor = null
+        assertEquals(EditorCommitResult.FocusChanged, controller.commit(session, "there"))
+        assertNull(input.committedText)
+        assertNull(node.setTextValue)
+    }
+
+    @Test
+    fun refusesAnAccessibilityEditorWithTheSameIdAsTheCapturedInputConnection() {
+        val input = FakeInputConnectionEditor("same", EditorSnapshot("Hi", 2, 2))
+        inputConnectionEditor = input
+        val session = requireNotNull(controller.begin())
+
+        val node = FakeEditableNode("same", EditorSnapshot("Hi", 2, 2))
+        accessibilityEditor = node
+        assertEquals(EditorCommitResult.FocusChanged, controller.commit(session, "there"))
+        assertNull(input.committedText)
+        assertNull(node.setTextValue)
+    }
+
+    @Test
     fun looksUpEachChannelAtMostOnceAtStart() {
         accessibilityEditor = FakeEditableNode("node", EditorSnapshot("Hi", 2, 2))
         inputConnectionEditor = FakeInputConnectionEditor("input", EditorSnapshot("Hi", 2, 2))
