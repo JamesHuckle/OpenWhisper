@@ -377,6 +377,28 @@ describe("update feeds", () => {
     assert.ok(problems.some((problem) => problem.includes("latest.json reports 0.2.27")));
     assert.ok(problems.some((problem) => problem.includes("wrong APK checksum")));
   });
+
+  it("refuses a feed with any of its version, link, signature or checksum changed", () => {
+    const pubDate = "2026-11-15T10:00:00Z";
+    const feeds = () => ({
+      windows: windowsFeed({ repository, version, signature, pubDate }),
+      android: androidFeed({ repository, version, sha256: apkSha256 }),
+    });
+    const changes = [
+      (feed) => { feed.windows.version = "0.2.27"; },
+      (feed) => { feed.windows.platforms["windows-x86_64"].url += "?old"; },
+      (feed) => { feed.windows.platforms["windows-x86_64"].signature = "b3RoZXI="; },
+      (feed) => { feed.android.versionName = "0.2.27"; },
+      (feed) => { feed.android.versionCode = 2027; },
+      (feed) => { feed.android.apkUrl += "?old"; },
+      (feed) => { feed.android.sha256 = "00".repeat(32); },
+    ];
+    for (const change of changes) {
+      const feed = feeds();
+      change(feed);
+      assert.notDeepEqual(checkFeeds({ repository, version, signature, apkSha256, ...feed }), [], change.toString());
+    }
+  });
 });
 
 // The workflow and the PowerShell build scripts have nothing to call, so
