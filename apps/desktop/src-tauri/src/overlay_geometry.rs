@@ -46,12 +46,19 @@ pub struct OverlayAnchor {
     pub dpi: u32,
 }
 
+/// The pill window's logical size, as the page asks for it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OverlayLayoutSpec {
     pub width: f64,
     pub height: f64,
-    pub anchor_offset_y: f64,
 }
+
+/// How far below the anchor the window's bottom edge sits, in logical pixels.
+/// The page adds the same padding (`WINDOW_BOTTOM_PADDING` in
+/// `src/overlay-layout.ts`) to the window height. Being constant, it keeps the
+/// pinned bottom edge, and so the bottom-anchored CSS pill, fixed in every
+/// state; expansion grows upward from that edge.
+const WINDOW_BOTTOM_PADDING_LOGICAL: f64 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverlayPlacement {
@@ -119,7 +126,7 @@ pub fn overlay_placement(anchor: OverlayAnchor, layout: OverlayLayoutSpec) -> Ov
         width: physical_dimension(layout.width, anchor.dpi),
         height: physical_dimension(layout.height, anchor.dpi),
     };
-    let offset = (layout.anchor_offset_y * anchor.dpi as f64 / 96.0).round() as i32;
+    let offset = (WINDOW_BOTTOM_PADDING_LOGICAL * anchor.dpi as f64 / 96.0).round() as i32;
     OverlayPlacement {
         // Bottom centre on the anchor, then moved down by the offset.
         position: Position {
@@ -228,46 +235,34 @@ mod tests {
         }
     }
 
-    /// Where `overlay_placement` puts a pill of this logical size and
-    /// offset; at 96 DPI logical and physical pixels are the same.
-    fn position_at(
-        anchor: OverlayAnchor,
-        width: f64,
-        height: f64,
-        anchor_offset_y: f64,
-    ) -> Position {
-        overlay_placement(
-            anchor,
-            OverlayLayoutSpec {
-                width,
-                height,
-                anchor_offset_y,
-            },
-        )
-        .position
+    /// Where `overlay_placement` puts a pill of this logical size; at 96 DPI
+    /// logical and physical pixels are the same, so its bottom edge is
+    /// 2 pixels below the anchor.
+    fn position_at(anchor: OverlayAnchor, width: f64, height: f64) -> Position {
+        overlay_placement(anchor, OverlayLayoutSpec { width, height }).position
     }
 
     #[test]
     fn overlay_geometry_keeps_bottom_center_anchor_on_negative_monitor() {
         let anchor = test_anchor(1, -1280, 1430, 96);
 
-        let collapsed = position_at(anchor, 100.0, 28.0, 0.0);
-        let expanded = position_at(anchor, 360.0, 520.0, 0.0);
+        let collapsed = position_at(anchor, 100.0, 28.0);
+        let expanded = position_at(anchor, 360.0, 520.0);
 
-        assert_eq!(collapsed, Position { x: -1330, y: 1402 });
-        assert_eq!(expanded, Position { x: -1460, y: 910 });
+        assert_eq!(collapsed, Position { x: -1330, y: 1404 });
+        assert_eq!(expanded, Position { x: -1460, y: 912 });
         assert_eq!(collapsed.x + 50, anchor.center_x);
         assert_eq!(expanded.x + 180, anchor.center_x);
-        assert_eq!(collapsed.y + 28, anchor.bottom_y);
-        assert_eq!(expanded.y + 520, anchor.bottom_y);
+        assert_eq!(collapsed.y + 28, anchor.bottom_y + 2);
+        assert_eq!(expanded.y + 520, anchor.bottom_y + 2);
     }
 
     #[test]
     fn overlay_geometry_handles_monitor_above_primary() {
         let anchor = test_anchor(1, 960, -10, 96);
         assert_eq!(
-            position_at(anchor, 188.0, 72.0, 0.0),
-            Position { x: 866, y: -82 }
+            position_at(anchor, 188.0, 72.0),
+            Position { x: 866, y: -80 }
         );
     }
 
@@ -276,7 +271,6 @@ mod tests {
         let layout = OverlayLayoutSpec {
             width: 92.0,
             height: 28.0,
-            anchor_offset_y: 2.0,
         };
         let at_125 = overlay_placement(test_anchor(1, 1000, 900, 120), layout);
         let at_200 = overlay_placement(test_anchor(2, 2000, 1700, 192), layout);
@@ -288,13 +282,14 @@ mod tests {
     }
 
     #[test]
-    fn expanded_layout_grows_around_compact_anchor() {
+    fn expanded_layout_grows_up_from_the_compact_bottom_edge() {
         let anchor = test_anchor(1, 960, 1070, 96);
-        let compact = position_at(anchor, 38.0, 14.0, 0.0);
-        let expanded = position_at(anchor, 92.0, 26.0, 6.0);
+        let compact = position_at(anchor, 38.0, 14.0);
+        let expanded = position_at(anchor, 92.0, 26.0);
 
         assert_eq!(compact.x + 19, expanded.x + 46);
-        assert_eq!(compact.y + 7, expanded.y + 13);
+        assert_eq!(compact.y + 14, expanded.y + 26);
+        assert_eq!(expanded.y + 26, anchor.bottom_y + 2);
     }
 
     #[test]
@@ -304,8 +299,8 @@ mod tests {
         let anchor = test_anchor(1, i32::MIN + 10, i32::MIN + 10, 96);
 
         assert_eq!(
-            position_at(anchor, 100.0, 28.0, 6.0),
-            Position { x: i32::MIN, y: i32::MIN + 6 }
+            position_at(anchor, 100.0, 28.0),
+            Position { x: i32::MIN, y: i32::MIN + 2 }
         );
     }
 
@@ -357,7 +352,6 @@ mod tests {
         let layout = OverlayLayoutSpec {
             width: 92.0,
             height: 28.0,
-            anchor_offset_y: 2.0,
         };
 
         for destination in destinations {

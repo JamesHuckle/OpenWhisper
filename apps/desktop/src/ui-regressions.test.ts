@@ -88,6 +88,32 @@ describe("desktop regression guards", () => {
     expect(main.slice(main.indexOf("async function openMenu("))).toMatch(/^[^}]*void refreshForegroundApp\(\);/);
   });
 
+  it("keeps the native window footprint fixed across hover expand and collapse", () => {
+    // Hover only changes the CSS pill inside the window. A window layout that
+    // read hover state would resize and move the window under the cursor, so
+    // the pill would jump and flicker between hover and leave.
+    const main = read("src/main.ts");
+    const windowLayout = main.slice(
+      main.indexOf("function getWindowLayout("),
+      main.indexOf("async function applyOverlayLayout("),
+    );
+
+    expect(windowLayout).toContain("getOverlayLayout({");
+    expect(windowLayout).not.toMatch(/isWidgetExpanded|widgetHovered/);
+  });
+
+  it("pins the window's bottom edge by the padding the page adds to its height", () => {
+    // The page no longer sends the offset: Rust keeps its own copy, so a pill
+    // whose copies differ would sit too high or be cut off at the bottom.
+    const pagePadding = read("src/overlay-layout.ts").match(/WINDOW_BOTTOM_PADDING = (\d+);/)?.[1];
+    const nativePadding = read("src-tauri/src/overlay_geometry.rs").match(
+      /WINDOW_BOTTOM_PADDING_LOGICAL: f64 = (\d+)\.0;/,
+    )?.[1];
+
+    expect(pagePadding).toBeDefined();
+    expect(nativePadding).toBe(pagePadding);
+  });
+
   it("installs an update only after the user confirms it", () => {
     // The README promises Windows asks first; an update relaunches the app.
     const main = read("src/main.ts");

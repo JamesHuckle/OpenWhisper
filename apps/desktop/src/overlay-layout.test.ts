@@ -14,29 +14,24 @@ import {
 describe("overlay startup layout", () => {
   it("reserves the fixed expanded pill footprint while settings load", () => {
     const pending = getOverlayLayout({
-      expanded: false,
       settingsLoaded: false,
       hasOpenaiApiKey: false,
       menuVisible: false,
     });
 
-    expect(pending).toMatchObject({
+    expect(pending).toEqual({
       width: EXPANDED_WIDTH,
       height: EXPANDED_HEIGHT + WINDOW_BOTTOM_PADDING,
-      anchorOffsetY: WINDOW_BOTTOM_PADDING,
-      bubbleVisible: false,
     });
   });
 
   it("does not resize when loading an existing API key", () => {
     const pending = getOverlayLayout({
-      expanded: false,
       settingsLoaded: false,
       hasOpenaiApiKey: false,
       menuVisible: false,
     });
     const loaded = getOverlayLayout({
-      expanded: false,
       settingsLoaded: true,
       hasOpenaiApiKey: true,
       menuVisible: false,
@@ -45,49 +40,26 @@ describe("overlay startup layout", () => {
     expect(loaded).toEqual(pending);
   });
 
-  it("keeps a single window footprint across hover expand/collapse", () => {
-    const collapsed = getOverlayLayout({
-      expanded: false,
-      settingsLoaded: true,
-      hasOpenaiApiKey: true,
-      menuVisible: false,
-    });
-    const expanded = getOverlayLayout({
-      expanded: true,
-      settingsLoaded: true,
-      hasOpenaiApiKey: true,
-      menuVisible: false,
-    });
-
-    // Same width/height/anchor for both states => no native resize or
-    // reposition on hover, so the pill renders once and never jumps.
-    expect(expanded).toEqual(collapsed);
-  });
-
   it("shows onboarding only after settings confirm the key is missing", () => {
     expect(
       getOverlayLayout({
-        expanded: false,
         settingsLoaded: true,
         hasOpenaiApiKey: false,
         menuVisible: false,
       }),
-    ).toMatchObject({
+    ).toEqual({
       width: API_KEY_BUBBLE_WIDTH,
       height: EXPANDED_HEIGHT + API_KEY_BUBBLE_STACK_HEIGHT + WINDOW_BOTTOM_PADDING,
-      bubbleVisible: true,
     });
   });
 
   it("widens only for an inline notice and keeps the pinned bottom edge", () => {
     const pill = getOverlayLayout({
-      expanded: true,
       settingsLoaded: true,
       hasOpenaiApiKey: true,
       menuVisible: false,
     });
     const notice = getOverlayLayout({
-      expanded: true,
       noticeWidth: 131.4,
       settingsLoaded: true,
       hasOpenaiApiKey: true,
@@ -121,8 +93,8 @@ describe("overlay visibility", () => {
 });
 
 describe("window layout queue", () => {
-  const shown: WindowLayout = { width: 92, height: 28, anchorOffsetY: 2, visible: true };
-  const withMenu: WindowLayout = { width: 200, height: 180, anchorOffsetY: 2, visible: true };
+  const shown: WindowLayout = { width: 92, height: 28, visible: true };
+  const withMenu: WindowLayout = { width: 200, height: 180, visible: true };
 
   function recordingNative(failFirst = 0) {
     const calls: WindowLayout[] = [];

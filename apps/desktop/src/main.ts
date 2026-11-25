@@ -302,7 +302,6 @@ const windowLayoutQueue = createWindowLayoutQueue((layout) =>
   invoke<void>("overlay_apply_layout", {
     width: layout.width,
     height: layout.height,
-    anchorOffsetY: layout.anchorOffsetY,
     visible: layout.visible,
   }),
 );
@@ -428,7 +427,6 @@ function getWindowLayout() {
   const menuVisible = menuOpen && !micMenu.classList.contains("hidden");
   const menuRect = menuVisible ? micMenu.getBoundingClientRect() : undefined;
   const layout = getOverlayLayout({
-    expanded: isWidgetExpanded(),
     noticeWidth,
     settingsLoaded,
     hasOpenaiApiKey: hasOpenaiApiKey || dictation.state !== "idle",

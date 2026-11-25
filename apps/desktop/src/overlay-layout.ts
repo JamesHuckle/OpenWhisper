@@ -1,5 +1,6 @@
 export const COLLAPSED_WIDTH = 38;
 export const COLLAPSED_HEIGHT = 14;
+/** Matches WINDOW_BOTTOM_PADDING_LOGICAL in src-tauri/src/overlay_geometry.rs. */
 export const WINDOW_BOTTOM_PADDING = 2;
 export const EXPANDED_WIDTH = 92;
 export const EXPANDED_HEIGHT = 26;
@@ -8,7 +9,6 @@ export const API_KEY_BUBBLE_WIDTH = 188;
 export const API_KEY_BUBBLE_STACK_HEIGHT = 44;
 
 export type OverlayLayoutInput = {
-  expanded: boolean;
   /** Width of the pill while it shows a short inline notice such as "No audio found". */
   noticeWidth?: number;
   settingsLoaded: boolean;
@@ -21,8 +21,6 @@ export type OverlayLayoutInput = {
 export type OverlayLayout = {
   width: number;
   height: number;
-  anchorOffsetY: number;
-  bubbleVisible: boolean;
 };
 
 export function getOverlayLayout(input: OverlayLayoutInput): OverlayLayout {
@@ -39,10 +37,6 @@ export function getOverlayLayout(input: OverlayLayoutInput): OverlayLayout {
   // the cursor moving to another monitor.
   const frameWidth = Math.max(EXPANDED_WIDTH, Math.ceil(input.noticeWidth ?? 0));
   const frameHeight = EXPANDED_HEIGHT;
-  // A constant anchor offset keeps the window's pinned bottom edge fixed across
-  // every state. Combined with the CSS pill being bottom-anchored, the pill's
-  // bottom edge never drifts; expansion grows upward from that fixed edge.
-  const anchorOffsetY = WINDOW_BOTTOM_PADDING;
   const bubbleVisible = input.settingsLoaded && !input.hasOpenaiApiKey;
   const bubbleStackHeight = bubbleVisible ? API_KEY_BUBBLE_STACK_HEIGHT : 0;
 
@@ -50,8 +44,6 @@ export function getOverlayLayout(input: OverlayLayoutInput): OverlayLayout {
     return {
       width: Math.max(frameWidth, bubbleVisible ? API_KEY_BUBBLE_WIDTH : frameWidth),
       height: frameHeight + bubbleStackHeight + WINDOW_BOTTOM_PADDING,
-      anchorOffsetY,
-      bubbleVisible,
     };
   }
 
@@ -63,8 +55,6 @@ export function getOverlayLayout(input: OverlayLayoutInput): OverlayLayout {
       bubbleVisible ? API_KEY_BUBBLE_WIDTH : 0,
     ),
     height: frameHeight + Math.max(bubbleStackHeight, menuStackHeight) + WINDOW_BOTTOM_PADDING,
-    anchorOffsetY,
-    bubbleVisible,
   };
 }
 
@@ -91,21 +81,18 @@ export function isOverlayVisible(input: OverlayVisibilityInput): boolean {
   );
 }
 
-/** What the native overlay window is told: its size, pinned bottom edge and visibility. */
+/**
+ * What the native overlay window is told: its size and visibility. The native
+ * side pins its bottom edge WINDOW_BOTTOM_PADDING below the anchor.
+ */
 export type WindowLayout = {
   width: number;
   height: number;
-  anchorOffsetY: number;
   visible: boolean;
 };
 
 function sameWindowLayout(a: WindowLayout, b: WindowLayout): boolean {
-  return (
-    a.width === b.width &&
-    a.height === b.height &&
-    a.anchorOffsetY === b.anchorOffsetY &&
-    a.visible === b.visible
-  );
+  return a.width === b.width && a.height === b.height && a.visible === b.visible;
 }
 
 /**

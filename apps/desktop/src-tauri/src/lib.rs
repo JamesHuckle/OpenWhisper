@@ -634,7 +634,6 @@ async fn overlay_apply_layout(
     state: State<'_, Arc<AppState>>,
     width: f64,
     height: f64,
-    anchor_offset_y: f64,
     visible: bool,
 ) -> Result<(), String> {
     let app_state = state.inner().clone();
@@ -642,11 +641,7 @@ async fn overlay_apply_layout(
     #[cfg(target_os = "windows")]
     {
         let _placing = app_state.placing.lock().await;
-        *lock(&app_state.overlay_layout) = Some(OverlayLayoutSpec {
-            width,
-            height,
-            anchor_offset_y,
-        });
+        *lock(&app_state.overlay_layout) = Some(OverlayLayoutSpec { width, height });
 
         if let Some((anchor, placement)) = current_placement(&app_state) {
             let was_visible = window.is_visible().map_err(|e| e.to_string())?;
