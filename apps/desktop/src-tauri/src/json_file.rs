@@ -21,17 +21,6 @@ use std::sync::Mutex;
 /// Every save of a file uses the same `.tmp` path, so saves run one at a time.
 static SAVING: Mutex<()> = Mutex::new(());
 
-/// What a read found.
-#[derive(Debug)]
-pub enum JsonRead<T> {
-    /// Neither the file nor its backup exists.
-    Missing,
-    Read(T),
-    /// The file could not be read, so its backup was used. `problem` says
-    /// what was wrong with the file.
-    Recovered { value: T, problem: String },
-}
-
 pub fn backup_path(path: &Path) -> PathBuf {
     with_suffix(path, ".bak")
 }
@@ -78,12 +67,13 @@ pub fn refresh_backup(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Reads the JSON file at `path`, or its backup if the file is damaged or
-/// missing.
-pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<JsonRead<T>> {
+/// Reads a JSON file saved with [`write_json_atomic`], falling back to its
+/// backup (and saying so in the log) when the file is damaged or missing.
+/// Returns None when neither the file nor its backup exists.
+pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     let problem = match fs::read(path) {
         Ok(raw) => match serde_json::from_slice(&raw) {
-            Ok(value) => return Ok(JsonRead::Read(value)),
+            Ok(value) => return Ok(Some(value)),
             Err(e) => format!("{} is damaged: {e}", path.display()),
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -94,28 +84,18 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<JsonRead<T>> {
     let backup = backup_path(path);
     match fs::read(&backup) {
         Ok(raw) => match serde_json::from_slice(&raw) {
-            Ok(value) => Ok(JsonRead::Recovered { value, problem }),
+            Ok(value) => {
+                crate::debug_log::debug_log_line(
+                    "storage",
+                    &format!("{problem}; using its backup"),
+                );
+                Ok(Some(value))
+            }
             Err(e) => Err(anyhow!("{problem}, and its backup is damaged too: {e}")),
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !path.exists() => {
-            Ok(JsonRead::Missing)
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !path.exists() => Ok(None),
         Err(_) => Err(anyhow!("{problem}, and it has no backup")),
     }
-}
-
-/// Reads a JSON file saved with [`write_json_atomic`], falling
-/// back to its backup (and saying so in the log) when it is damaged. Returns
-/// None when the file has never been saved.
-pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
-    Ok(match read_json(path)? {
-        JsonRead::Missing => None,
-        JsonRead::Read(value) => Some(value),
-        JsonRead::Recovered { value, problem } => {
-            crate::debug_log::debug_log_line("storage", &format!("{problem}; using its backup"));
-            Some(value)
-        }
-    })
 }
 
 #[cfg(test)]
@@ -158,20 +138,20 @@ mod tests {
         }
     }
 
-    fn read(path: &Path) -> JsonRead<Details> {
-        read_json(path).unwrap()
+    fn read(path: &Path) -> Option<Details> {
+        read_json_file(path).unwrap()
     }
 
     #[test]
     fn a_save_replaces_the_file_and_keeps_the_old_one_as_backup() {
         let dir = TempDir::new();
         let path = dir.0.join("nested").join("metadata.json");
-        assert!(matches!(read(&path), JsonRead::Missing));
+        assert_eq!(read(&path), None);
 
         write_json_atomic(&path, &details("first", 1)).unwrap();
         write_json_atomic(&path, &details("second", 2)).unwrap();
 
-        assert!(matches!(read(&path), JsonRead::Read(d) if d == details("second", 2)));
+        assert_eq!(read(&path), Some(details("second", 2)));
         let backup: Details = serde_json::from_slice(&fs::read(backup_path(&path)).unwrap()).unwrap();
         assert_eq!(backup, details("first", 1));
         assert!(!temp_path(&path).exists(), "the temp file is renamed away");
@@ -189,9 +169,9 @@ mod tests {
         write_json_atomic(&path, &details("saved", 5)).unwrap();
         fs::write(temp_path(&path), b"{\"name\": \"half wri").unwrap();
 
-        assert!(matches!(read(&path), JsonRead::Read(d) if d == details("saved", 5)));
+        assert_eq!(read(&path), Some(details("saved", 5)));
         write_json_atomic(&path, &details("next", 6)).unwrap();
-        assert!(matches!(read(&path), JsonRead::Read(d) if d == details("next", 6)));
+        assert_eq!(read(&path), Some(details("next", 6)));
     }
 
     #[test]
@@ -202,13 +182,14 @@ mod tests {
         write_json_atomic(&path, &details("new", 2)).unwrap();
         fs::write(&path, b"{\"name\": \"ne").unwrap();
 
-        match read(&path) {
-            JsonRead::Recovered { value, problem } => {
-                assert_eq!(value, details("old", 1));
-                assert!(problem.contains("damaged"), "{problem}");
-            }
-            other => panic!("expected a recovery, got {other:?}"),
-        }
+        assert_eq!(read(&path), Some(details("old", 1)));
+
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            read(&path),
+            Some(details("old", 1)),
+            "a missing file uses its backup too"
+        );
     }
 
     #[test]
@@ -223,7 +204,7 @@ mod tests {
 
         let backup: Details = serde_json::from_slice(&fs::read(backup_path(&path)).unwrap()).unwrap();
         assert_eq!(backup, details("old", 1));
-        assert!(matches!(read(&path), JsonRead::Read(d) if d == details("newest", 3)));
+        assert_eq!(read(&path), Some(details("newest", 3)));
     }
 
     #[test]
@@ -254,7 +235,7 @@ mod tests {
                 });
             }
         });
-        assert!(matches!(read(&path), JsonRead::Read(d) if d.name.len() == 4900));
+        assert_eq!(read(&path).unwrap().name.len(), 4900);
     }
 
     #[test]
@@ -262,10 +243,10 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.0.join("settings.json");
         fs::write(&path, b"not json").unwrap();
-        assert!(read_json::<Details>(&path).is_err());
+        assert!(read_json_file::<Details>(&path).is_err());
 
         fs::write(backup_path(&path), b"also not json").unwrap();
-        assert!(read_json::<Details>(&path).is_err());
+        assert!(read_json_file::<Details>(&path).is_err());
     }
 
     #[test]
