@@ -888,6 +888,8 @@ mod tests {
         responses: Mutex<VecDeque<Result<String, ApiError>>>,
         /// Each upload's type, prompt and (for FLAC) bytes.
         sent: Mutex<Vec<(String, String, Option<Vec<u8>>)>>,
+        /// Each WAV upload's bytes.
+        wavs: Mutex<Vec<Vec<u8>>>,
         /// Each tidy request's text and effort.
         tidied: Mutex<Vec<(String, String)>>,
     }
@@ -909,11 +911,14 @@ mod tests {
             _model: &str,
             prompt: &str,
         ) -> Result<String, ApiError> {
-            if mime_type == "audio/wav" {
+            let flac = if mime_type == "audio/wav" {
                 assert_eq!(&audio[..4], b"RIFF");
                 assert!(audio.len() as u64 <= max_upload_bytes());
-            }
-            let flac = (mime_type == "audio/flac").then_some(audio);
+                lock(&self.wavs).push(audio);
+                None
+            } else {
+                (mime_type == "audio/flac").then_some(audio)
+            };
             lock(&self.sent).push((mime_type.into(), prompt.into(), flac));
             lock(&self.transcripts)
                 .pop_front()
@@ -1044,6 +1049,8 @@ mod tests {
         progress: Vec<(usize, usize)>,
         /// The WAV byte ranges read, in order.
         reads: Vec<(u64, u64)>,
+        /// Each WAV upload's bytes.
+        wavs: Vec<Vec<u8>>,
     }
 
     /// Transcribes `path` with its parts saved beside it, and FLAC upload
@@ -1075,6 +1082,7 @@ mod tests {
         );
         let sent = lock(&transcriber.api.sent).clone();
         let progress = lock(&progress).clone();
+        let wavs = std::mem::take(&mut *lock(&transcriber.api.wavs));
         LongRun {
             result,
             prompts: sent.iter().map(|(_, prompt, _)| prompt.clone()).collect(),
@@ -1084,7 +1092,20 @@ mod tests {
                 .collect(),
             progress,
             reads: audio_reads(path).split_off(reads_before),
+            wavs,
         }
+    }
+
+    /// The WAV file a part of `path`'s audio is uploaded as: the header for
+    /// its length, then its audio as the file holds it.
+    fn wav_part(path: &Path, start: u64, end: u64) -> Vec<u8> {
+        let audio = fs::read(path).unwrap();
+        let pcm = &audio[44 + start as usize..44 + end as usize];
+        [
+            &crate::recording_store::wav_header(pcm.len() as u32, 1, 2, 24_000)[..],
+            pcm,
+        ]
+        .concat()
     }
 
     /// The byte ranges read from `path`'s audio.
@@ -1191,6 +1212,7 @@ mod tests {
     async fn a_refused_flac_part_sends_the_rest_of_the_recording_as_wav() {
         let dir = TempDir::new();
         let path = long_wav(&dir.0, &[SPEECH; 3]);
+        let audio_bytes = fs::metadata(&path).unwrap().len() - 44;
         let parts = flac_parts(&path, &[part_bytes()]);
 
         let run = transcribe_long(
@@ -1227,6 +1249,14 @@ mod tests {
             ]
         );
         assert_eq!(run.progress, [(1, 2), (2, 2), (2, 3), (3, 3)]);
+        // The WAV parts are the recording's own audio behind a header.
+        assert!(
+            run.wavs
+                == [
+                    wav_part(&path, part_bytes(), 2 * part_bytes()),
+                    wav_part(&path, 2 * part_bytes(), audio_bytes),
+                ]
+        );
         assert_eq!(retry.result.unwrap(), "One. Two. Three.");
         assert_eq!(retry.prompts, ["Zoon\nPrevious segment transcript: One."]);
     }
@@ -1447,6 +1477,16 @@ mod tests {
         let retry = transcribe_long(&path, ok(&[]), "Zoon", &[]).await;
 
         assert_eq!(run.result.unwrap(), "One. Two. Three.");
+        // The last part's header states the audio the file holds, not the
+        // length its own header claims.
+        assert!(
+            run.wavs
+                == [
+                    wav_part(&path, 0, part_bytes()),
+                    wav_part(&path, part_bytes(), 2 * part_bytes()),
+                    wav_part(&path, 2 * part_bytes(), audio_bytes),
+                ]
+        );
         assert_eq!(
             saved_texts(&path)[2],
             (2 * part_bytes(), audio_bytes, "Three.".into())
