@@ -27,7 +27,6 @@ import com.openwhisper.android.dictation.BufferedDictationBackend
 import com.openwhisper.android.dictation.DeterministicDemoBackend
 import com.openwhisper.android.dictation.DictationCoordinator
 import com.openwhisper.android.dictation.DictationState
-import com.openwhisper.android.dictation.SelectingDictationBackend
 import com.openwhisper.android.dp
 import com.openwhisper.android.editor.EditorSessionController
 import com.openwhisper.android.editor.InputConnectionEditorProvider
@@ -90,9 +89,6 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             callbacks = Executor { handler.post(it) },
         )
         val demoBackend = DeterministicDemoBackend(handler)
-        val backend = SelectingDictationBackend {
-            if (settings.demoMode) demoBackend else liveBackend
-        }
         overlay = DictationOverlayWindow(
             context = this,
             windowManager = getSystemService(WindowManager::class.java),
@@ -107,7 +103,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
             }
         }
         coordinator = DictationCoordinator(
-            backend = backend,
+            selectBackend = { if (settings.demoMode) demoBackend else liveBackend },
             editor = editorController,
             render = ::render,
             onTranscriptReady = ::copyTranscriptToClipboard,

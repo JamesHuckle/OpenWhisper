@@ -16,7 +16,7 @@ class DictationCoordinatorTest {
         val states = mutableListOf<DictationState>()
         val copiedTranscripts = mutableListOf<String>()
         val coordinator = DictationCoordinator(
-            backend,
+            { backend },
             editor,
             states::add,
             copiedTranscripts::add,
@@ -54,7 +54,7 @@ class DictationCoordinatorTest {
         val backend = FakeDictationBackend()
         val editor = FakeEditorSessionPort(session = null)
         val states = mutableListOf<DictationState>()
-        val coordinator = DictationCoordinator(backend, editor, states::add)
+        val coordinator = DictationCoordinator({ backend }, editor, states::add)
 
         coordinator.onMicPressed()
 
@@ -69,7 +69,7 @@ class DictationCoordinatorTest {
         val states = mutableListOf<DictationState>()
         val copiedTranscripts = mutableListOf<String>()
         val coordinator = DictationCoordinator(
-            backend,
+            { backend },
             editor,
             states::add,
             copiedTranscripts::add,
@@ -89,7 +89,7 @@ class DictationCoordinatorTest {
         val backend = FakeDictationBackend()
         val editor = FakeEditorSessionPort()
         val states = mutableListOf<DictationState>()
-        val coordinator = DictationCoordinator(backend, editor, states::add)
+        val coordinator = DictationCoordinator({ backend }, editor, states::add)
 
         coordinator.onMicPressed()
         coordinator.cancel()
@@ -103,7 +103,7 @@ class DictationCoordinatorTest {
     fun cancellationReturnsToIdleFromFinalizingAndFailed() {
         val backend = FakeDictationBackend()
         val editor = FakeEditorSessionPort()
-        val coordinator = DictationCoordinator(backend, editor, {})
+        val coordinator = DictationCoordinator({ backend }, editor, {})
 
         coordinator.onMicPressed()
         coordinator.onMicPressed()
@@ -125,7 +125,7 @@ class DictationCoordinatorTest {
         val editor = FakeEditorSessionPort()
         val states = mutableListOf<DictationState>()
         lateinit var coordinator: DictationCoordinator
-        coordinator = DictationCoordinator(backend, editor, states::add, { coordinator.cancel() })
+        coordinator = DictationCoordinator({ backend }, editor, states::add, { coordinator.cancel() })
 
         coordinator.onMicPressed()
         coordinator.onMicPressed()
@@ -143,7 +143,7 @@ class DictationCoordinatorTest {
         val states = mutableListOf<DictationState>()
         val copiedTranscripts = mutableListOf<String>()
         val coordinator = DictationCoordinator(
-            backend,
+            { backend },
             editor,
             states::add,
             copiedTranscripts::add,
@@ -166,7 +166,7 @@ class DictationCoordinatorTest {
         val backend = FakeDictationBackend()
         val editor = FakeEditorSessionPort()
         val states = mutableListOf<DictationState>()
-        val coordinator = DictationCoordinator(backend, editor, states::add)
+        val coordinator = DictationCoordinator({ backend }, editor, states::add)
 
         coordinator.onMicPressed()
         backend.listener?.onError("Microphone unavailable")
@@ -184,7 +184,7 @@ class DictationCoordinatorTest {
         val demo = FakeDictationBackend("demo", events)
         var selected: DictationBackend = live
         val coordinator = DictationCoordinator(
-            SelectingDictationBackend { events += "select"; selected },
+            { events += "select"; selected },
             FakeEditorSessionPort(),
             { events += "render ${it::class.simpleName}" },
         )

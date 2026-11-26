@@ -15,14 +15,16 @@ interface DictationBackend {
     fun cancel()
 }
 
+/** [selectBackend] picks the backend at each start; that recording keeps it until it ends. */
 class DictationCoordinator(
-    private val backend: DictationBackend,
+    private val selectBackend: () -> DictationBackend,
     private val editor: EditorSessionPort,
     private val render: (DictationState) -> Unit,
     private val onTranscriptReady: (String) -> Unit = {},
 ) : DictationBackend.Listener {
     private var state: DictationState = DictationState.Idle
     private var session: EditorSession? = null
+    private var backend: DictationBackend? = null
 
     val currentState: DictationState
         get() = state
@@ -38,7 +40,10 @@ class DictationCoordinator(
     }
 
     fun cancel() {
-        if (state !is DictationState.Idle) backend.cancel()
+        if (state !is DictationState.Idle) {
+            backend?.cancel()
+            backend = null
+        }
         session = null
         transition(DictationState.Idle)
     }
@@ -73,12 +78,13 @@ class DictationCoordinator(
         }
         session = captured
         transition(DictationState.Listening)
-        backend.start(this)
+        backend?.cancel()
+        backend = selectBackend().also { it.start(this) }
     }
 
     private fun finish() {
         transition(DictationState.Finalizing)
-        backend.finish()
+        backend?.finish()
     }
 
     private fun transition(next: DictationState) {

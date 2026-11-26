@@ -29,23 +29,3 @@ class DeterministicDemoBackend(
         listener = null
     }
 }
-
-class SelectingDictationBackend(
-    private val select: () -> DictationBackend,
-) : DictationBackend {
-    private var current: DictationBackend? = null
-
-    override fun start(listener: DictationBackend.Listener) {
-        current?.cancel()
-        current = select().also { it.start(listener) }
-    }
-
-    override fun finish() {
-        current?.finish()
-    }
-
-    override fun cancel() {
-        current?.cancel()
-        current = null
-    }
-}
