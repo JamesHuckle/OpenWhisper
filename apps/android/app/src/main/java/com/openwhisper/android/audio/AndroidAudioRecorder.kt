@@ -121,7 +121,8 @@ internal class MicrophoneRecording(
             sink.finish(if (readFailure == null) "saved" else "capture_failed")
         } catch (error: Exception) {
             // The capture's own failure is the one to report, not the save's.
-            readFailure?.let { throw IllegalStateException(it, error) }
+            // Naming the raw audio keeps the dictation from offering it.
+            readFailure?.let { throw IllegalStateException("$it. Raw audio could not be saved.", error) }
             throw error
         }
         readFailure?.let { throw IllegalStateException("$it. Raw audio was saved in OpenWhisper.") }

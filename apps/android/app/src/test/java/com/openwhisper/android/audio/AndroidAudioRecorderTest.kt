@@ -115,7 +115,7 @@ class AndroidAudioRecorderTest {
             fail("A recording that could not be written was stopped as saved")
         } catch (error: IllegalStateException) {
             // Saving the file fails too, so it must not claim the audio was saved.
-            assertEquals("Could not save the rest of the recording", error.message)
+            assertEquals("Could not save the rest of the recording. Raw audio could not be saved.", error.message)
         }
         assertEquals(1, microphone.releaseCount.get())
         assertEquals(1, freed.get())
@@ -148,7 +148,7 @@ class AndroidAudioRecorderTest {
         assertFalse(stopping.isAlive)
         val failure = stopFailure.get()
         assertTrue("The failed last write was hidden: $failure", failure is IllegalStateException)
-        assertEquals("Could not save the rest of the recording", failure!!.message)
+        assertEquals("Could not save the rest of the recording. Raw audio could not be saved.", failure!!.message)
     }
 
     @Test

@@ -200,6 +200,26 @@ class BufferedDictationBackendTest {
     }
 
     @Test
+    fun aRecordingThatCouldNotBeSavedDoesNotOfferItsRawAudio() {
+        val message = "Could not save the rest of the recording. Raw audio could not be saved."
+        val recorder = FakePcmRecorder(pcmRecording(byteArrayOf()), stopError = message)
+        val runner = QueuedRunner()
+        val listener = CapturingListener()
+        val backend = BufferedDictationBackend(
+            recorder,
+            manager(FakeTranscriptionClient("unused"), runner),
+            runner,
+            DirectDispatcher,
+        )
+
+        backend.start(listener)
+        backend.finish()
+        runner.runAll()
+
+        assertEquals(message, listener.error)
+    }
+
+    @Test
     fun aRecordingWithoutSpeechShowsNoAudioFoundLikeTheDesktop() {
         val recorder = FakePcmRecorder(pcmRecording(byteArrayOf(1, 2)))
         val client = FakeTranscriptionClient("unused", error = NoSpeechException("too_short"))
