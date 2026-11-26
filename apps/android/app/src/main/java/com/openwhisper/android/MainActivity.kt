@@ -4,8 +4,6 @@ import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -302,8 +300,7 @@ class MainActivity : Activity() {
             .setTitle(R.string.transcription_complete)
             .setMessage(transcript)
             .setPositiveButton(R.string.copy_transcript) { _, _ ->
-                getSystemService(ClipboardManager::class.java)
-                    .setPrimaryClip(ClipData.newPlainText(getString(R.string.clipboard_transcript_label), transcript))
+                copyTranscript(transcript)
             }
             .setNeutralButton(R.string.view_raw_audio) { _, _ ->
                 recording?.let(::openRawRecording)
@@ -328,21 +325,13 @@ class MainActivity : Activity() {
     }
 
     private fun openRawRecording(recording: StoredRecording) {
-        val uri = FileProvider.getUriForFile(
-            this,
-            "$packageName.updates",
-            recordingStore.file(recording),
-        )
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, recording.mimeType)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
+        val intent = viewIntent(recordingStore.file(recording), recording.mimeType)
         runCatching { startActivity(intent) }.onFailure {
             startActivity(
                 Intent.createChooser(
                     Intent(Intent.ACTION_SEND).apply {
                         type = recording.mimeType
-                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_STREAM, intent.data)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     },
                     getString(R.string.view_raw_audio),
@@ -536,14 +525,15 @@ class MainActivity : Activity() {
     private fun canInstallPackages(): Boolean = packageManager.canRequestPackageInstalls()
 
     private fun launchPackageInstaller(file: File) {
-        val uri = FileProvider.getUriForFile(this, "$packageName.updates", file)
-        startActivity(
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            },
-        )
+        startActivity(viewIntent(file, "application/vnd.android.package-archive"))
     }
+
+    /** Opens [file] in another app through this app's file provider. */
+    private fun viewIntent(file: File, mimeType: String): Intent =
+        Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(FileProvider.getUriForFile(this@MainActivity, "$packageName.updates", file), mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
 
     private fun showMessage(title: Int, message: Int) {
         AlertDialog.Builder(this)

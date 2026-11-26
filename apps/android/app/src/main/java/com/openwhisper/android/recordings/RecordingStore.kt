@@ -2,6 +2,7 @@ package com.openwhisper.android.recordings
 
 import android.content.Context
 import androidx.core.util.AtomicFile
+import com.openwhisper.android.writeAll
 import com.openwhisper.android.audio.WavEncoder
 import java.io.File
 import java.io.InputStream
@@ -234,15 +235,7 @@ class RecordingStore private constructor(
                 .put("transcript", recording.transcript)
                 .put("error", recording.error)
                 .toString(2)
-        val file = metadataFile(directory)
-        val output = file.startWrite()
-        try {
-            output.write(json.encodeToByteArray())
-            file.finishWrite(output)
-        } catch (failure: Throwable) {
-            file.failWrite(output)
-            throw failure
-        }
+        metadataFile(directory).writeAll(json.encodeToByteArray())
     }
 
     private fun parseMetadata(raw: String): StoredRecording {

@@ -5,8 +5,6 @@ import android.accessibilityservice.InputMethod
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Rect
@@ -24,6 +22,7 @@ import androidx.annotation.RequiresApi
 import com.openwhisper.android.MainActivity
 import com.openwhisper.android.OpenWhisperApplication
 import com.openwhisper.android.audio.AndroidAudioRecorder
+import com.openwhisper.android.copyTranscript
 import com.openwhisper.android.dictation.BufferedDictationBackend
 import com.openwhisper.android.dictation.DeterministicDemoBackend
 import com.openwhisper.android.dictation.DictationCoordinator
@@ -228,12 +227,7 @@ class OpenWhisperAccessibilityService : AccessibilityService() {
 
     private fun copyTranscriptToClipboard(transcript: String) {
         runCatching {
-            val clipboard = getSystemService(ClipboardManager::class.java)
-            val clip = ClipData.newPlainText(
-                getString(com.openwhisper.android.R.string.clipboard_transcript_label),
-                transcript,
-            )
-            clipboard.setPrimaryClip(clip)
+            copyTranscript(transcript)
             if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
                 Toast.makeText(
                     this,

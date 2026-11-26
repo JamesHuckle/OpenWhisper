@@ -1,6 +1,7 @@
 package com.openwhisper.android.transcription
 
 import androidx.core.util.AtomicFile
+import com.openwhisper.android.writeAll
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
@@ -58,17 +59,10 @@ internal class SavedParts(private val file: File?, private val key: String) {
                     },
                 ),
             )
-        val atomic = AtomicFile(target)
-        val output = try {
-            atomic.startWrite()
-        } catch (_: IOException) {
-            return
-        }
         try {
-            output.write(json.toString().encodeToByteArray())
-            atomic.finishWrite(output)
+            AtomicFile(target).writeAll(json.toString().encodeToByteArray())
         } catch (_: IOException) {
-            atomic.failWrite(output)
+            // Skipped: a retry sends this part again.
         }
     }
 
