@@ -95,7 +95,8 @@ class AndroidAudioRecorderTest {
         // Every write to /dev/full fails as a full phone's storage does.
         val fullStorage = File("/dev/full")
         assumeTrue(fullStorage.canWrite())
-        val microphone = FakeAudioRecord(stopBlocks = false, bytesRead = 2_048)
+        // The read is held until the handler is in place, so the failing write cannot run first.
+        val microphone = FakeAudioRecord(stopBlocks = false, readBlocks = true, bytesRead = 2_048)
         val freed = AtomicInteger()
         val sink = PcmRecordingWriter(store(), "full", fullStorage, 16_000)
         val recording = MicrophoneRecording(microphone, sink, 8_192, null) { freed.incrementAndGet() }
@@ -104,6 +105,7 @@ class AndroidAudioRecorderTest {
         val reader = microphone.reader!!
         val readerFailure = AtomicReference<Throwable?>(null)
         reader.setUncaughtExceptionHandler { _, error -> readerFailure.set(error) }
+        microphone.unblockRead.countDown()
         reader.join(5_000)
 
         assertFalse(reader.isAlive)
