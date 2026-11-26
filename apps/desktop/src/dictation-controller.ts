@@ -385,7 +385,9 @@ export function createDictationController(deps: DictationDeps) {
               return startSession(true);
             }
           }
-          return startSession();
+          // Standard was decided above; saying so keeps a Live model saved
+          // since then from opening a Live connection this recording never uses.
+          return startSession(true);
         },
       });
       if (!sessionId) return;

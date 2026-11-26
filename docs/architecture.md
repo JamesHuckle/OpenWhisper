@@ -69,9 +69,10 @@ WhisperFlow is split into two runtime layers, in one process:
    saved at that moment. A Live session opens its Realtime websocket at
    once. If it cannot, the page starts the session again with
    `standardOnly: true` (no websocket), keeps recording, and transcribes the
-   saved recording with Standard when the user stops. Imports and retries
-   always start their session with `standardOnly: true`, so they work while
-   Live is selected.
+   saved recording with Standard when the user stops. A dictation the page
+   started as Standard, and every import and retry, always starts its session
+   with `standardOnly: true`, so Live saved meanwhile or selected opens no
+   websocket.
 3. The shell saves every audio chunk once, to the recording's WAV file
    (`src-tauri/src/recording_store.rs`). The page sends each chunk as raw
    bytes, with its recording or session id in a header, never as base64

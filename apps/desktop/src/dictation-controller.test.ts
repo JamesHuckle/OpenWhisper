@@ -215,6 +215,28 @@ describe("dictation controller", () => {
     expect(app.commands()).toContain("worker_start_session");
   });
 
+  it("asks for a Standard session when Live is saved while a Standard recording starts", async () => {
+    const { app, config, dictation } = setup();
+    app.hold("recording_begin");
+
+    void dictation.toggleRecording();
+    await settle();
+    // Saving Live now changes the model the app would use for a plain session.
+    config.model = LIVE_TRANSCRIPTION_MODEL;
+    app.release("recording_begin");
+    await settle();
+
+    expect(app.named("worker_start_session").map((call) => call.args)).toEqual([
+      { standardOnly: true },
+    ]);
+    await dictation.toggleRecording();
+    await settle();
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", sessionId: "s-1" },
+    ]);
+    expect(app.named("worker_append_audio_chunk")).toEqual([]);
+  });
+
   it("sends Standard audio only to the backup and transcribes the saved file once", async () => {
     const { app, mic, dictation, states } = setup();
     await startRecording(dictation);
