@@ -1,11 +1,11 @@
-//! Reads the format of a PCM WAV file and builds small WAV files from PCM,
-//! with the one header writer in src/recording_store.rs.
+//! Reads the format of a PCM WAV file and reads part of its audio as a WAV
+//! file of its own, with the one header writer in src/recording_store.rs.
 //!
 //! The FLAC encoder (src/flac_upload.rs) and the transcriber
 //! (src/transcriber.rs) both read saved recordings through this one parser.
 //! This file needs no Tauri, so its tests run in the `core` crate.
 
-use crate::recording_store::wav_header;
+use crate::recording_store::{wav_header, WAV_HEADER_BYTES};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -102,7 +102,33 @@ pub fn read_wav_format(file: &mut File) -> io::Result<WavFormat> {
     }
 }
 
+/// The audio from byte `start` to `end` (or where `source` ends) as a WAV
+/// file of its own, in whole frames. The audio is read straight in behind
+/// the header, so a part as large as an upload is held in memory once.
+pub fn read_wav_part(
+    mut source: impl Read + Seek,
+    format: WavFormat,
+    start: u64,
+    end: u64,
+) -> io::Result<Vec<u8>> {
+    let header_bytes = WAV_HEADER_BYTES as usize;
+    source.seek(SeekFrom::Start(format.data_offset + start))?;
+    let mut wav = Vec::with_capacity(header_bytes + (end - start) as usize);
+    wav.resize(header_bytes, 0);
+    let read = source.take(end - start).read_to_end(&mut wav)?;
+    let pcm_bytes = read - read % format.frame_bytes() as usize;
+    wav.truncate(header_bytes + pcm_bytes);
+    wav[..header_bytes].copy_from_slice(&wav_header(
+        pcm_bytes as u32,
+        format.channels,
+        format.sample_width,
+        format.sample_rate,
+    ));
+    Ok(wav)
+}
+
 /// A whole WAV file holding `pcm` in the given format.
+#[cfg(test)]
 pub fn wav_bytes(pcm: &[u8], channels: u16, sample_width: u16, sample_rate: u32) -> Vec<u8> {
     let header = wav_header(pcm.len() as u32, channels, sample_width, sample_rate);
     let mut wav = Vec::with_capacity(header.len() + pcm.len());
@@ -160,6 +186,30 @@ mod tests {
             }
         );
         assert_eq!(format.frame_bytes(), 4);
+    }
+
+    #[test]
+    fn a_wav_part_is_its_header_then_its_audio_in_whole_frames() {
+        let pcm = [1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0];
+        let wav = wav_bytes(&pcm, 2, 2, 16_000);
+        let format = WavFormat {
+            channels: 2,
+            sample_width: 2,
+            sample_rate: 16_000,
+            data_offset: 44,
+            data_bytes: 12,
+        };
+        let part = |start, end| read_wav_part(std::io::Cursor::new(&wav), format, start, end);
+
+        assert_eq!(part(4, 12).unwrap(), wav_bytes(&pcm[4..12], 2, 2, 16_000));
+        // A read cut short (the file shrank after its format was read) keeps
+        // only whole frames, and its header states what it holds.
+        let shrunk = &wav[..wav.len() - 2];
+        assert_eq!(
+            read_wav_part(std::io::Cursor::new(shrunk), format, 4, 12).unwrap(),
+            wav_bytes(&pcm[4..8], 2, 2, 16_000)
+        );
+        assert_eq!(part(12, 16).unwrap(), wav_header(0, 2, 2, 16_000));
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub const HEADER_SYNC_INTERVAL: Duration = Duration::from_secs(1);
 /// Audio files the import picker offers.
 pub const IMPORT_EXTENSIONS: &[&str] = &["wav", "mp3", "m4a", "mp4", "mpeg", "mpga", "webm", "ogg"];
 
-const WAV_HEADER_BYTES: u64 = 44;
+pub const WAV_HEADER_BYTES: u64 = 44;
 
 /// The 44-byte header of a PCM WAV file holding `pcm_bytes` of audio with
 /// `sample_width` bytes per sample. Microphone recordings are mono 16-bit

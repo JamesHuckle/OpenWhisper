@@ -14,9 +14,10 @@ use crate::audio_rules::{kept_part_text, max_upload_bytes, pcm_is_silent, previo
 use crate::debug_log::debug_log_line;
 use crate::flac_upload::{self, UploadPart};
 use crate::openai_api::{ApiError, OpenAiApi};
+use crate::recording_store::WAV_HEADER_BYTES;
 use crate::saved_parts::{parts_key, SavedPart, SavedParts};
 use crate::sync::lock;
-use crate::wav_file::{read_wav_format, wav_bytes, WavFormat};
+use crate::wav_file::{read_wav_format, read_wav_part, WavFormat};
 use futures_util::future::try_join_all;
 use regex::Regex;
 use std::fmt;
@@ -316,15 +317,16 @@ impl<A: OpenAiApi> Transcriber<A> {
             // A part finished on an earlier try is looked up before its audio
             // is read, so a retry reads only the parts still to send.
             let mut done = saved.get(index, start, end).map(|part| part.text.clone());
-            let mut frames = Vec::new();
+            let mut wav = Vec::new();
             if done.is_none() && upload.is_none() {
-                frames = read_audio(path.to_path_buf(), format, start, end).await?;
-                if frames.is_empty() {
+                wav = read_wav_file_part(path.to_path_buf(), format, start, end).await?;
+                let audio_read = wav.len() as u64 - WAV_HEADER_BYTES;
+                if audio_read == 0 {
                     break;
                 }
                 // A read that ended early (the file shrank after its format
                 // was read) is looked up again with the range it read.
-                end = start + frames.len() as u64;
+                end = start + audio_read;
                 done = saved.get(index, start, end).map(|part| part.text.clone());
             }
             if let Some(text) = done {
@@ -336,7 +338,7 @@ impl<A: OpenAiApi> Transcriber<A> {
             }
             let silent = format.sample_width == 2
                 && if upload.is_none() {
-                    pcm_is_silent(&mut frames.as_slice())?
+                    pcm_is_silent(&mut &wav[WAV_HEADER_BYTES as usize..])?
                 } else {
                     audio_is_silent(path.to_path_buf(), format, start, end).await?
                 };
@@ -367,12 +369,6 @@ impl<A: OpenAiApi> Transcriber<A> {
             };
             let text = match &upload {
                 None => {
-                    let wav = wav_bytes(
-                        &frames,
-                        format.channels,
-                        format.sample_width,
-                        format.sample_rate,
-                    );
                     self.transcribe_bytes(wav, "audio/wav", &contextual_prompt)
                         .await?
                 }
@@ -646,19 +642,17 @@ async fn read_file(path: PathBuf) -> io::Result<Vec<u8>> {
     blocking(move || fs::read(path)).await
 }
 
-/// The WAV's audio from byte `start` to `end` (or its end).
-async fn read_audio(path: PathBuf, format: WavFormat, start: u64, end: u64) -> io::Result<Vec<u8>> {
+/// The WAV's audio from byte `start` to `end` (or its end), as the WAV
+/// file uploaded for it.
+async fn read_wav_file_part(
+    path: PathBuf,
+    format: WavFormat,
+    start: u64,
+    end: u64,
+) -> io::Result<Vec<u8>> {
     #[cfg(test)]
     lock(&tests::AUDIO_READS).push((path.clone(), start, end));
-    blocking(move || {
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::Start(format.data_offset + start))?;
-        let mut audio = Vec::with_capacity((end - start) as usize);
-        let read = file.take(end - start).read_to_end(&mut audio)?;
-        audio.truncate(read - read % format.frame_bytes() as usize);
-        Ok(audio)
-    })
-    .await
+    blocking(move || read_wav_part(File::open(path)?, format, start, end)).await
 }
 
 /// Whether the WAV's audio from byte `start` to `end` is silent, read a
@@ -847,6 +841,7 @@ pub fn is_short_clean_transcript(text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::audio_rules::rules;
+    use crate::wav_file::wav_bytes;
     use serde_json::Value;
     use std::collections::VecDeque;
     use std::io::Write;
@@ -855,7 +850,7 @@ mod tests {
 
     const SPEECH: i16 = 8_000;
 
-    /// Every WAV byte range `read_audio` read, with its file.
+    /// Every WAV byte range `read_wav_file_part` read, with its file.
     pub(super) static AUDIO_READS: Mutex<Vec<(PathBuf, u64, u64)>> = Mutex::new(Vec::new());
 
     /// The WAVs whose encoder, once it has written its parts, tells the test
