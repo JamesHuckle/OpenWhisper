@@ -176,9 +176,48 @@ class DictationCoordinatorTest {
         assertEquals(2, backend.startCount)
         assertEquals(DictationState.Listening, states.last())
     }
+
+    @Test
+    fun eachRecordingKeepsTheBackendSelectedWhenItStarted() {
+        val events = mutableListOf<String>()
+        val live = FakeDictationBackend("live", events)
+        val demo = FakeDictationBackend("demo", events)
+        var selected: DictationBackend = live
+        val coordinator = DictationCoordinator(
+            SelectingDictationBackend { events += "select"; selected },
+            FakeEditorSessionPort(),
+            { events += "render ${it::class.simpleName}" },
+        )
+
+        coordinator.onMicPressed()
+        // Switching the setting during a recording affects only the next one.
+        selected = demo
+        coordinator.onMicPressed()
+        live.listener?.onFinal("first")
+        coordinator.onMicPressed()
+        coordinator.cancel()
+        coordinator.onMicPressed()
+        demo.listener?.onError("network")
+        coordinator.onMicPressed()
+
+        assertEquals(
+            listOf(
+                "render Listening", "select", "live start",
+                "render Finalizing", "live finish", "render Idle",
+                "render Listening", "live cancel", "select", "demo start",
+                "demo cancel", "render Idle",
+                "render Listening", "select", "demo start", "render Failed",
+                "render Listening", "demo cancel", "select", "demo start",
+            ),
+            events,
+        )
+    }
 }
 
-private class FakeDictationBackend : DictationBackend {
+private class FakeDictationBackend(
+    private val name: String = "backend",
+    private val events: MutableList<String> = mutableListOf(),
+) : DictationBackend {
     var startCount = 0
     var finishCount = 0
     var cancelCount = 0
@@ -187,14 +226,17 @@ private class FakeDictationBackend : DictationBackend {
     override fun start(listener: DictationBackend.Listener) {
         startCount += 1
         this.listener = listener
+        events += "$name start"
     }
 
     override fun finish() {
         finishCount += 1
+        events += "$name finish"
     }
 
     override fun cancel() {
         cancelCount += 1
+        events += "$name cancel"
     }
 }
 
