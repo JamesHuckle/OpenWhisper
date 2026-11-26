@@ -5,8 +5,8 @@ mod overlay_positioner;
 mod text_inserter;
 
 use openwhisper_core::{
-    api_key_store, debug_log, json_file, models, overlay_geometry, recording_store, recordings,
-    settings, sync, transcriber, transcription_sessions,
+    api_key_store, debug_log, json_file, models, overlay_geometry, paste_target, recording_store,
+    recordings, settings, sync, transcriber, transcription_sessions,
 };
 
 use anyhow::{anyhow, Result};
@@ -16,6 +16,7 @@ use overlay_geometry::{
     overlay_placement, MonitorTransitionDebouncer, OverlayAnchor, OverlayLayoutSpec,
     OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
 };
+use paste_target::WriteOutcome;
 use recording_store::PcmWavWriter;
 use recordings::{
     close_active_recording, finish_recording, import_recording, list_recording_metadata, now_ms,
@@ -562,69 +563,36 @@ fn capture_paste_target() {
     text_inserter::capture_target();
 }
 
-/// How a write into the recording's target field ended. `outcome` is one of
-/// `typed`, `stopped` (live typing ended for this recording), `replaced`,
-/// `pasted`, `kept` (the live draft already matched) or `copied` (left on the
-/// clipboard instead); `reason` says why text was stopped or copied.
-#[derive(Debug, Serialize)]
-struct TargetWrite {
-    outcome: &'static str,
-    reason: Option<&'static str>,
-}
-
-#[cfg(target_os = "windows")]
-impl From<text_inserter::WriteOutcome> for TargetWrite {
-    fn from(outcome: text_inserter::WriteOutcome) -> Self {
-        use text_inserter::WriteOutcome::*;
-        let (outcome, reason) = match outcome {
-            Typed => ("typed", None),
-            Replaced => ("replaced", None),
-            Pasted => ("pasted", None),
-            Kept => ("kept", None),
-            Stopped(blocked) => ("stopped", Some(blocked.as_str())),
-            Copied(blocked) => ("copied", Some(blocked.as_str())),
-        };
-        TargetWrite { outcome, reason }
-    }
-}
-
 /// Type one live piece of the transcript into the locked field.
 #[tauri::command]
-async fn type_to_target(text: String) -> Result<TargetWrite, String> {
+async fn type_to_target(text: String) -> Result<WriteOutcome, String> {
     #[cfg(target_os = "windows")]
     {
-        tauri::async_runtime::spawn_blocking(move || text_inserter::type_live(&text).into())
+        tauri::async_runtime::spawn_blocking(move || text_inserter::type_live(&text))
             .await
             .map_err(|e| e.to_string())
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = text;
-        Ok(TargetWrite {
-            outcome: "stopped",
-            reason: Some("unsupported"),
-        })
+        Ok(WriteOutcome::Stopped(paste_target::Blocked::Unsupported))
     }
 }
 
 /// Write the final transcript into the locked field, replacing the live
 /// draft only when it is safe to delete.
 #[tauri::command]
-async fn insert_final_text(text: String) -> Result<TargetWrite, String> {
+async fn insert_final_text(text: String) -> Result<WriteOutcome, String> {
     #[cfg(target_os = "windows")]
     {
         tauri::async_runtime::spawn_blocking(move || text_inserter::insert_final(&text))
             .await
             .map_err(|e| e.to_string())?
-            .map(TargetWrite::from)
     }
     #[cfg(not(target_os = "windows"))]
     {
         copy_to_clipboard(text)?;
-        Ok(TargetWrite {
-            outcome: "copied",
-            reason: Some("unsupported"),
-        })
+        Ok(WriteOutcome::Copied(paste_target::Blocked::Unsupported))
     }
 }
 

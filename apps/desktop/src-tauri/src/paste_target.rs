@@ -4,8 +4,8 @@
 //! The rules are plain data in, decision out, so they are shared by every
 //! platform and tested without Windows. The Windows code in `lib.rs` gathers
 //! an [`Observation`] just before each write and does what the decision says.
-//! This file has no dependencies so it can also be tested on its own with
-//! `rustc --test`.
+//! Its only dependency is Serde, which sends each [`WriteOutcome`] to the
+//! frontend.
 
 /// What the app saw just before writing, after it tried to bring the
 /// recording's target window back to the front.
@@ -28,8 +28,10 @@ pub struct Observation {
     pub shortcut_modifier_held: bool,
 }
 
-/// Why text was not written into the target field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why text was not written into the target field. Sent to the frontend as
+/// the `reason` of a [`WriteOutcome`], in snake case (`window_changed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Blocked {
     NoTarget,
     WindowChanged,
@@ -40,20 +42,24 @@ pub enum Blocked {
     /// Windows did not accept every injected key (for example an elevated
     /// window or a locked desktop), so what reached the field is unknown.
     InputRefused,
+    /// This system cannot write into other apps' fields (only Windows can).
+    Unsupported,
 }
 
-impl Blocked {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Blocked::NoTarget => "no_target",
-            Blocked::WindowChanged => "window_changed",
-            Blocked::PasswordField => "password_field",
-            Blocked::FieldChanged => "field_changed",
-            Blocked::CursorMoved => "cursor_moved",
-            Blocked::ShortcutHeld => "shortcut_held",
-            Blocked::InputRefused => "input_refused",
-        }
-    }
+/// How a write into the recording's target field ended, as the frontend
+/// receives it: `{"outcome":"stopped","reason":"window_changed"}`, or just
+/// `{"outcome":"typed"}` when text was written. `stopped` ends live typing for
+/// this recording; `kept` means the live draft already matched; `copied` left
+/// the transcript on the clipboard instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "outcome", content = "reason", rename_all = "snake_case")]
+pub enum WriteOutcome {
+    Typed,
+    Replaced,
+    Pasted,
+    Kept,
+    Stopped(Blocked),
+    Copied(Blocked),
 }
 
 /// What to do with one live piece of the transcript.
@@ -313,6 +319,25 @@ mod tests {
             ..steady()
         };
         assert_eq!(decide_final(&moved, "", true, "Hello."), FinalWrite::Paste);
+    }
+
+    #[test]
+    fn write_outcomes_reach_the_frontend_as_outcome_and_reason() {
+        let json = |outcome: WriteOutcome| serde_json::to_string(&outcome).unwrap();
+        assert_eq!(
+            json(WriteOutcome::Stopped(Blocked::WindowChanged)),
+            r#"{"outcome":"stopped","reason":"window_changed"}"#
+        );
+        assert_eq!(
+            json(WriteOutcome::Copied(Blocked::PasswordField)),
+            r#"{"outcome":"copied","reason":"password_field"}"#
+        );
+        assert_eq!(
+            json(WriteOutcome::Copied(Blocked::Unsupported)),
+            r#"{"outcome":"copied","reason":"unsupported"}"#
+        );
+        assert_eq!(json(WriteOutcome::Typed), r#"{"outcome":"typed"}"#);
+        assert_eq!(json(WriteOutcome::Kept), r#"{"outcome":"kept"}"#);
     }
 
     #[test]

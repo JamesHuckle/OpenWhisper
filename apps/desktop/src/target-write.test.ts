@@ -7,9 +7,9 @@ import {
 
 describe("final transcript notices", () => {
   it("confirms text written into the target field", () => {
-    expect(finalWriteNotice({ outcome: "replaced", reason: null })).toBe("Transcribed live");
-    expect(finalWriteNotice({ outcome: "kept", reason: null })).toBe("Transcribed live");
-    expect(finalWriteNotice({ outcome: "pasted", reason: null })).toBe("Transcribed and pasted");
+    expect(finalWriteNotice({ outcome: "replaced" })).toBe("Transcribed live");
+    expect(finalWriteNotice({ outcome: "kept" })).toBe("Transcribed live");
+    expect(finalWriteNotice({ outcome: "pasted" })).toBe("Transcribed and pasted");
   });
 
   it("says why the transcript was copied instead of typed", () => {
@@ -47,7 +47,7 @@ function delivery(options: {
       commands.push(command);
       order.push(command);
       if (command === options.fail) throw new Error(`${command} failed`);
-      return command === "insert_final_text" ? { outcome: "pasted", reason: null } : null;
+      return command === "insert_final_text" ? { outcome: "pasted" } : null;
     },
     transcript: "Hello world",
     paste: options.paste ?? true,

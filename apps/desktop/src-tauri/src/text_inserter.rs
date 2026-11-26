@@ -13,7 +13,9 @@
 
 use openwhisper_core::overlay_geometry::cursor_entered_new_monitor;
 use crate::overlay_positioner;
-use openwhisper_core::paste_target::{self, Blocked, FinalWrite, LiveWrite, Observation};
+use openwhisper_core::paste_target::{
+    self, Blocked, FinalWrite, LiveWrite, Observation, WriteOutcome,
+};
 use openwhisper_core::sync::lock;
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -82,16 +84,6 @@ struct PasteSession {
     draft: String,
     live_stopped: Option<Blocked>,
     input_seen: u64,
-}
-
-/// How a write ended, for the frontend.
-pub enum WriteOutcome {
-    Typed,
-    Replaced,
-    Pasted,
-    Kept,
-    Stopped(Blocked),
-    Copied(Blocked),
 }
 
 const DBG_CTRL_DOWN: u32 = 1 << 0;

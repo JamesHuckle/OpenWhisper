@@ -16,8 +16,8 @@ const ANSWERS: Record<string, unknown> = {
   recording_begin: { id: "rec-1" },
   worker_start_session: { session_id: "s-1" },
   recording_import: { id: "imported-1" },
-  insert_final_text: { outcome: "pasted", reason: null },
-  type_to_target: { outcome: "typed", reason: null },
+  insert_final_text: { outcome: "pasted" },
+  type_to_target: { outcome: "typed" },
 };
 
 /**

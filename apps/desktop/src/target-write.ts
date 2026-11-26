@@ -5,10 +5,12 @@ import type { Invoke } from "./recording-pipeline";
  * Result of writing dictated text into the field that was focused when the
  * recording started (the native `type_to_target` and `insert_final_text`
  * commands). The native side checks that field before every write.
+ * `reason` (why text was stopped or copied) is sent only with `stopped` and
+ * `copied`.
  */
 export type TargetWrite = {
   outcome: "typed" | "stopped" | "replaced" | "pasted" | "kept" | "copied";
-  reason: string | null;
+  reason?: string;
 };
 
 /** The short notice shown after the final transcript is written. */
