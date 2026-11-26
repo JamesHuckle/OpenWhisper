@@ -1,6 +1,7 @@
 // Runs on the browser's audio thread, so a busy page cannot make it skip
-// microphone audio. main.ts loads it with `?worker&url`, which makes Vite
-// bundle it (with its import) into one script for audioWorklet.addModule.
+// microphone audio. microphone-capture.ts loads it with `?worker&url`, which
+// makes Vite bundle it (with its import) into one script for
+// audioWorklet.addModule.
 import {
   PCM_FLUSH_REQUEST,
   PCM_FLUSHED,

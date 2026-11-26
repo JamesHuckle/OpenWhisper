@@ -121,10 +121,12 @@ describe("PCM capture worklet", () => {
     // Bugs: converting the rate here passed a 15 kHz tone through as a 9 kHz
     // whistle (checked in headless Chrome), and opening the default speaker
     // woke Bluetooth headphones and held up every recording. The page's one
-    // context now runs at the upload rate with a "none" sink.
-    const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    // context now runs at the upload rate with a "none" sink;
+    // microphone-capture.test.ts checks the options it is opened with.
+    const page = ["main.ts", "microphone-capture.ts"]
+      .map((file) => readFileSync(resolve(import.meta.dirname, file), "utf8"))
+      .join("\n");
 
-    expect(main.match(/new AudioContext\([^)]*\)/g)).toEqual(["new AudioContext(CAPTURE_CONTEXT_OPTIONS)"]);
-    expect(main).toContain("sampleRate: PCM_SAMPLE_RATE,\n  sinkId: { type: \"none\" },");
+    expect(page.match(/new AudioContext\([^)]*\)/g)).toEqual(["new AudioContext(CAPTURE_CONTEXT_OPTIONS)"]);
   });
 });

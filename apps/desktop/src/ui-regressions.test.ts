@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 // Text checks for past bugs in code no behaviour test can reach: the page's
 // CSS and browser calls in main.ts, and Windows-only or Tauri-bound Rust.
 // Everything else is tested by running it (dictation-controller,
-// recording-pipeline, recording-list-refresh, recording-cards, target-write,
+// microphone-capture, recording-pipeline, recording-list-refresh, recording-cards, target-write,
 // overlay-layout, settings-save, meter and the Rust core crate's tests).
 const desktopRoot = resolve(import.meta.dirname, "..");
 const nativeSourceDir = resolve(desktopRoot, "src-tauri/src");
@@ -49,14 +49,6 @@ describe("desktop regression guards", () => {
 
     expect(showFailure).toContain("showWidgetNotice(");
     expect(showFailure).not.toContain("openMenu()");
-  });
-
-  it("falls back to the Windows default microphone when the picked one is gone", () => {
-    // Bug (fixed in 70e22c6): a switched-off or unplugged microphone failed every recording.
-    const main = read("src/main.ts");
-
-    expect(main).toContain('name === "OverconstrainedError" || name === "NotFoundError"');
-    expect(main).toContain("return navigator.mediaDevices.getUserMedia({ audio: true });");
   });
 
   it("asks the app for settings while the model is saving", () => {

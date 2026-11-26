@@ -1,5 +1,5 @@
-// Microphone capture format shared by the page (main.ts) and the audio
-// worklet (pcm-capture.worklet.ts).
+// Microphone capture format shared by the page (microphone-capture.ts) and
+// the audio worklet (pcm-capture.worklet.ts).
 //
 // The page opens its AudioContext at PCM_SAMPLE_RATE, so the browser converts
 // the microphone's own rate (usually 44.1 or 48 kHz) with its filtered
