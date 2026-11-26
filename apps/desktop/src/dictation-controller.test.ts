@@ -103,6 +103,7 @@ function fakeCapture() {
   let active = false;
   let stopHeld: Promise<void> | null = null;
   let finishStop = () => undefined as void;
+  let rejectStop = (_error: unknown) => undefined as void;
   const capture: AudioCapture = {
     start: async (send) => {
       onAudio = send;
@@ -121,14 +122,20 @@ function fakeCapture() {
     capture,
     /** Keeps stop waiting, as the worklet does for its last samples, until finishStop. */
     holdStop() {
-      stopHeld = new Promise((resolve) => {
+      stopHeld = new Promise((resolve, reject) => {
         finishStop = () => {
           stopHeld = null;
           resolve();
         };
+        rejectStop = (error) => {
+          stopHeld = null;
+          reject(error);
+        };
       });
     },
     finishStop: () => finishStop(),
+    /** Fails the held stop, as when the microphone cannot be closed cleanly. */
+    failStop: (error: unknown) => rejectStop(error),
     /** Sends captured PCM bytes, all set to value. */
     hear(bytes: number, value = 1) {
       if (!onAudio) throw new Error("capture has not started");
@@ -612,6 +619,81 @@ describe("dictation controller", () => {
     expect(dictation.state).toBe("recording");
     expect(dictation.currentRecordingId).toBe("rec-2");
     expect(mic.capture.isActive()).toBe(true);
+  });
+
+  it("leaves the next recording alone when cancelled while a failed startup's failure is saved", async () => {
+    const { app, mic, dictation, failures } = setup();
+    app.hold("worker_start_session");
+    app.hold("recording_finish");
+    const first = dictation.pressToTalkStart();
+    await settle();
+    app.reject("worker_start_session", new Error("Could not connect"));
+    await settle();
+    expect(app.named("recording_finish")).toHaveLength(1);
+
+    await dictation.cancelTranscription();
+    app.stopHolding("worker_start_session");
+    app.answers.recording_begin = { id: "rec-2" };
+    app.answers.worker_start_session = { session_id: "s-2" };
+    // The toggle shortcut, as the hold shortcut still counts the failed startup as running.
+    await startRecording(dictation);
+    app.release("recording_finish");
+    await first;
+    await settle();
+
+    expect(failures).toEqual([]);
+    expect(dictation.state).toBe("recording");
+    expect(dictation.currentRecordingId).toBe("rec-2");
+    expect(mic.capture.isActive()).toBe(true);
+  });
+
+  it("leaves the next recording alone when cancelled while a failed finalization's failure is saved", async () => {
+    const { app, mic, dictation, failures } = setup();
+    await startRecording(dictation);
+    app.fail("recording_transcribe", new Error("Could not read saved recording"));
+    app.hold("recording_finish");
+    const stopping = dictation.toggleRecording();
+    await settle();
+    expect(app.named("recording_finish")).toHaveLength(1);
+
+    await dictation.cancelTranscription();
+    app.answers.recording_begin = { id: "rec-2" };
+    app.answers.worker_start_session = { session_id: "s-2" };
+    await startRecording(dictation);
+    app.release("recording_finish");
+    await stopping;
+    await settle();
+
+    expect(failures).toEqual([]);
+    expect(dictation.state).toBe("recording");
+    expect(dictation.currentRecordingId).toBe("rec-2");
+    expect(mic.capture.isActive()).toBe(true);
+  });
+
+  it("leaves the next recording alone when a cancelled session's error handling throws late", async () => {
+    const { app, mic, dictation, failures } = setup();
+    await startRecording(dictation);
+    mic.holdStop();
+    const failing = dictation.receiveSessionEvent(
+      sessionEvent({ type: "error", text: "OpenAI is unreachable" }, true),
+    );
+    await settle();
+
+    await dictation.cancelTranscription();
+    app.answers.recording_begin = { id: "rec-2" };
+    app.answers.worker_start_session = { session_id: "s-2" };
+    await startRecording(dictation);
+    mic.failStop(new Error("Microphone stop failed"));
+    await failing;
+    await settle();
+
+    expect(failures).toEqual([]);
+    expect(dictation.state).toBe("recording");
+    expect(dictation.currentRecordingId).toBe("rec-2");
+    expect(mic.capture.isActive()).toBe(true);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "cancelled", transcript: "", error: "Cancelled by user" },
+    ]);
   });
 
   it("shows live text but not progress messages, and warnings as toasts, without ending the session", async () => {

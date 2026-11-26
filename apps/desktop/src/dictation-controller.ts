@@ -241,9 +241,11 @@ export function createDictationController(deps: DictationDeps) {
     return finishRecording(recordingId, status, transcript, error);
   }
 
-  // False once `current` says a cancel or a newer recording took over while
-  // this waited; then it stops, leaving the controller to that one.
-  async function handleTranscriptionFailure(error: unknown, current: () => boolean = () => true) {
+  // False once `current` says a cancel or a newer recording took over, before
+  // or while this waited; then it stops, leaving the microphone, the backup
+  // and the pill to that one.
+  async function handleTranscriptionFailure(error: unknown, current: () => boolean) {
+    if (!current()) return false;
     if (capture.isActive()) await capture.stop();
     if (!current()) return false;
     flushAudioBatch();
@@ -264,8 +266,8 @@ export function createDictationController(deps: DictationDeps) {
 
   // Reports a failure and returns the pill to idle, unless `current` says a
   // cancel or a newer recording took over meanwhile.
-  async function failAndReset(error: unknown, current: () => boolean = () => true) {
-    if (!(await handleTranscriptionFailure(error, current))) return;
+  async function failAndReset(error: unknown, current: () => boolean) {
+    if (!(await handleTranscriptionFailure(error, current)) || !current()) return;
     cleanup();
     setState("idle");
   }
@@ -418,10 +420,9 @@ export function createDictationController(deps: DictationDeps) {
       markBackupOpened();
       audioCancelledBeforeBackup.delete(op);
       log(`startRecording error=${errorMessage(err)}`);
-      // A cancel already tidied this recording up, and the microphone and
+      // Unless a cancel already tidied this recording up: the microphone and
       // backup may now be a newer recording's.
-      if (op !== operationId) return;
-      await failAndReset(err);
+      await failAndReset(err, () => op === operationId);
     }
   }
 
@@ -482,8 +483,7 @@ export function createDictationController(deps: DictationDeps) {
       // The app keeps the session, and a Live session its connection, until
       // it is stopped.
       await stopSession(sessionId);
-      if (currentSessionId !== sessionId) return;
-      await failAndReset(err);
+      await failAndReset(err, () => currentSessionId === sessionId);
     }
   }
 
@@ -523,8 +523,7 @@ export function createDictationController(deps: DictationDeps) {
       await transcribeSavedRecording(recordingId, () => op === operationId);
     } catch (fallbackError) {
       log(`standard fallback error=${errorMessage(fallbackError)}`);
-      // A cancel already tidied up; its failure is expected.
-      if (op !== operationId) return;
+      // Unless a cancel already tidied up; then its failure is expected.
       await failAndReset(fallbackError, () => op === operationId);
     }
   }
@@ -709,7 +708,7 @@ export function createDictationController(deps: DictationDeps) {
       const text = errorMessage(error, "Could not finish the transcription");
       log(`session event failed=${text}`);
       if (message.done && (state === "recording" || state === "transcribing")) {
-        await failAndReset(text);
+        await failAndReset(text, () => currentSessionId === sessionId);
       }
     }
   }
