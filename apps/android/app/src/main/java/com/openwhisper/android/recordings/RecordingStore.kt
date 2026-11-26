@@ -147,7 +147,13 @@ class RecordingStore private constructor(
                 transcript = "",
                 error = "",
             )
-            writeMetadata(recording)
+            try {
+                writeMetadata(recording)
+            } catch (failure: Throwable) {
+                // Without its details the folder is never listed or pruned.
+                directory.deleteRecursively()
+                throw failure
+            }
             prune()
             recording
         }
