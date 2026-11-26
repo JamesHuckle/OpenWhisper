@@ -512,6 +512,11 @@ async function openMenu() {
   menuOpen = true;
   micMenu.classList.remove("hidden");
   void refreshForegroundApp();
+  // The cards were not refreshed while the menu was closed, so a recording
+  // transcribed meanwhile can still show Transcribe; the new list redraws them.
+  recentRecordings
+    .querySelectorAll<HTMLButtonElement>(".recording-transcribe")
+    .forEach((button) => (button.disabled = true));
   refreshRecordings();
   await applyOverlayLayout();
 }
