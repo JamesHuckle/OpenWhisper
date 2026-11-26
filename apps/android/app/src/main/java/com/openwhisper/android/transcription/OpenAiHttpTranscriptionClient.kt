@@ -100,30 +100,26 @@ class OpenAiHttpTranscriptionClient(
         val counts = pcmChunkSizes(audio.pcmDataLength, AudioRules.MAX_PCM_BYTES_PER_UPLOAD)
         for ((index, count) in counts.withIndex()) {
             val end = start + count
-            val done = saved.get(index, start, end)
-            if (done != null) {
-                // Finished on an earlier try: its text is reused, and
-                // builds the next part's prompt as before.
-                transcripts += done.text
-                start = end
-                continue
+            // A part finished on an earlier try is reused: its text builds
+            // the next part's prompt as before.
+            transcripts += saved.get(index, start, end)?.text ?: run {
+                val text = if (AudioRules.isSilent(audio.file, start, count.toLong())) {
+                    // A silent part is never uploaded: it costs a request and
+                    // the model answers it by repeating its prompt. It is
+                    // saved as finished and empty, so a retry skips it too.
+                    ""
+                } else {
+                    // Each later part is sent with the previous part's text as
+                    // its prompt; a near-silent part can still make the model
+                    // repeat it.
+                    val prompt = AudioRules.previousPartText(transcripts)
+                    AudioRules.keptPartText(
+                        transcribePart(key, audio.file, start, count, sampleRate, prompt).trim(),
+                        prompt,
+                    )
+                }
+                text.also { saved.add(index, SavedPart(start, end, it)) }
             }
-            if (AudioRules.isSilent(audio.file, start, count.toLong())) {
-                // A silent part is never uploaded: it costs a request and the
-                // model answers it by repeating its prompt. It is saved as
-                // finished and empty, so a retry skips it too.
-                saved.add(index, SavedPart(start, end, text = ""))
-                transcripts += ""
-                start = end
-                continue
-            }
-            val prompt = AudioRules.previousPartText(transcripts)
-            val text = transcribePart(key, audio.file, start, count, sampleRate, prompt).trim()
-            // Each later part is sent with the previous part's text as its
-            // prompt; a near-silent part can still make the model repeat it.
-            val kept = AudioRules.keptPartText(text, prompt)
-            saved.add(index, SavedPart(start, end, kept))
-            transcripts += kept
             start = end
         }
         return transcripts.filter(String::isNotBlank).joinToString(" ").trim()
