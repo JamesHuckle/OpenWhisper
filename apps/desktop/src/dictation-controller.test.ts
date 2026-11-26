@@ -929,6 +929,56 @@ describe("dictation controller", () => {
     expect(dictation.state).toBe("transcribing");
   });
 
+  // The microphone's last samples go to the session and to the backup file;
+  // the session refuses them while the file write is still pending.
+  async function liveUploadFailsWhileLastSamplesAreSaved() {
+    const env = setup(LIVE_TRANSCRIPTION_MODEL);
+    const { app, mic, dictation } = env;
+    await startRecording(dictation);
+    mic.hear(BATCH);
+    await settle();
+    app.hold("recording_append_chunk");
+    app.fail("worker_append_audio_chunk", new Error("Connection lost"));
+    app.answers.worker_start_session = { session_id: "s-2" };
+    mic.holdStop();
+    // The stop now waits for the held write, so it is not awaited here.
+    void dictation.toggleRecording();
+    await settle();
+    mic.hear(640, 2);
+    mic.finishStop();
+    await settle();
+    return env;
+  }
+
+  it("transcribes the saved recording with Standard only after its last samples are written when Live upload fails", async () => {
+    const { app, failures } = await liveUploadFailsWhileLastSamplesAreSaved();
+    expect(app.commands()).not.toContain("recording_transcribe");
+
+    app.release("recording_append_chunk");
+    await settle();
+
+    const commands = app.commands();
+    expect(commands.lastIndexOf("recording_append_chunk")).toBeLessThan(
+      commands.indexOf("recording_transcribe"),
+    );
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", sessionId: "s-2" },
+    ]);
+    expect(failures).toEqual([]);
+  });
+
+  it("reports a failed Live dictation whose last samples could not be saved instead of transcribing it with Standard", async () => {
+    const { app, dictation, failures } = await liveUploadFailsWhileLastSamplesAreSaved();
+
+    app.reject("recording_append_chunk", new Error("Disk full"));
+    await settle();
+
+    expect(app.commands()).not.toContain("recording_transcribe");
+    expect(app.named("worker_start_session")).toHaveLength(1);
+    expect(failures).toEqual([{ message: "Disk full", recordingSaved: true }]);
+    expect(dictation.state).toBe("idle");
+  });
+
   describe("a failed Live dictation", () => {
     async function liveDictationStopped() {
       const env = setup(LIVE_TRANSCRIPTION_MODEL);

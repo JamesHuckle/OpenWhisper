@@ -514,7 +514,12 @@ export function createDictationController(deps: DictationDeps) {
     try {
       // The failed session may already be gone; stopping it closes its connection.
       if (failedSessionId) await stopSession(failedSessionId);
+      // A failed Live upload gets here before the microphone's last samples
+      // are written; the app closes the file as it reads it, so wait for them.
+      await captureStopping?.catch(() => undefined);
+      await backupTail;
       if (op !== operationId) return;
+      if (backupError) throw backupError;
       await transcribeSavedRecording(recordingId, () => op === operationId);
     } catch (fallbackError) {
       log(`standard fallback error=${errorMessage(fallbackError)}`);
