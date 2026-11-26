@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { PCM_FLUSHED } from "./pcm-capture";
 
 // Renders the real menu page (main.ts) headless with the Tauri bridge faked,
-// opens the menu and checks the recent recording cards it draws.
+// opens the menu and checks the recent recording cards it draws, and that the
+// pill's settings arrow opens the menu while a dictation runs.
 const recordings = [
   {
     id: "rec-1",
@@ -31,6 +33,8 @@ const recordings = [
 ];
 let listed: typeof recordings = recordings;
 let holdTranscription = false;
+// Dictations get a session, so a recording runs until it is stopped.
+let dictating = false;
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -87,9 +91,37 @@ beforeAll(async () => {
       };
     }
     if (command === "get_foreground_app") return null;
+    if (dictating && command === "recording_begin") return { id: "rec-live" };
+    if (dictating && command === "worker_start_session") return { session_id: "session-live" };
     if (holdTranscription && command === "worker_start_session") return new Promise(() => {});
     return undefined;
   });
+  // Microphone capture, faked so a recording can start.
+  const audioNode = () => ({ connect: vi.fn(), disconnect: vi.fn() });
+  class FakeAudioContext {
+    state = "suspended";
+    sampleRate = 24000;
+    audioWorklet = { addModule: async () => {} };
+    destination = audioNode();
+    resume = async () => void (this.state = "running");
+    suspend = async () => void (this.state = "suspended");
+    close = async () => void (this.state = "closed");
+    createMediaStreamSource = () => ({ ...audioNode(), context: this });
+    createAnalyser = () => ({ ...audioNode(), fftSize: 2048, frequencyBinCount: 1024, getByteTimeDomainData() {} });
+    createGain = () => ({ ...audioNode(), gain: { value: 1 } });
+  }
+  class FakeAudioWorkletNode {
+    port = {
+      onmessage: null as ((event: { data: string }) => void) | null,
+      postMessage() {
+        this.onmessage?.({ data: PCM_FLUSHED });
+      },
+    };
+    connect = vi.fn();
+    disconnect = vi.fn();
+  }
+  vi.stubGlobal("AudioContext", FakeAudioContext);
+  vi.stubGlobal("AudioWorkletNode", FakeAudioWorkletNode);
   Object.defineProperty(navigator, "mediaDevices", {
     value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [] })), enumerateDevices: vi.fn(async () => []) },
   });
@@ -202,4 +234,66 @@ describe("recent recording cards", () => {
 
     expect(cards().querySelector<HTMLButtonElement>(".recording-transcribe")!.disabled).toBe(true);
   });
+});
+
+describe("settings arrow on the pill", () => {
+  const widget = () => document.getElementById("widget")!;
+  const arrow = () => document.getElementById("btn-dropdown")!;
+  const menuShown = () => !document.getElementById("mic-menu")!.classList.contains("hidden");
+  const activations = {
+    click: () => arrow().click(),
+    Enter: () => pressOnArrow("Enter"),
+    Space: () => pressOnArrow(" "),
+  };
+
+  // A native button clicks itself on Enter or Space unless the key is cancelled.
+  function pressOnArrow(key: string) {
+    const press = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    if (arrow().dispatchEvent(press)) arrow().click();
+  }
+
+  // Transcribing: a recording stopped by a click on the pill, waiting for its result.
+  async function startDictation(state: "recording" | "transcribing") {
+    document.getElementById("btn-mic")!.click();
+    await settled();
+    if (state === "transcribing") {
+      widget().click();
+      await settled();
+    }
+    expect(widget().dataset.state).toBe(state);
+  }
+
+  beforeEach(async () => {
+    holdTranscription = false;
+    dictating = true;
+    await (window as unknown as { __openWhisperTest: { collapseOverlay: () => Promise<void> } }).__openWhisperTest.collapseOverlay();
+    // A recording stops on the first click and its transcription cancels on the second.
+    for (let click = 0; click < 2 && widget().dataset.state !== "idle"; click++) {
+      widget().click();
+      await settled();
+    }
+    expect([widget().dataset.state, menuShown()]).toEqual(["idle", false]);
+  });
+
+  for (const state of ["recording", "transcribing"] as const) {
+    for (const [input, activate] of Object.entries(activations)) {
+      it(`opens the menu on ${input} while ${state} and lets the dictation run`, async () => {
+        await startDictation(state);
+
+        activate();
+        await settled();
+
+        expect([widget().dataset.state, menuShown()]).toEqual([state, true]);
+      });
+    }
+
+    it(`still ends the dictation on a click elsewhere on the pill while ${state}`, async () => {
+      await startDictation(state);
+
+      widget().click();
+      await settled();
+
+      expect([widget().dataset.state, menuShown()]).toEqual([state === "recording" ? "transcribing" : "idle", false]);
+    });
+  }
 });

@@ -591,10 +591,13 @@ function stopOrCancel(): boolean {
   return true;
 }
 
+// The settings arrow always reaches its own click listener, which opens or
+// closes the menu, so it never stops a recording or cancels a transcription.
 function handleWidgetClick(e: MouseEvent) {
   if (menuOpen) void collapseOverlay();
+  else if (btnDropdown.contains(e.target as Node)) return;
   else if (!stopOrCancel()) {
-    if (btnMic.contains(e.target as Node) || btnDropdown.contains(e.target as Node)) return;
+    if (btnMic.contains(e.target as Node)) return;
     void dictation.toggleRecording();
     return;
   }
@@ -604,11 +607,12 @@ function handleWidgetClick(e: MouseEvent) {
 
 function handleWidgetKeydown(e: KeyboardEvent) {
   if (e.key !== "Enter" && e.key !== " ") return;
+  if (btnDropdown.contains(e.target as Node)) return;
   if (stopOrCancel()) {
     e.preventDefault();
     return;
   }
-  if (btnMic.contains(e.target as Node) || btnDropdown.contains(e.target as Node)) return;
+  if (btnMic.contains(e.target as Node)) return;
   e.preventDefault();
   void dictation.toggleRecording();
 }
