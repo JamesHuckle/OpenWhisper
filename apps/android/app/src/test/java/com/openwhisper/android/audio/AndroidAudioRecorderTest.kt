@@ -122,6 +122,36 @@ class AndroidAudioRecorderTest {
     }
 
     @Test
+    fun aWriteThatFailsDuringAStopIsReportedNotSaved() {
+        val fullStorage = File("/dev/full")
+        assumeTrue(fullStorage.canWrite())
+        // The read returns only once the stop has ended capturing, so its write is the last.
+        val microphone = FakeAudioRecord(stopBlocks = false, readBlocks = true, bytesRead = 2_048)
+        val sink = PcmRecordingWriter(store(), "full", fullStorage, 16_000)
+        val recording = MicrophoneRecording(microphone, sink, 8_192, null) {}
+        recording.startReading()
+        assertTrue(microphone.readEntered.await(5, TimeUnit.SECONDS))
+
+        val stopFailure = AtomicReference<Throwable?>(null)
+        val stopping = thread {
+            try {
+                recording.stop()
+            } catch (error: Throwable) {
+                stopFailure.set(error)
+            }
+        }
+        // The stop is waiting for the read thread, which is stuck in a read.
+        awaitState(stopping, Thread.State.TIMED_WAITING)
+        microphone.unblockRead.countDown()
+        stopping.join(5_000)
+
+        assertFalse(stopping.isAlive)
+        val failure = stopFailure.get()
+        assertTrue("The failed last write was hidden: $failure", failure is IllegalStateException)
+        assertEquals("Could not save the rest of the recording", failure!!.message)
+    }
+
+    @Test
     fun aCancelledRecordingCannotBeStoppedLater() {
         val store = store()
         val microphone = FakeAudioRecord(stopBlocks = false)

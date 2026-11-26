@@ -174,12 +174,14 @@ internal class MicrophoneRecording(
             if (count > 0) {
                 try {
                     sink.write(buffer, count)
-                } catch (_: Exception) {
+                } catch (error: Exception) {
                     // A read that outlived the stop's wait finds the file
                     // already saved and closed, so its samples are dropped.
-                    // A write that fails while capturing (full storage) ends
-                    // the recording; the stop reports it. Neither crashes the app.
-                    if (capturing.getAndSet(false)) readFailure = "Could not save the rest of the recording"
+                    // Any other failed write (full storage), even the last one
+                    // during a stop, ends the recording; the stop reports it.
+                    // Neither crashes the app.
+                    capturing.set(false)
+                    if (error !is IllegalStateException) readFailure = "Could not save the rest of the recording"
                     return
                 }
                 emitAmplitude(buffer, count)
