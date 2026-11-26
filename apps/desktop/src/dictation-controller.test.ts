@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createDictationController,
   type AudioCapture,
+  type DictationDeps,
   type WidgetState,
   type WorkerSessionEvent,
 } from "./dictation-controller";
@@ -139,7 +140,8 @@ function fakeCapture() {
 // A batch this size is sent at once; a smaller one waits for more audio.
 const BATCH = 16 * 1024;
 
-function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
+// overrides replaces any of the page's parts, such as how settings load.
+function setup(model = DEFAULT_TRANSCRIPTION_MODEL, overrides: Partial<DictationDeps> = {}) {
   const app = fakeInvoke();
   const mic = fakeCapture();
   const states: WidgetState[] = [];
@@ -171,6 +173,7 @@ function setup(model = DEFAULT_TRANSCRIPTION_MODEL) {
     },
     closeMenu: () => undefined,
     log: (message) => logs.push(message),
+    ...overrides,
   });
   return { app, mic, dictation, states, toasts, failures, logs, config, changes, pill };
 }
@@ -1272,6 +1275,49 @@ describe("dictation controller", () => {
     expect(app.named("worker_stop_session").map((call) => call.args)).toEqual([{ sessionId: "s-1" }]);
     expect(failures).toEqual([{ message: "Could not read saved recording", recordingSaved: true }]);
     expect(dictation.state).toBe("idle");
+  });
+
+  it("leaves a retry alone when a dictation started before it gets its settings late", async () => {
+    // With the key known missing the pill stays idle while the start reads
+    // its settings, so a retry can take over without any cancel.
+    let answerFirstSettings = () => undefined as void;
+    let settingsReads = 0;
+    const settings = { hasOpenaiApiKey: true, transcriptionModel: DEFAULT_TRANSCRIPTION_MODEL };
+    const { app, dictation, failures, toasts } = setup(DEFAULT_TRANSCRIPTION_MODEL, {
+      apiKeyKnownMissing: () => true,
+      settings: () =>
+        ++settingsReads === 1
+          ? new Promise((resolve) => {
+              answerFirstSettings = () => resolve(settings);
+            })
+          : Promise.resolve(settings),
+    });
+    app.hold("recording_transcribe");
+    const starting = dictation.toggleRecording();
+    await settle();
+    const retry = dictation.retranscribeRecording("rec-9");
+    await settle();
+    expect(dictation.state).toBe("transcribing");
+
+    answerFirstSettings();
+    await starting;
+    await settle();
+
+    expect(dictation.state).toBe("transcribing");
+    expect(app.commands()).not.toContain("capture_paste_target");
+    expect(app.commands()).not.toContain("recording_begin");
+    expect(failures).toEqual([]);
+    expect(toasts).toEqual([]);
+    app.release("recording_transcribe");
+    await retry;
+    await dictation.receiveSessionEvent(sessionEvent({ type: "final", text: "hello" }, true));
+    await settle();
+    expect(app.named("recording_finish").map((call) => call.args)).toContainEqual({
+      recordingId: "rec-9",
+      status: "complete",
+      transcript: "hello",
+      error: "",
+    });
   });
 
   it("starts one transcription when a saved recording's retry is clicked twice", async () => {

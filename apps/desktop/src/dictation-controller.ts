@@ -76,12 +76,10 @@ export function createDictationController(deps: DictationDeps) {
 
   let state: WidgetState = "idle";
   let currentSessionId: string | null = null;
-  // Advanced by every cancel, so a session that was still starting when the
-  // user cancelled is stopped instead of transcribed.
-  let cancelCount = 0;
   // Advanced as each dictation, import or retry starts and by every cancel.
-  // Each one keeps its own number, so a late failure from one that a cancel or
-  // a newer one replaced is only logged; it never stops, fails or resets the
+  // Each one keeps its own number, so one that a cancel or a newer one
+  // replaced stops its own late session instead of transcribing it, and its
+  // late failure is only logged; it never stops, fails or resets the
   // recording that is current now.
   let operationId = 0;
   let sessionEventTail: Promise<void> = Promise.resolve();
@@ -110,10 +108,10 @@ export function createDictationController(deps: DictationDeps) {
   // Set while a stop waits for the microphone's last samples; whatever
   // finishes the recording waits for them too, so they are saved and sent.
   let captureStopping: Promise<void> | null = null;
-  // Audio captured before the backup file opened, kept by the number of the
-  // cancel that stopped its recording, so the backup still saves it once it
-  // opens. A stop still waiting for the microphone adds its last samples to
-  // the same parts, so the backup waits for it first.
+  // Audio captured before the backup file opened, kept by the operation
+  // number of the recording a cancel stopped, so the backup still saves it
+  // once it opens. A stop still waiting for the microphone adds its last
+  // samples to the same parts, so the backup waits for it first.
   const audioCancelledBeforeBackup = new Map<
     number,
     { parts: Uint8Array[]; stopping: Promise<void> | null }
@@ -280,7 +278,6 @@ export function createDictationController(deps: DictationDeps) {
     log(`startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`);
     if (state !== "idle" || storedAudioStarting) return;
     const op = ++operationId;
-    const cancelsBefore = cancelCount;
     // Settles this start's backupOpened; called on every way the start ends.
     let markBackupOpened = () => undefined as void;
     // Show the pill before anything is awaited, so it appears as the shortcut
@@ -291,8 +288,8 @@ export function createDictationController(deps: DictationDeps) {
 
     try {
       const settings = await deps.settings();
-      // Cancelled meanwhile: the cancel already tidied up.
-      if (cancelCount !== cancelsBefore) return;
+      // Cancelled or replaced meanwhile: the cancel already tidied up.
+      if (op !== operationId) return;
       if (!settings.hasOpenaiApiKey) {
         deps.showToast("Set your OpenAI API key first (click arrow)");
         setState("idle");
@@ -345,11 +342,11 @@ export function createDictationController(deps: DictationDeps) {
         },
         onBackupOpened: async (backup) => {
           try {
-            if (cancelCount !== cancelsBefore) {
+            if (op !== operationId) {
               // Cancelled while the file was opening; the cancel already tidied
               // up, and a new recording may have started since.
-              const cancelled = audioCancelledBeforeBackup.get(cancelsBefore + 1);
-              audioCancelledBeforeBackup.delete(cancelsBefore + 1);
+              const cancelled = audioCancelledBeforeBackup.get(op);
+              audioCancelledBeforeBackup.delete(op);
               if (cancelled?.stopping) await cancelled.stopping.catch(() => undefined);
               const audio = cancelled?.parts;
               if (audio?.length) {
@@ -379,7 +376,7 @@ export function createDictationController(deps: DictationDeps) {
               liveSession = true;
               return sessionId;
             } catch (error) {
-              if (cancelCount !== cancelsBefore) throw error;
+              if (op !== operationId) throw error;
               // The Live connection could not open. Recording goes on, and
               // the saved recording is transcribed with Standard on stop.
               log(`live session start failed=${errorMessage(error)}; using Standard`);
@@ -392,7 +389,7 @@ export function createDictationController(deps: DictationDeps) {
         },
       });
       if (!sessionId) return;
-      if (cancelCount !== cancelsBefore) {
+      if (op !== operationId) {
         // Cancelled while the session was starting; the cancel already tidied up.
         await stopSession(sessionId);
         return;
@@ -417,11 +414,11 @@ export function createDictationController(deps: DictationDeps) {
       // A start that failed before its backup file opened never reached
       // onBackupOpened; the next start must not wait on it.
       markBackupOpened();
-      audioCancelledBeforeBackup.delete(cancelsBefore + 1);
+      audioCancelledBeforeBackup.delete(op);
       log(`startRecording error=${errorMessage(err)}`);
       // A cancel already tidied this recording up, and the microphone and
       // backup may now be a newer recording's.
-      if (cancelCount !== cancelsBefore || op !== operationId) return;
+      if (op !== operationId) return;
       await failAndReset(err);
     }
   }
@@ -431,7 +428,7 @@ export function createDictationController(deps: DictationDeps) {
     if (state !== "recording") return;
     setState("transcribing");
     deps.stopMeter();
-    const cancelsBefore = cancelCount;
+    const op = operationId;
 
     const stopping = (async () => {
       if (capture.isActive()) {
@@ -447,7 +444,7 @@ export function createDictationController(deps: DictationDeps) {
     }
 
     // A cancel meanwhile already tidied up; the session may now be a newer one.
-    if (cancelCount !== cancelsBefore) return;
+    if (op !== operationId) return;
     if (currentSessionId) await finalizeRecording();
   }
 
@@ -507,7 +504,7 @@ export function createDictationController(deps: DictationDeps) {
     const failedSessionId = currentSessionId;
     if (!recordingId) return;
     fellBackToStandard = true;
-    const cancelsBefore = cancelCount;
+    const op = operationId;
     log(`live transcription failed=${error}; transcribing the saved recording with Standard`);
     streamAudioToWorker = false;
     streamTextToTarget = false;
@@ -515,13 +512,13 @@ export function createDictationController(deps: DictationDeps) {
     try {
       // The failed session may already be gone; stopping it closes its connection.
       if (failedSessionId) await stopSession(failedSessionId);
-      if (cancelCount !== cancelsBefore) return;
-      await transcribeSavedRecording(recordingId, () => cancelCount === cancelsBefore);
+      if (op !== operationId) return;
+      await transcribeSavedRecording(recordingId, () => op === operationId);
     } catch (fallbackError) {
       log(`standard fallback error=${errorMessage(fallbackError)}`);
       // A cancel already tidied up; its failure is expected.
-      if (cancelCount !== cancelsBefore) return;
-      await failAndReset(fallbackError, () => cancelCount === cancelsBefore);
+      if (op !== operationId) return;
+      await failAndReset(fallbackError, () => op === operationId);
     }
   }
 
@@ -538,11 +535,10 @@ export function createDictationController(deps: DictationDeps) {
   }
 
   async function cancelOnce() {
-    cancelCount += 1;
-    operationId += 1;
+    const cancelledOp = operationId++;
     if (!currentRecordingId && (pendingAudioParts.length > 0 || captureStopping)) {
       // The backup is still opening; it saves this audio once it opens.
-      audioCancelledBeforeBackup.set(cancelCount, {
+      audioCancelledBeforeBackup.set(cancelledOp, {
         parts: pendingAudioParts,
         stopping: captureStopping,
       });
