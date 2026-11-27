@@ -32,11 +32,15 @@ WhisperFlow is split into two runtime layers, in one process:
      once done. Cleanup runs when an import or a status change is saved,
      never when a capture begins, so the microphone starts without reading
      every recording's details; at ten folders or fewer it reads none.
-   - debug log: `src-tauri/src/debug_log.rs` writes each line to stderr and
-     to `openwhisper.log` in the app log folder (release builds on Windows
-     have no console). Past 1 MB the file becomes `openwhisper.log.1`,
-     replacing the older one. The menu's "Open log folder" button opens the
-     folder. Lines never hold dictated text, keys or prompts.
+   - debug log: `src-tauri/src/debug_log.rs` hands each line to Tauri's log
+     plugin (`start_log` in `lib.rs`), which writes it to stderr and to
+     `openwhisper.log` in the app log folder (release builds on Windows have
+     no console). Only the app's own lines are written, never a library's.
+     Past 1 MiB the file is renamed `openwhisper_<date>_<time>.log`,
+     replacing the older one. An `openwhisper.log.1` from older versions is
+     left as it is. A log folder that cannot be opened leaves the log on
+     stderr only. The menu's "Open log folder" button opens the folder.
+     Lines never hold dictated text, keys or prompts.
    - code layout: `src-tauri/src/lib.rs` holds the Tauri commands, the tray
      and start-up. Logic that needs no Tauri sits in files beside it
      (`settings.rs`, `recordings.rs`, `overlay_geometry.rs` and the files

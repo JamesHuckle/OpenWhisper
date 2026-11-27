@@ -39,6 +39,7 @@ use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, Size, State, Window, WindowEvent,
 };
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_log::{attach_logger, log::LevelFilter, RotationStrategy, Target, TargetKind};
 use tauri_plugin_opener::OpenerExt;
 use transcriber::SavedAudio;
 use transcription_sessions::{opens_live_session, FinalizeAudio, Sessions, SESSION_EVENT};
@@ -378,7 +379,7 @@ fn recordings_open_folder(app_handle: AppHandle) -> Result<(), String> {
     open_path(&app_handle, &root)
 }
 
-/// Opens the folder holding `openwhisper.log` (src/debug_log.rs), so a user
+/// Opens the folder holding `openwhisper.log` (start_log), so a user
 /// can send it when something went wrong.
 #[tauri::command]
 fn logs_open_folder(app_handle: AppHandle) -> Result<(), String> {
@@ -860,6 +861,37 @@ fn setup_tray(app: &tauri::App) -> Result<()> {
     Ok(())
 }
 
+/// Sends the debug log (src/debug_log.rs) to stderr and to `openwhisper.log`
+/// in the app log folder. Past 1 MiB the file is renamed with the date and a
+/// new one started, keeping one old file. Only the app's own lines are
+/// written: libraries such as reqwest and tungstenite log URLs and headers.
+/// A log file that cannot be opened leaves the log on stderr only.
+fn start_log(app: &AppHandle) {
+    let to_stderr = || {
+        tauri_plugin_log::Builder::new()
+            .clear_targets()
+            .target(Target::new(TargetKind::Stderr))
+            .level(LevelFilter::Off)
+            .level_for(debug_log::LOG_TARGET, LevelFilter::Info)
+            .max_file_size(1024 * 1024)
+            .rotation_strategy(RotationStrategy::KeepSome(1))
+    };
+    let to_file = to_stderr().target(Target::new(TargetKind::LogDir {
+        file_name: Some("openwhisper".into()),
+    }));
+    let file_error = match to_file.split(app) {
+        Ok((_, max_level, logger)) => {
+            let _ = attach_logger(max_level, logger);
+            return;
+        }
+        Err(error) => error,
+    };
+    if let Ok((_, max_level, logger)) = to_stderr().split(app) {
+        let _ = attach_logger(max_level, logger);
+    }
+    debug_log_line("log", &format!("could not open the log file: {file_error}"));
+}
+
 pub fn run() {
     let app_state = Arc::new(AppState {
         transcription: OnceLock::new(),
@@ -901,10 +933,7 @@ pub fn run() {
         })
         .setup(|app| {
             // First, so every later line also reaches the log file.
-            match app.path().app_log_dir() {
-                Ok(dir) => debug_log::init_log_file(&dir),
-                Err(error) => debug_log_line("log", &format!("no log folder: {error}")),
-            }
+            start_log(app.handle());
             // Before anything can start a recording or a transcription: setup
             // runs on the main thread, so no command is handled until it ends.
             if let Err(error) = recordings_root(app.handle())

@@ -132,9 +132,9 @@ describe("desktop regression guards", () => {
 
   it("writes debug lines through the log file, not only to the console", () => {
     // Bug (fixed in ff78eb6): Windows release builds have no console, so lines printed
-    // with eprintln! were lost. debug_log.rs tests the file in the core crate.
+    // with eprintln! were lost. debug_log.rs hands lines to the log plugin instead.
     const printing = readdirSync(nativeSourceDir)
-      .filter((name) => name.endsWith(".rs") && name !== "debug_log.rs")
+      .filter((name) => name.endsWith(".rs"))
       .filter((name) => readFileSync(resolve(nativeSourceDir, name), "utf8").includes("eprintln!"));
 
     expect(printing).toEqual([]);

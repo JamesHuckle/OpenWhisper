@@ -20,6 +20,8 @@ bytes = "1.11"
 # Lossless upload copy of each microphone recording (src/flac_upload.rs).
 flacenc = { version = "0.5", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# The app's debug log lines (src/debug_log.rs); the app writes them out.
+log = "0.4"
 regex = "1"
 # OpenAI is called from the app (src/openai_api.rs, src/realtime.rs). TLS is
 # rustls with ring, as the updater already uses, and the system's

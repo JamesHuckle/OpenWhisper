@@ -28,6 +28,9 @@ serde_json = "1.0"
 tauri = { version = "2.0.0", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-dialog = "2"
+# Writes the debug log to stderr and openwhisper.log (start_log in src/lib.rs).
+# 2.10 needs Tauri 2.12.
+tauri-plugin-log = "~2.9.2"
 tauri-plugin-opener = "2.5.3"
 tauri-plugin-process = "2"
 tokio = { version = "1.40.0", features = ["io-util", "sync", "rt-multi-thread", "macros", "time", "net"] }
