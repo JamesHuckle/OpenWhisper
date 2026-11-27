@@ -5,7 +5,6 @@ import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SavedPartsTest {
@@ -28,14 +27,12 @@ class SavedPartsTest {
     fun aPartThatCannotBeSavedIsKeptForThisRunAndSkippedOnDisk() {
         val folder = Files.createTempDirectory("saved-parts").toFile()
         try {
-            val file = File(folder, "audio.parts.json")
+            // A regular file as its folder makes every save fail, on any system
+            // and for any user.
+            val notAFolder = File(folder, "recording").apply { writeText("") }
+            val file = File(notAFolder, "audio.parts.json")
             val parts = SavedParts(file, "key")
-            assertTrue(folder.setWritable(false))
-            try {
-                parts.add(0, SavedPart(start = 0, end = 10, text = "Hello"))
-            } finally {
-                folder.setWritable(true)
-            }
+            parts.add(0, SavedPart(start = 0, end = 10, text = "Hello"))
 
             assertEquals("Hello", parts.get(0, 0, 10)?.text)
             assertFalse(file.exists())
