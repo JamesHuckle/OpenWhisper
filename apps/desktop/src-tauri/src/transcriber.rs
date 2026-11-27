@@ -193,14 +193,7 @@ impl<A: OpenAiApi> Transcriber<A> {
     ) -> Result<String, TranscribeError> {
         let mut parts = usable_upload_parts(upload_parts);
         if parts.len() == 1 {
-            let sent = match read_file(parts[0].path.clone()).await {
-                Ok(upload) => {
-                    self.transcribe_bytes(upload, flac_upload::MIME_TYPE, prompt)
-                        .await
-                }
-                Err(error) => Err(error.into()),
-            };
-            match sent {
+            match self.transcribe_upload_part(&parts[0].path, prompt).await {
                 Err(error) if error.upload_refused() => debug_log_line(
                     "transcriber",
                     &format!(
@@ -221,6 +214,18 @@ impl<A: OpenAiApi> Transcriber<A> {
             &parts,
         )
         .await
+    }
+
+    /// Sends the FLAC upload part at `path`. A part that cannot be read
+    /// fails as refused, so the caller sends the WAV instead.
+    async fn transcribe_upload_part(
+        &self,
+        path: &Path,
+        prompt: &str,
+    ) -> Result<String, TranscribeError> {
+        let audio = read_file(path.to_path_buf()).await?;
+        self.transcribe_bytes(audio, flac_upload::MIME_TYPE, prompt)
+            .await
     }
 
     /// Transcribes a file on disk. A WAV too large for one request goes in
@@ -329,84 +334,71 @@ impl<A: OpenAiApi> Transcriber<A> {
                 end = start + audio_read;
                 done = saved.get(index, start, end).map(|part| part.text.clone());
             }
-            if let Some(text) = done {
-                // Its text is reused, and builds the next part's prompt as
-                // before.
-                transcripts.push(text);
-                index += 1;
-                continue;
-            }
-            let silent = format.sample_width == 2
+            // A silent part is never uploaded: it costs a request and the
+            // model answers it by repeating its prompt. It is saved as
+            // finished and empty, so a retry skips it too.
+            let silent = done.is_none()
+                && format.sample_width == 2
                 && if upload.is_none() {
                     pcm_is_silent(&mut &wav[WAV_HEADER_BYTES as usize..])?
                 } else {
                     audio_is_silent(path.to_path_buf(), format, start, end).await?
                 };
-            if silent {
-                // A silent part is never uploaded: it costs a request and the
-                // model answers it by repeating its prompt. It is saved as
-                // finished and empty, so a retry skips it too.
-                saved.add(
-                    index,
-                    SavedPart {
-                        start,
-                        end,
-                        text: String::new(),
-                    },
-                );
-                transcripts.push(String::new());
-                index += 1;
-                continue;
-            }
-            on_progress(index + 1, parts.len());
-            let previous = previous_part_text(&transcripts);
-            let contextual_prompt = if previous.is_empty() {
-                prompt.to_string()
-            } else {
-                format!("{prompt}\nPrevious segment transcript: {previous}")
-                    .trim()
-                    .to_string()
-            };
-            let text = match &upload {
+            let text = match done {
+                // Its text is reused, and builds the next part's prompt as
+                // before.
+                Some(text) => text,
                 None => {
-                    self.transcribe_bytes(wav, "audio/wav", &contextual_prompt)
-                        .await?
-                }
-                Some(upload) => {
-                    let sent = match read_file(upload.clone()).await {
-                        Ok(audio) => {
-                            self.transcribe_bytes(audio, flac_upload::MIME_TYPE, &contextual_prompt)
-                                .await
+                    let text = if silent {
+                        String::new()
+                    } else {
+                        on_progress(index + 1, parts.len());
+                        let previous = previous_part_text(&transcripts);
+                        let contextual_prompt = if previous.is_empty() {
+                            prompt.to_string()
+                        } else {
+                            format!("{prompt}\nPrevious segment transcript: {previous}")
+                                .trim()
+                                .to_string()
+                        };
+                        let sent = match &upload {
+                            None => {
+                                self.transcribe_bytes(wav, "audio/wav", &contextual_prompt)
+                                    .await
+                            }
+                            Some(upload) => {
+                                self.transcribe_upload_part(upload, &contextual_prompt)
+                                    .await
+                            }
+                        };
+                        match sent {
+                            Ok(text) => kept_part_text(text.trim(), &contextual_prompt, &previous),
+                            Err(error) if upload.is_some() && error.upload_refused() => {
+                                debug_log_line(
+                                    "parts",
+                                    &format!(
+                                        "upload part refused part={} error={}; sending the rest as WAV",
+                                        index + 1,
+                                        error.describe()
+                                    ),
+                                );
+                                parts.splice(index.., wav_parts(start));
+                                continue;
+                            }
+                            Err(error) => return Err(error),
                         }
-                        Err(error) => Err(error.into()),
                     };
-                    match sent {
-                        Ok(text) => text,
-                        Err(error) if error.upload_refused() => {
-                            debug_log_line(
-                                "parts",
-                                &format!(
-                                    "upload part refused part={} error={}; sending the rest as WAV",
-                                    index + 1,
-                                    error.describe()
-                                ),
-                            );
-                            parts.splice(index.., wav_parts(start));
-                            continue;
-                        }
-                        Err(error) => return Err(error),
-                    }
+                    saved.add(
+                        index,
+                        SavedPart {
+                            start,
+                            end,
+                            text: text.clone(),
+                        },
+                    );
+                    text
                 }
             };
-            let text = kept_part_text(text.trim(), &contextual_prompt, &previous);
-            saved.add(
-                index,
-                SavedPart {
-                    start,
-                    end,
-                    text: text.clone(),
-                },
-            );
             transcripts.push(text);
             index += 1;
         }
