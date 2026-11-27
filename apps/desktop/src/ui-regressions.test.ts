@@ -3,10 +3,11 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // Text checks for past bugs in code no behaviour test can reach: the page's
-// CSS and browser calls in main.ts, and Windows-only or Tauri-bound Rust.
-// Everything else is tested by running it (dictation-controller,
-// microphone-capture, recording-pipeline, recording-list-refresh, recording-cards, target-write,
-// overlay-layout, settings-save, meter and the Rust core crate's tests).
+// CSS, its update check (production builds only), and Windows-only or
+// Tauri-bound Rust. Everything else is tested by running it (main-page,
+// dictation-controller, microphone-capture, recording-pipeline,
+// recording-list-refresh, target-write, overlay-layout, settings-save, meter
+// and the Rust core crate's tests).
 const desktopRoot = resolve(import.meta.dirname, "..");
 const nativeSourceDir = resolve(desktopRoot, "src-tauri/src");
 const read = (path: string) => readFileSync(resolve(desktopRoot, path), "utf8");
@@ -38,60 +39,10 @@ describe("desktop regression guards", () => {
     }
   });
 
-  it("shows failures as a pill notice without opening the menu", () => {
-    // Bug (fixed in 38cabe0): every failure forced the menu open over the user's work.
-    // dictation-controller.test.ts checks failures reach showFailure.
-    const main = read("src/main.ts");
-    const showFailure = main.slice(
-      main.indexOf("function showFailure("),
-      main.indexOf("function showWidgetNotice("),
-    );
-
-    expect(showFailure).toContain("showWidgetNotice(");
-    expect(showFailure).not.toContain("openMenu()");
-  });
-
-  it("asks the app for settings while the model is saving", () => {
-    // Bug (F3, 2026-11-21): Live, Standard, Live quickly left the page on Live
-    // while the app had saved Standard, so a recording streamed Live audio to a
-    // Standard session. settings-save.test.ts checks the field stays busy.
-    const main = read("src/main.ts");
-    const currentSettings = main.slice(
-      main.indexOf("async function currentSettings("),
-      main.indexOf("menuShowIdlePillToggle.addEventListener("),
-    );
-
-    expect(currentSettings).toContain('if (isSaving("model")) return invoke<AppSettings>("app_get_settings");');
-  });
-
-  it("reads the Dictionary's target program only when the menu opens", () => {
-    // F1 (2026-11-23): Rust no longer sends every app switch to the menu. The
-    // menu asks on open and shows "Detecting…" meanwhile, so a reopened menu
-    // never shows the previous program's name.
-    const main = read("src/main.ts");
-    const refresh = main.slice(
-      main.indexOf("async function refreshForegroundApp("),
-      main.indexOf('invoke<string | null>("get_foreground_app")'),
-    );
-
-    expect(main).not.toContain("foreground-app-changed");
+  it("sends no app switches from Rust to the menu", () => {
+    // F1 (2026-11-23): the menu asks for the target program when it opens
+    // (main-page.test.ts), so Rust no longer emits every app switch.
     expect(read("src-tauri/src/lib.rs")).not.toContain("foreground-app-changed");
-    expect(refresh).toContain('menuTargetAppName.textContent = "Detecting…";');
-    expect(main.slice(main.indexOf("async function openMenu("))).toMatch(/^[^}]*void refreshForegroundApp\(\);/);
-  });
-
-  it("keeps the native window footprint fixed across hover expand and collapse", () => {
-    // Hover only changes the CSS pill inside the window. A window layout that
-    // read hover state would resize and move the window under the cursor, so
-    // the pill would jump and flicker between hover and leave.
-    const main = read("src/main.ts");
-    const windowLayout = main.slice(
-      main.indexOf("function getWindowLayout("),
-      main.indexOf("async function applyOverlayLayout("),
-    );
-
-    expect(windowLayout).toContain("getOverlayLayout({");
-    expect(windowLayout).not.toMatch(/isWidgetExpanded|widgetHovered/);
   });
 
   it("pins the window's bottom edge by the padding the page adds to its height", () => {
