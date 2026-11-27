@@ -37,13 +37,17 @@ class BufferedDictationBackendTest {
     private fun pcmRecording(bytes: ByteArray): StoredRecording =
         store.beginPcm("Dictation", 16_000).apply { write(bytes, bytes.size) }.finish("saved")
 
-    private fun manager(client: TranscriptionClient, runner: Executor) = TranscriptionManager(
+    private fun manager(
+        client: TranscriptionClient,
+        runner: Executor,
+        callbacks: Executor = DirectDispatcher,
+    ) = TranscriptionManager(
         store = store,
         newClient = { client },
         dictationRunner = runner,
         // A dictation never waits behind imports and retries.
         bulkRunner = Executor { error("A dictation ran on the bulk thread") },
-        callbacks = DirectDispatcher,
+        callbacks = callbacks,
     )
 
     @Test
@@ -159,6 +163,49 @@ class BufferedDictationBackendTest {
     }
 
     @Test
+    fun aLateFirstTranscriptIsIgnoredAndTheNextUploadCanStillBeCancelled() {
+        val first = byteArrayOf(1, 2)
+        val recorder = FakePcmRecorder(pcmRecording(first), pcmRecording(byteArrayOf(3, 4)))
+        val client = FakeTranscriptionClient("late")
+        val dictation = QueuedRunner()
+        val uploads = QueuedRunner()
+        val finishedUploads = QueuedRunner()
+        // The coordinator hears every dictation of its backend itself.
+        val listener = CapturingListener()
+        val backend = BufferedDictationBackend(
+            recorder,
+            manager(client, uploads, callbacks = finishedUploads),
+            dictation,
+            DirectDispatcher,
+        )
+
+        // Recording A is transcribed, but its result has not come back yet
+        // when the user cancels and records B with the same listener.
+        backend.start(listener)
+        backend.finish()
+        dictation.runAll()
+        uploads.runAll()
+        backend.cancel()
+        backend.start(listener)
+        backend.finish()
+        dictation.runAll()
+        finishedUploads.runAll()
+
+        assertNull(listener.final)
+        assertNull(listener.error)
+
+        // B's upload, handed over before A's result came back, still stops.
+        backend.cancel()
+        uploads.runAll()
+        finishedUploads.runAll()
+
+        assertEquals(2, client.cancelCount)
+        assertArrayEquals(pcm16MonoWav(first, 16_000), client.lastWav)
+        assertNull(listener.final)
+        assertNull(listener.error)
+    }
+
+    @Test
     fun aCancelWhileTheMicrophoneStopsSendsNoAudio() {
         val recorder = FakePcmRecorder(pcmRecording(byteArrayOf(1, 2)))
         val client = FakeTranscriptionClient("late")
@@ -253,8 +300,9 @@ class BufferedDictationBackendTest {
     }
 }
 
+/** Saves each new capture as the next of [recordings]; the last one is reused. */
 private class FakePcmRecorder(
-    private val recording: StoredRecording,
+    private vararg val recordings: StoredRecording,
     private val stopError: String? = null,
 ) : PcmRecorder {
     val started = mutableListOf<FakeRecording>()
@@ -268,6 +316,7 @@ private class FakePcmRecorder(
     /** Ends once, like the real recorder: a later stop throws, a later cancel does nothing. */
     inner class FakeRecording : ActiveRecording {
         var ended: String? = null
+        private val recording = recordings[minOf(started.size, recordings.lastIndex)]
 
         override fun stop(): StoredRecording {
             stopCount += 1
