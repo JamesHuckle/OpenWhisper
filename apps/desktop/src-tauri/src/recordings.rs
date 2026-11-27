@@ -319,10 +319,12 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn closing_an_open_recording_writes_its_final_length() {
-        let root = std::env::temp_dir().join(format!("openwhisper-wav-test-{}", Uuid::new_v4()));
-        let id = "active";
+    /// Starts a recording as the app does, saves its details and writes four
+    /// bytes of audio, leaving its file open.
+    fn start_open_recording(
+        root: &std::path::Path,
+        id: &str,
+    ) -> std::sync::Mutex<HashMap<String, ActiveRecording>> {
         fs::create_dir_all(root.join(id)).unwrap();
         let started = Instant::now();
         let mut writer =
@@ -339,13 +341,21 @@ mod tests {
             transcript: String::new(),
             error: String::new(),
         };
-        write_recording_metadata(&root, &metadata).unwrap();
+        write_recording_metadata(root, &metadata).unwrap();
         writer.append(&[1, 2, 3, 4], started).unwrap();
         let recordings = std::sync::Mutex::new(HashMap::new());
         recordings
             .lock()
             .unwrap()
             .insert(id.to_string(), ActiveRecording { writer, metadata });
+        recordings
+    }
+
+    #[test]
+    fn closing_an_open_recording_writes_its_final_length() {
+        let root = std::env::temp_dir().join(format!("openwhisper-wav-test-{}", Uuid::new_v4()));
+        let id = "active";
+        let recordings = start_open_recording(&root, id);
 
         close_active_recording(&recordings, &root, id).unwrap();
 
@@ -357,6 +367,29 @@ mod tests {
         assert!(recordings.lock().unwrap().is_empty());
         // Closing again (transcribe, then finish) is harmless.
         close_active_recording(&recordings, &root, id).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finishing_saves_the_final_length_and_outcome_of_an_open_or_closed_recording() {
+        let root = std::env::temp_dir().join(format!("openwhisper-finish-test-{}", Uuid::new_v4()));
+        let open = start_open_recording(&root, "open");
+        let closed = start_open_recording(&root, "closed");
+        // Transcribing a saved recording closes it before it finishes.
+        close_active_recording(&closed, &root, "closed").unwrap();
+
+        for (id, recordings) in [("open", &open), ("closed", &closed)] {
+            close_active_recording(recordings, &root, id).unwrap();
+            finish_recording(&root, id, "complete".into(), "Hello.".into(), String::new()).unwrap();
+
+            let wav = fs::read(root.join(id).join("audio.wav")).unwrap();
+            assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4, "{id}");
+            let finished = read_recording_metadata(&root, id).unwrap();
+            assert_eq!(finished.bytes, 48, "{id}");
+            assert_eq!(finished.status, "complete", "{id}");
+            assert_eq!(finished.transcript, "Hello.", "{id}");
+            assert!(recordings.lock().unwrap().is_empty(), "{id}");
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
