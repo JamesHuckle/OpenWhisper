@@ -6,17 +6,16 @@
 
 use crate::openai_api::ensure_crypto_provider;
 use crate::recording_store::MICROPHONE_SAMPLE_RATE;
-use crate::sync::lock;
 use base64::Engine;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{watch, Mutex as AsyncMutex};
-use tokio::task::JoinHandle;
+use tokio::task::AbortHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
@@ -55,7 +54,7 @@ pub struct RealtimeStream {
     outcome: watch::Receiver<Outcome>,
     closed: AtomicBool,
     finish: watch::Sender<Outcome>,
-    reader: Mutex<Option<JoinHandle<()>>>,
+    reader: AbortHandle,
 }
 
 impl RealtimeStream {
@@ -108,21 +107,15 @@ impl RealtimeStream {
         let (finish, outcome) = watch::channel(None);
         let reader_finish = finish.clone();
         let reader = tokio::spawn(async move {
-            let result = read_events(events, on_delta).await;
-            reader_finish.send_if_modified(|outcome| {
-                if outcome.is_some() {
-                    return false;
-                }
-                *outcome = Some(result);
-                true
-            });
-        });
+            publish_first_outcome(&reader_finish, read_events(events, on_delta).await);
+        })
+        .abort_handle();
         Ok(Self {
             sink: Arc::new(AsyncMutex::new(sink)),
             outcome,
             closed: AtomicBool::new(false),
             finish,
-            reader: Mutex::new(Some(reader)),
+            reader,
         })
     }
 
@@ -178,16 +171,11 @@ impl RealtimeStream {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        self.finish.send_if_modified(|outcome| {
-            if outcome.is_some() {
-                return false;
-            }
-            *outcome = Some(Err("Realtime transcription session is closed".into()));
-            true
-        });
-        if let Some(reader) = lock(&self.reader).take() {
-            reader.abort();
-        }
+        publish_first_outcome(
+            &self.finish,
+            Err("Realtime transcription session is closed".into()),
+        );
+        self.reader.abort();
         // Closing politely needs the sink, which a send may still hold; it
         // is done in the background so a cancel never waits for it. Without
         // a runtime the connection simply drops with this stream.
@@ -213,6 +201,17 @@ impl Drop for RealtimeStream {
     fn drop(&mut self) {
         self.close();
     }
+}
+
+/// Publishes `result` unless a transcript or error was published first.
+fn publish_first_outcome(finish: &watch::Sender<Outcome>, result: Result<String, String>) {
+    finish.send_if_modified(|outcome| {
+        if outcome.is_some() {
+            return false;
+        }
+        *outcome = Some(result);
+        true
+    });
 }
 
 /// Reads the service's events until the finished text, a failure or the end
@@ -401,6 +400,7 @@ pub mod test_server {
 mod tests {
     use super::test_server::{completed, delta, failed, RealtimeServer, Script};
     use super::*;
+    use std::sync::Mutex;
 
     fn collecting() -> (DeltaHandler, Arc<Mutex<Vec<String>>>) {
         let seen: Arc<Mutex<Vec<String>>> = Arc::default();
