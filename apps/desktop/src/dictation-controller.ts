@@ -107,6 +107,7 @@ export function createDictationController(deps: DictationDeps) {
   let pendingAudioBytes = 0;
   // Set while a stop waits for the microphone's last samples; whatever
   // finishes the recording waits for them too, so they are saved and sent.
+  // It never rejects: it settles once a failed stop has set captureStopError.
   let captureStopping: Promise<void> | null = null;
   // Set when the microphone failed to stop for the current recording. The
   // recording then fails, keeping the audio it received, once its session is
@@ -367,7 +368,7 @@ export function createDictationController(deps: DictationDeps) {
               // up, and a new recording may have started since.
               const cancelled = audioCancelledBeforeBackup.get(op);
               audioCancelledBeforeBackup.delete(op);
-              if (cancelled?.stopping) await cancelled.stopping.catch(() => undefined);
+              if (cancelled?.stopping) await cancelled.stopping;
               const audio = cancelled?.parts;
               if (audio?.length) {
                 await sendAudioChunk(
@@ -460,25 +461,29 @@ export function createDictationController(deps: DictationDeps) {
     const op = operationId;
 
     const stopping = (async () => {
-      if (capture.isActive()) {
-        await capture.stop();
-        flushAudioBatch();
+      try {
+        if (capture.isActive()) {
+          await capture.stop();
+          flushAudioBatch();
+        }
+      } catch (error) {
+        log(`capture stop error=${errorMessage(error)}`);
+        // Fails the recording below, once its session is ready, or in the
+        // Standard fallback that started while this waited.
+        if (op === operationId) captureStopError = error;
       }
     })();
     captureStopping = stopping;
     try {
       await stopping;
-    } catch (error) {
-      log(`capture stop error=${errorMessage(error)}`);
-      // Fails the recording below, or once its session is ready.
-      if (op === operationId) captureStopError = error;
     } finally {
       if (captureStopping === stopping) captureStopping = null;
     }
 
     // A cancel meanwhile already tidied up; the session may now be a newer one.
     if (op !== operationId) return;
-    if (currentSessionId) await finalizeRecording();
+    // A Standard fallback that started while this waited finishes the recording.
+    if (currentSessionId && !fellBackToStandard) await finalizeRecording();
   }
 
   async function finalizeRecording() {
@@ -548,9 +553,12 @@ export function createDictationController(deps: DictationDeps) {
       if (failedSessionId) await stopSession(failedSessionId);
       // A failed Live upload gets here before the microphone's last samples
       // are written; the app closes the file as it reads it, so wait for them.
-      await captureStopping?.catch(() => undefined);
+      await captureStopping;
       await backupTail;
       if (op !== operationId) return;
+      // A microphone that failed to stop, before or during this wait, may not
+      // have saved its last samples: the recording fails instead.
+      if (captureStopError) throw captureStopError;
       if (backupError) throw backupError;
       await transcribeSavedRecording(recordingId, () => op === operationId);
     } catch (fallbackError) {
@@ -594,7 +602,7 @@ export function createDictationController(deps: DictationDeps) {
     // arrives while it stops is not pasted or copied.
     currentSessionId = null;
     if (sessionId) await stopSession(sessionId);
-    if (stopping) await stopping.catch(() => undefined);
+    if (stopping) await stopping;
     // Capture has stopped; let its last pieces reach the backup before closing it.
     await backupTail;
     await finishCurrentRecording("cancelled", "", "Cancelled by user");

@@ -943,6 +943,48 @@ describe("dictation controller", () => {
       expectMicrophoneStopFailure(run, Array(100).fill(8));
       expect(run.app.commands()).not.toContain("worker_start_session");
     });
+
+    // A Live error arrives while the stop waits for the microphone, so the
+    // Standard fallback starts; then the stop fails. closingLiveSession: it
+    // fails while the fallback is still closing the Live session.
+    async function liveErrorWhileStopFails(closingLiveSession: boolean) {
+      const run = setup(LIVE_TRANSCRIPTION_MODEL);
+      await startRecording(run.dictation);
+      run.mic.hear(BATCH, 6);
+      run.mic.hear(640, 7);
+      await settle();
+      run.app.answers.worker_start_session = { session_id: "s-2" };
+      run.mic.holdStop();
+      const stopping = run.dictation.stopRecording();
+      await settle();
+      expect(run.dictation.state).toBe("transcribing");
+      if (closingLiveSession) run.app.hold("worker_stop_session");
+
+      await run.dictation.receiveSessionEvent(
+        sessionEvent({ type: "error", text: "Realtime transcription session is closed" }, true),
+      );
+      await settle();
+      run.mic.failEveryStop(new Error("Microphone stop failed"));
+      run.mic.failStop(new Error("Microphone stop failed"));
+      await settle();
+      if (closingLiveSession) {
+        run.app.stopHolding("worker_stop_session");
+        run.app.release("worker_stop_session");
+      }
+      await stopping;
+      await settle();
+
+      expectMicrophoneStopFailure(run, [...Array(BATCH).fill(6), ...Array(640).fill(7)]);
+      expect(run.app.named("worker_start_session")).toHaveLength(1);
+    }
+
+    it("fails a Live dictation whose Standard fallback starts while the stop fails", async () => {
+      await liveErrorWhileStopFails(false);
+    });
+
+    it("fails a Live dictation whose stop fails while its fallback closes the Live session", async () => {
+      await liveErrorWhileStopFails(true);
+    });
   });
 
   it("stops once the microphone is open after a second toggle press during startup", async () => {
@@ -1305,6 +1347,35 @@ describe("dictation controller", () => {
       );
       await settle();
 
+      await expectStandardTranscriptPasted(env);
+    });
+
+    it("is transcribed with Standard once, with its last samples, when its session errs while the microphone stops", async () => {
+      const env = await liveDictationStopped();
+      env.mic.hear(640, 7);
+      env.mic.holdStop();
+      const stopping = env.dictation.stopRecording();
+      await settle();
+
+      await env.dictation.receiveSessionEvent(
+        sessionEvent({ type: "error", text: "Realtime transcription session is closed" }, true),
+      );
+      await settle();
+      expect(env.app.commands()).not.toContain("recording_transcribe");
+      env.mic.finishStop();
+      await stopping;
+      await settle();
+
+      const saved = env.app.named("recording_append_chunk").map((call) => Array.from(call.args as Uint8Array));
+      expect(saved.flat()).toEqual([...Array(BATCH).fill(1), ...Array(640).fill(7)]);
+      const commands = env.app.commands();
+      expect(commands.lastIndexOf("recording_append_chunk")).toBeLessThan(
+        commands.indexOf("recording_transcribe"),
+      );
+      expect(env.app.commands()).not.toContain("worker_finalize_session_audio");
+      expect(env.app.named("worker_stop_session").map((call) => call.args)).toEqual([
+        { sessionId: "s-1" },
+      ]);
       await expectStandardTranscriptPasted(env);
     });
 
