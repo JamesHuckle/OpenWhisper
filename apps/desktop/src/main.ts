@@ -551,10 +551,13 @@ function stopOrCancel(): boolean {
 
 // The settings arrow always reaches its own click listener, which opens or
 // closes the menu, so it never stops a recording or cancels a transcription.
+// Any other click on the pill closes an open menu and still ends a dictation.
 function handleWidgetClick(e: MouseEvent) {
-  if (menuOpen) void collapseOverlay();
-  else if (btnDropdown.contains(e.target as Node)) return;
-  else if (!stopOrCancel()) {
+  if (btnDropdown.contains(e.target as Node)) return;
+  if (menuOpen) {
+    void collapseOverlay();
+    stopOrCancel();
+  } else if (!stopOrCancel()) {
     if (btnMic.contains(e.target as Node)) return;
     void dictation.toggleRecording();
     return;

@@ -295,5 +295,27 @@ describe("settings arrow on the pill", () => {
 
       expect([widget().dataset.state, menuShown()]).toEqual([state === "recording" ? "transcribing" : "idle", false]);
     });
+
+    it(`closes the open menu and ends the dictation on Stop while ${state}`, async () => {
+      await startDictation(state);
+      arrow().click();
+      await settled();
+
+      document.getElementById("btn-stop")!.click();
+      await settled();
+
+      expect([widget().dataset.state, menuShown()]).toEqual([state === "recording" ? "transcribing" : "idle", false]);
+    });
+
+    it(`closes the open menu from the arrow and lets the dictation run while ${state}`, async () => {
+      await startDictation(state);
+      arrow().click();
+      await settled();
+
+      arrow().click();
+      await settled();
+
+      expect([widget().dataset.state, menuShown()]).toEqual([state, false]);
+    });
   }
 });
