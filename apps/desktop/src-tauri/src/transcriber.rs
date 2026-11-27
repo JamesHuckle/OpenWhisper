@@ -1411,6 +1411,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_wav_part_is_reported_without_sending_it_again() {
+        let dir = TempDir::new();
+        let path = long_wav(&dir.0, &[SPEECH; 3]);
+
+        let run = transcribe_long(
+            &path,
+            vec![Ok("First part.".into()), Err(bad_request(None))],
+            "Zoon",
+            &[],
+        )
+        .await;
+
+        assert_eq!(
+            run.result.unwrap_err().to_string(),
+            "Error code: 400 - Could not process input"
+        );
+        assert_eq!(run.sent.len(), 2);
+        // The part that finished stays saved for a retry.
+        assert_eq!(
+            saved_texts(&path)
+                .into_iter()
+                .map(|(_, _, text)| text)
+                .collect::<Vec<_>>(),
+            ["First part."]
+        );
+    }
+
+    #[tokio::test]
     async fn a_retry_resumes_parts_saved_with_their_prompts_by_an_older_version() {
         let dir = TempDir::new();
         let path = long_wav(&dir.0, &[SPEECH; 3]);
