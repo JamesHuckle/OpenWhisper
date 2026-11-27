@@ -7,8 +7,6 @@ import com.openwhisper.android.transcription.TranscriptionJob
 import com.openwhisper.android.transcription.TranscriptionManager
 import com.openwhisper.android.transcription.TranscriptionOrigin
 import java.util.concurrent.Executor
-import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Records on the microphone, then hands the recording to the app's
@@ -20,84 +18,74 @@ class BufferedDictationBackend(
     private val background: Executor,
     private val callbacks: Executor,
 ) : DictationBackend {
-    private val generation = AtomicLong(0)
-    private val activeRecording = AtomicReference<ActiveRecording?>(null)
-    private val activeJob = AtomicReference<TranscriptionJob?>(null)
+    /** One microphone dictation: its recording, who hears its result, and its upload. */
+    private class Capture(
+        val recording: ActiveRecording,
+        val listener: DictationBackend.Listener,
+    ) {
+        @Volatile
+        var job: TranscriptionJob? = null
+    }
+
+    /** The dictation whose result is still wanted; a cancel or a new start replaces it. */
+    @Volatile
+    private var current: Capture? = null
     /** Held while a stopped recording is handed to [transcriptions], and by [cancel]. */
     private val handover = Any()
-    @Volatile
-    private var listener: DictationBackend.Listener? = null
 
     override fun start(listener: DictationBackend.Listener) {
-        generation.incrementAndGet()
-        this.listener = listener
-        try {
-            activeRecording.set(recorder.start())
+        val recording = try {
+            recorder.start()
         } catch (error: Exception) {
-            this.listener = null
+            current = null
             listener.onError(error.safeMessage("Unable to start microphone"))
+            return
         }
+        current = Capture(recording, listener)
     }
 
     override fun finish() {
-        val expectedGeneration = generation.get()
-        val expectedListener = listener ?: return
         // Stops this recording only, even if a cancel and a new recording
         // come before the background thread gets to it.
-        val recording = activeRecording.get() ?: return
+        val capture = current ?: return
         background.execute {
             try {
-                val saved = recording.stop()
+                val saved = capture.recording.stop()
                 val job = synchronized(handover) {
                     // A cancel that came while the microphone was stopping:
                     // the saved audio is never sent.
-                    if (generation.get() != expectedGeneration) return@execute
-                    transcriptions.submit(saved, TranscriptionOrigin.DICTATION).also(activeJob::set)
+                    if (current !== capture) return@execute
+                    transcriptions.submit(saved, TranscriptionOrigin.DICTATION).also { capture.job = it }
                 }
                 // A new dictation that started while the job was being handed over.
-                if (generation.get() != expectedGeneration) job.cancel()
+                if (current !== capture) job.cancel()
                 job.onFinished { result ->
-                    activeJob.compareAndSet(job, null)
+                    capture.job = null
                     result.fold(
-                        onSuccess = { transcript ->
-                            deliver(expectedGeneration, expectedListener) { it.onFinal(transcript) }
-                        },
-                        onFailure = { error -> fail(expectedGeneration, expectedListener, error) },
+                        onSuccess = { transcript -> deliver(capture) { it.onFinal(transcript) } },
+                        onFailure = { error -> fail(capture, error) },
                     )
                 }
             } catch (error: Exception) {
-                callbacks.execute { fail(expectedGeneration, expectedListener, error) }
+                callbacks.execute { fail(capture, error) }
             }
         }
     }
 
     override fun cancel() {
-        // A job handed over before this sees the cancel below; one after it
-        // is never submitted.
-        synchronized(handover) {
-            generation.incrementAndGet()
-            listener = null
-        }
-        activeRecording.getAndSet(null)?.cancel()
+        // A job handed over before this is cancelled below; one after it is
+        // never submitted.
+        val capture = synchronized(handover) { current.also { current = null } } ?: return
+        capture.recording.cancel()
         // Stop this dictation's upload too; other transcriptions carry on.
-        activeJob.getAndSet(null)?.cancel()
+        capture.job?.cancel()
     }
 
-    private fun deliver(
-        expectedGeneration: Long,
-        expectedListener: DictationBackend.Listener,
-        event: (DictationBackend.Listener) -> Unit,
-    ) {
-        if (generation.get() == expectedGeneration && listener === expectedListener) {
-            event(expectedListener)
-        }
+    private fun deliver(capture: Capture, event: (DictationBackend.Listener) -> Unit) {
+        if (current === capture) event(capture.listener)
     }
 
-    private fun fail(
-        expectedGeneration: Long,
-        expectedListener: DictationBackend.Listener,
-        error: Throwable,
-    ) = deliver(expectedGeneration, expectedListener) {
+    private fun fail(capture: Capture, error: Throwable) = deliver(capture) {
         val message = error.safeMessage("Dictation failed")
         it.onError(
             // "No audio found" is all there is to say about a tap.
