@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_TRANSCRIPTION_MODEL, LIVE_TRANSCRIPTION_MODEL } from "./models";
 import { PCM_FLUSHED } from "./pcm-capture";
 
-// Renders the real menu page (main.ts) headless with the Tauri bridge faked,
-// opens the menu and checks the recent recording cards it draws, and that the
-// pill's settings arrow opens the menu while a dictation runs.
+// Renders the real menu page (main.ts) headless with the Tauri bridge faked:
+// the recent recording cards it draws, the pill's settings arrow while a
+// dictation runs, hover, the Dictionary's target program, model saves and
+// failure notices.
 const recordings = [
   {
     id: "rec-1",
@@ -32,6 +34,17 @@ const recordings = [
   },
 ];
 let listed: typeof recordings = recordings;
+// The settings the fake app has saved; app_save_settings changes them.
+let savedSettings = {
+  hasOpenaiApiKey: true,
+  openaiApiKeyPreview: "sk-...abcd",
+  transcriptionModel: DEFAULT_TRANSCRIPTION_MODEL,
+  transcriptionPrompt: "",
+  refineEnabled: false,
+  refinePrompt: "",
+  showIdlePill: true,
+  holdToTalk: true,
+};
 let holdTranscription = false;
 // Dictations get a session, so a recording runs until it is stopped.
 let dictating = false;
@@ -54,8 +67,33 @@ vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn(), isEnabled: vi.
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn() }));
 
+// The commands the page sent while it loaded.
+let startupCommands: string[] = [];
+
+// How the fake app answers each command; a test may override some, and the
+// next test starts from this again.
+async function answerLikeTheApp(command: string, args?: Record<string, unknown>) {
+  if (command === "recording_list") return listed;
+  if (command === "app_get_settings") return savedSettings;
+  if (command === "app_save_settings") return (savedSettings = { ...savedSettings, ...args });
+  if (command === "get_foreground_app") return null;
+  if (dictating && command === "recording_begin") return { id: "rec-live" };
+  if (dictating && command === "worker_start_session") return { session_id: "session-live" };
+  if (holdTranscription && command === "worker_start_session") return new Promise(() => {});
+  if (holdPaste && command === "insert_final_text") {
+    return new Promise((resolve) => (finishPaste = () => resolve({ outcome: "pasted" })));
+  }
+  return undefined;
+}
+
 const settled = () => new Promise((resolve) => setTimeout(resolve, 20));
+const page = () =>
+  (window as unknown as { __openWhisperTest: { openMenu: () => Promise<void>; collapseOverlay: () => Promise<void> } })
+    .__openWhisperTest;
 const cards = () => document.getElementById("recent-recordings")!;
+const widget = () => document.getElementById("widget")!;
+const menuShown = () => !document.getElementById("mic-menu")!.classList.contains("hidden");
+const commandCalls = (command: string) => invoke.mock.calls.filter(([name]) => name === command);
 const when = (ms: number) =>
   new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -82,34 +120,33 @@ function tree(node: Node, depth = 0): string[] {
 
 async function openMenuWith(list: typeof recordings) {
   listed = list;
-  await (window as unknown as { __openWhisperTest: { openMenu: () => Promise<void> } }).__openWhisperTest.openMenu();
+  await page().openMenu();
   await settled();
 }
 
+// Closes the menu and ends any dictation: a recording stops on the first
+// click and its transcription cancels on the second.
+async function returnToIdle() {
+  await page().collapseOverlay();
+  for (let click = 0; click < 2 && widget().dataset.state !== "idle"; click++) {
+    widget().click();
+    await settled();
+  }
+  expect([widget().dataset.state, menuShown()]).toEqual(["idle", false]);
+}
+
+// Transcribing: a recording stopped by a click on the pill, waiting for its result.
+async function startDictation(state: "recording" | "transcribing") {
+  document.getElementById("btn-mic")!.click();
+  await settled();
+  if (state === "transcribing") {
+    widget().click();
+    await settled();
+  }
+  expect(widget().dataset.state).toBe(state);
+}
+
 beforeAll(async () => {
-  invoke.mockImplementation(async (command: string) => {
-    if (command === "recording_list") return listed;
-    if (command === "app_get_settings") {
-      return {
-        hasOpenaiApiKey: true,
-        openaiApiKeyPreview: "sk-...abcd",
-        transcriptionModel: "gpt-4o-transcribe",
-        transcriptionPrompt: "",
-        refineEnabled: false,
-        refinePrompt: "",
-        showIdlePill: true,
-        holdToTalk: true,
-      };
-    }
-    if (command === "get_foreground_app") return null;
-    if (dictating && command === "recording_begin") return { id: "rec-live" };
-    if (dictating && command === "worker_start_session") return { session_id: "session-live" };
-    if (holdTranscription && command === "worker_start_session") return new Promise(() => {});
-    if (holdPaste && command === "insert_final_text") {
-      return new Promise((resolve) => (finishPaste = () => resolve({ outcome: "pasted" })));
-    }
-    return undefined;
-  });
   // Microphone capture, faked so a recording can start.
   const audioNode = () => ({ connect: vi.fn(), disconnect: vi.fn() });
   class FakeAudioContext {
@@ -140,11 +177,16 @@ beforeAll(async () => {
     value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [] })), enumerateDevices: vi.fn(async () => []) },
   });
   document.body.innerHTML = '<div id="app"></div>';
+  invoke.mockImplementation(answerLikeTheApp);
   await import("./main");
   await settled();
+  startupCommands = invoke.mock.calls.map(([command]) => command);
 });
 
-beforeEach(() => invoke.mockClear());
+beforeEach(() => {
+  invoke.mockClear();
+  invoke.mockImplementation(answerLikeTheApp);
+});
 
 describe("recent recording cards", () => {
   it("draws a transcript card and a Transcribe card with their classes and labels", async () => {
@@ -266,9 +308,7 @@ describe("recent recording cards", () => {
 });
 
 describe("settings arrow on the pill", () => {
-  const widget = () => document.getElementById("widget")!;
   const arrow = () => document.getElementById("btn-dropdown")!;
-  const menuShown = () => !document.getElementById("mic-menu")!.classList.contains("hidden");
   const activations = {
     click: () => arrow().click(),
     Enter: () => pressOnArrow("Enter"),
@@ -281,27 +321,10 @@ describe("settings arrow on the pill", () => {
     if (arrow().dispatchEvent(press)) arrow().click();
   }
 
-  // Transcribing: a recording stopped by a click on the pill, waiting for its result.
-  async function startDictation(state: "recording" | "transcribing") {
-    document.getElementById("btn-mic")!.click();
-    await settled();
-    if (state === "transcribing") {
-      widget().click();
-      await settled();
-    }
-    expect(widget().dataset.state).toBe(state);
-  }
-
   beforeEach(async () => {
     holdTranscription = false;
     dictating = true;
-    await (window as unknown as { __openWhisperTest: { collapseOverlay: () => Promise<void> } }).__openWhisperTest.collapseOverlay();
-    // A recording stops on the first click and its transcription cancels on the second.
-    for (let click = 0; click < 2 && widget().dataset.state !== "idle"; click++) {
-      widget().click();
-      await settled();
-    }
-    expect([widget().dataset.state, menuShown()]).toEqual(["idle", false]);
+    await returnToIdle();
   });
 
   for (const state of ["recording", "transcribing"] as const) {
@@ -369,5 +392,105 @@ describe("settings arrow on the pill", () => {
     await settled();
 
     expect([widget().dataset.state, menuShown(), transcribe().disabled]).toEqual(["idle", true, false]);
+  });
+});
+
+describe("pill and menu behaviour once guarded by source text checks", () => {
+  beforeEach(async () => {
+    holdTranscription = false;
+    dictating = true;
+    await returnToIdle();
+  });
+
+  it("expands and collapses the pill on hover without resizing the native window", async () => {
+    // Hover only changes the CSS pill inside the window. A window layout that
+    // read hover state would resize and move the window under the cursor, so
+    // the pill would jump and flicker between hover and leave.
+    // Collapsing above sent the window its layout; only hover follows.
+    expect(widget().dataset.expanded).toBe("false");
+    invoke.mockClear();
+
+    widget().dispatchEvent(new PointerEvent("pointerenter"));
+    await vi.waitFor(() => expect(widget().dataset.expanded).toBe("true"));
+    widget().dispatchEvent(new PointerEvent("pointerleave"));
+    await vi.waitFor(() => expect(widget().dataset.expanded).toBe("false"));
+    expect(commandCalls("overlay_apply_layout")).toEqual([]);
+
+    // The spy sees layouts: opening the menu does change the window.
+    await page().openMenu();
+    expect(commandCalls("overlay_apply_layout").length).toBeGreaterThan(0);
+  });
+
+  it("asks for the Dictionary's target program each time the menu opens", async () => {
+    // F1 (2026-11-23): Rust no longer sends every app switch to the menu. The
+    // menu asks on open and shows "Detecting…" meanwhile, so a reopened menu
+    // never shows the previous program's name.
+    const answers: ((name: string) => void)[] = [];
+    invoke.mockImplementation((command: string, args?: Record<string, unknown>) =>
+      command === "get_foreground_app"
+        ? new Promise((resolve) => answers.push(resolve))
+        : answerLikeTheApp(command, args),
+    );
+    const targetProgram = () => document.getElementById("menu-target-app-name")!.textContent;
+
+    expect(startupCommands).not.toContain("get_foreground_app");
+    expect(listeners.has("foreground-app-changed")).toBe(false);
+    for (const program of ["notepad", "Code"]) {
+      await page().openMenu();
+      expect(targetProgram()).toBe("Detecting…");
+      answers.at(-1)!(program);
+      await vi.waitFor(() => expect(targetProgram()).toBe(program));
+      await page().collapseOverlay();
+    }
+    expect(commandCalls("get_foreground_app")).toHaveLength(2);
+  });
+
+  it("starts a recording with the model the app is saving, not the one the page still shows", async () => {
+    // Bug (F3, 2026-11-21): Live, Standard, Live quickly left the page on Live
+    // while the app had saved Standard, so a recording streamed Live audio to a
+    // Standard session. The page keeps its older settings while the model
+    // saves, so a recording asks the app; Rust reads the model it saved.
+    let finishSave!: () => void;
+    invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
+      if (command !== "app_save_settings") return answerLikeTheApp(command, args);
+      const saved = answerLikeTheApp(command, args);
+      return new Promise((resolve) => (finishSave = () => resolve(saved)));
+    });
+    const modelSelect = document.getElementById("menu-model-select") as HTMLSelectElement;
+    expect(modelSelect.value).toBe(DEFAULT_TRANSCRIPTION_MODEL);
+
+    modelSelect.value = LIVE_TRANSCRIPTION_MODEL;
+    modelSelect.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(finishSave).toBeDefined());
+    listeners.get("toggle-recording")!({ payload: undefined });
+    await vi.waitFor(() => expect(commandCalls("worker_start_session")).toHaveLength(1));
+
+    expect(commandCalls("app_get_settings")).toHaveLength(1);
+    expect(commandCalls("worker_start_session")[0][1]).toEqual({});
+
+    // Puts Standard back for the tests after this one.
+    finishSave();
+    await returnToIdle();
+    invoke.mockImplementation(answerLikeTheApp);
+    modelSelect.value = DEFAULT_TRANSCRIPTION_MODEL;
+    modelSelect.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(savedSettings.transcriptionModel).toBe(DEFAULT_TRANSCRIPTION_MODEL));
+  });
+
+  it("shows a failure as a notice on the pill without opening the menu", async () => {
+    // Bug (fixed in 38cabe0): every failure forced the menu open over the user's work.
+    await startDictation("recording");
+
+    listeners.get("worker-session-event")!({
+      payload: { session_id: "session-live", event: { type: "error", text: "Network down" }, done: true },
+    });
+    await vi.waitFor(() => expect(widget().dataset.notice).toBe("true"));
+
+    expect([
+      widget().dataset.state,
+      document.getElementById("widget-notice-text")!.textContent,
+      widget().title,
+      menuShown(),
+    ]).toEqual(["idle", "Network down", "Network down", false]);
   });
 });
