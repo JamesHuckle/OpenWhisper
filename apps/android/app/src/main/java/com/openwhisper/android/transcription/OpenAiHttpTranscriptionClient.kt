@@ -103,7 +103,9 @@ class OpenAiHttpTranscriptionClient(
             // A part finished on an earlier try is reused: its text builds
             // the next part's prompt as before.
             transcripts += saved.get(index, start, end)?.text ?: run {
-                val text = if (AudioRules.isSilent(audio.file, start, count.toLong())) {
+                // A recording sent in one part was found not silent above, so
+                // only a long recording's parts are scanned again.
+                val text = if (counts.size > 1 && AudioRules.isSilent(audio.file, start, count.toLong())) {
                     // A silent part is never uploaded: it costs a request and
                     // the model answers it by repeating its prompt. It is
                     // saved as finished and empty, so a retry skips it too.
