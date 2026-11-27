@@ -108,16 +108,21 @@ pub fn list_recording_metadata(root: &std::path::Path) -> Result<Vec<RecordingMe
 }
 
 /// Saves a recording's status, transcript and error, then prunes old
-/// recordings. A completed transcription no longer needs its saved parts, so
-/// transcribing it again starts fresh.
+/// recordings. A recording still being written is closed first, and its final
+/// size is saved with the outcome in one save. A completed transcription no
+/// longer needs its saved parts, so transcribing it again starts fresh.
 pub fn finish_recording(
+    recordings: &std::sync::Mutex<HashMap<String, ActiveRecording>>,
     root: &std::path::Path,
     id: &str,
     status: String,
     transcript: String,
     error: String,
 ) -> Result<()> {
-    let mut metadata = read_recording_metadata(root, id)?;
+    let mut metadata = match close_recording_file(recordings, id)? {
+        Some(metadata) => metadata,
+        None => read_recording_metadata(root, id)?,
+    };
     let complete = status == "complete";
     metadata.status = status;
     metadata.transcript = transcript;
@@ -192,12 +197,26 @@ pub fn close_active_recording(
     root: &std::path::Path,
     recording_id: &str,
 ) -> Result<(), String> {
-    let Some(active) = lock(recordings).remove(recording_id) else {
+    let closed = close_recording_file(recordings, recording_id).map_err(|e| e.to_string())?;
+    let Some(metadata) = closed else {
         return Ok(());
     };
-    let mut metadata = active.metadata;
-    metadata.bytes = active.writer.finish().map_err(|e| e.to_string())?;
     write_recording_metadata(root, &metadata).map_err(|e| e.to_string())
+}
+
+/// Writes the final header of a recording still being written and closes
+/// its file, returning its details with the final size, not yet saved.
+/// Returns None for a recording that is not open.
+fn close_recording_file(
+    recordings: &std::sync::Mutex<HashMap<String, ActiveRecording>>,
+    recording_id: &str,
+) -> Result<Option<RecordingMetadata>> {
+    let Some(active) = lock(recordings).remove(recording_id) else {
+        return Ok(None);
+    };
+    let mut metadata = active.metadata;
+    metadata.bytes = active.writer.finish()?;
+    Ok(Some(metadata))
 }
 
 /// Copies an audio file from disk into a new saved recording.
@@ -379,8 +398,8 @@ mod tests {
         close_active_recording(&closed, &root, "closed").unwrap();
 
         for (id, recordings) in [("open", &open), ("closed", &closed)] {
-            close_active_recording(recordings, &root, id).unwrap();
-            finish_recording(&root, id, "complete".into(), "Hello.".into(), String::new()).unwrap();
+            finish_recording(recordings, &root, id, "complete".into(), "Hello.".into(), "".into())
+                .unwrap();
 
             let wav = fs::read(root.join(id).join("audio.wav")).unwrap();
             assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4, "{id}");
@@ -390,6 +409,13 @@ mod tests {
             assert_eq!(finished.transcript, "Hello.", "{id}");
             assert!(recordings.lock().unwrap().is_empty(), "{id}");
         }
+        // The open recording's details were saved once: the backup is still
+        // the details saved when it started.
+        let backup: RecordingMetadata = serde_json::from_slice(
+            &fs::read(json_file::backup_path(&recording_metadata_path(&root, "open"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!((backup.status.as_str(), backup.bytes), ("recording", 44));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -450,18 +476,22 @@ mod tests {
         assert_eq!(parts, root.join("long").join("parts.json"));
         fs::write(&parts, b"{\"key\":\"k\",\"parts\":[]}").unwrap();
 
+        let finish = |status: &str, transcript: &str, error: &str| {
+            let none_open = std::sync::Mutex::new(HashMap::new());
+            let (status, transcript, error) = (status.into(), transcript.into(), error.into());
+            finish_recording(&none_open, &root, "long", status, transcript, error).unwrap();
+        };
         for status in ["failed", "cancelled", "transcribing"] {
-            finish_recording(&root, "long", status.into(), String::new(), "Network".into())
-                .unwrap();
+            finish(status, "", "Network");
             assert!(parts.exists(), "{status} keeps the finished parts for a retry");
         }
-        finish_recording(&root, "long", "complete".into(), "Hello.".into(), String::new()).unwrap();
+        finish("complete", "Hello.", "");
         assert!(!parts.exists());
         let finished = read_recording_metadata(&root, "long").unwrap();
         assert_eq!(finished.status, "complete");
         assert_eq!(finished.transcript, "Hello.");
         // Completing again without a parts file is fine.
-        finish_recording(&root, "long", "complete".into(), "Hello.".into(), String::new()).unwrap();
+        finish("complete", "Hello.", "");
         fs::remove_dir_all(root).unwrap();
     }
 

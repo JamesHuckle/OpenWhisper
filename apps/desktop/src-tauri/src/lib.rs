@@ -353,8 +353,8 @@ fn recording_finish(
     error: String,
 ) -> Result<(), String> {
     let root = recordings_root(&app_handle)?;
-    close_active_recording(&state.recordings, &root, &recording_id)?;
-    finish_recording(&root, &recording_id, status, transcript, error).map_err(|e| e.to_string())
+    finish_recording(&state.recordings, &root, &recording_id, status, transcript, error)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
