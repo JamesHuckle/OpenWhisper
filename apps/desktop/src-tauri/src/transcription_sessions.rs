@@ -23,6 +23,7 @@ use crate::models::{default_transcription_model, live_transcription_model, refin
 use crate::openai_api::{HttpApi, DEFAULT_BASE_URL};
 use crate::realtime::{DeltaHandler, RealtimeStream, FINAL_TIMEOUT};
 use crate::recording_store::MICROPHONE_SAMPLE_RATE;
+use crate::settings::AppSettings;
 use crate::sync::lock;
 use crate::transcriber::{
     is_short_clean_transcript, PolishSettings, SavedAudio, Transcriber,
@@ -49,28 +50,12 @@ const MIN_REDACT_CHARS: usize = 4;
 /// instead of waiting for ever.
 const APPEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// The settings a dictation uses, read when it starts.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SessionSettings {
-    /// The saved key; the window starts no dictation without one.
-    pub openai_api_key: String,
-    /// The saved model, already moved off old names and checked when the
-    /// settings were loaded or saved.
-    pub transcription_model: String,
-    pub prompt: String,
-    pub refine_enabled: bool,
-    pub refine_prompt: String,
-    /// Opens no Live connection: a Live dictation whose connection failed
-    /// keeps recording, and is transcribed from its saved recording with
-    /// Standard transcription when it stops.
-    pub standard_only: bool,
-}
-
-impl SessionSettings {
-    /// True when a session started with these settings is a Live one.
-    pub fn opens_live_session(&self) -> bool {
-        !self.standard_only && self.transcription_model == live_transcription_model()
-    }
+/// True when a session started with these settings is a Live one.
+/// `standard_only` opens no Live connection: a Live dictation whose
+/// connection failed keeps recording, and is transcribed from its saved
+/// recording with Standard transcription when it stops.
+pub fn opens_live_session(settings: &AppSettings, standard_only: bool) -> bool {
+    !standard_only && settings.transcription_model == live_transcription_model()
 }
 
 pub enum FinalizeAudio {
@@ -242,12 +227,17 @@ impl Sessions {
         .await
     }
 
-    /// Starts a dictation and returns its session id. A Live dictation
-    /// connects at once, so the first words are heard.
-    pub async fn start(&self, settings: SessionSettings) -> Result<String, String> {
-        let live = settings.opens_live_session();
+    /// Starts a dictation with the settings saved at this moment and returns
+    /// its session id, so a later save applies to the next one. A Live
+    /// dictation connects at once, so the first words are heard.
+    pub async fn start(
+        &self,
+        settings: AppSettings,
+        standard_only: bool,
+    ) -> Result<String, String> {
+        let live = opens_live_session(&settings, standard_only);
         let mut model = settings.transcription_model;
-        if settings.standard_only && model == live_transcription_model() {
+        if standard_only && model == live_transcription_model() {
             model = default_transcription_model();
         }
         // Never log the key, the prompts or the dictated text.
@@ -256,17 +246,18 @@ impl Sessions {
             &format!(
                 "start_session model={model} standard_only={} \
                  transcription_prompt_chars={} refine_enabled={} refine_prompt_chars={}",
-                settings.standard_only,
-                settings.prompt.chars().count(),
+                standard_only,
+                settings.transcription_prompt.chars().count(),
                 settings.refine_enabled,
                 settings.refine_prompt.chars().count()
             ),
         );
         let session = Arc::new(Session {
             id: Uuid::new_v4().to_string(),
-            prompt: settings.prompt,
+            prompt: settings.transcription_prompt,
             refine_enabled: settings.refine_enabled,
             refine_prompt: settings.refine_prompt,
+            // Trimmed where it is sent (HttpApi::new, RealtimeStream::connect).
             api_key: settings.openai_api_key,
             live,
             model,
@@ -683,14 +674,17 @@ mod tests {
 
         async fn start(&self, model: &str, refine_enabled: bool, refine_prompt: &str) -> String {
             self.sessions
-                .start(SessionSettings {
-                    openai_api_key: "sk-test".into(),
-                    transcription_model: model.into(),
-                    prompt: PROMPT.into(),
-                    refine_enabled,
-                    refine_prompt: refine_prompt.into(),
-                    standard_only: false,
-                })
+                .start(
+                    AppSettings {
+                        openai_api_key: "sk-test".into(),
+                        transcription_model: model.into(),
+                        transcription_prompt: PROMPT.into(),
+                        refine_enabled,
+                        refine_prompt: refine_prompt.into(),
+                        ..AppSettings::default()
+                    },
+                    false,
+                )
                 .await
                 .unwrap()
         }
@@ -1067,11 +1061,17 @@ mod tests {
         let first = h.start("gpt-transcribe", false, "").await;
         let second = h
             .sessions
-            .start(SessionSettings {
-                openai_api_key: "sk-new".into(),
-                transcription_model: "gpt-transcribe".into(),
-                ..SessionSettings::default()
-            })
+            .start(
+                AppSettings {
+                    // The saved key is sent without the spaces around it.
+                    openai_api_key: " sk-new \n".into(),
+                    transcription_model: "gpt-transcribe".into(),
+                    transcription_prompt: String::new(),
+                    refine_enabled: false,
+                    ..AppSettings::default()
+                },
+                false,
+            )
             .await
             .unwrap();
 
@@ -1275,15 +1275,15 @@ mod tests {
 
     #[test]
     fn only_a_live_model_without_standard_only_opens_a_live_session() {
-        let settings = |transcription_model: String, standard_only| SessionSettings {
+        let settings = |transcription_model: String| AppSettings {
             transcription_model,
-            standard_only,
-            ..SessionSettings::default()
+            ..AppSettings::default()
         };
-        let live = live_transcription_model().to_string();
-        assert!(settings(live.clone(), false).opens_live_session());
-        assert!(!settings(live, true).opens_live_session());
-        assert!(!settings(default_transcription_model(), false).opens_live_session());
+        let live = settings(live_transcription_model().to_string());
+        let standard = settings(default_transcription_model());
+        assert!(opens_live_session(&live, false));
+        assert!(!opens_live_session(&live, true));
+        assert!(!opens_live_session(&standard, false));
     }
 
     #[tokio::test]
@@ -1293,12 +1293,16 @@ mod tests {
         let h = harness(&server.base_url);
         let id = h
             .sessions
-            .start(SessionSettings {
-                openai_api_key: "sk-test".into(),
-                transcription_model: "gpt-live-transcribe".into(),
-                standard_only: true,
-                ..SessionSettings::default()
-            })
+            .start(
+                AppSettings {
+                    openai_api_key: "sk-test".into(),
+                    transcription_model: "gpt-live-transcribe".into(),
+                    transcription_prompt: String::new(),
+                    refine_enabled: false,
+                    ..AppSettings::default()
+                },
+                true,
+            )
             .await
             .unwrap();
         assert_eq!(

@@ -1,13 +1,12 @@
-//! The app's saved settings and what is sent from them: the settings file
-//! (which never holds the API key), the copy the settings menu sees, and the
-//! settings each dictation starts with.
+//! The app's saved settings: the settings file (which never holds the API
+//! key) and the copy the settings menu sees. Each dictation starts with the
+//! settings saved at that moment (src/transcription_sessions.rs).
 //!
 //! This file needs no Tauri, so its tests run in the `core` crate.
 
 use crate::debug_log::debug_log_line;
 use crate::json_file;
 use crate::models::default_transcription_model;
-use crate::transcription_sessions::SessionSettings;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -107,19 +106,6 @@ pub fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
         refine_prompt: settings.refine_prompt.clone(),
         show_idle_pill: settings.show_idle_pill,
         hold_to_talk: settings.hold_to_talk,
-    }
-}
-
-/// The settings one dictation uses: the key and model as well as the
-/// prompts, read when it starts, so a later save applies to the next one.
-pub fn session_settings(settings: &AppSettings) -> SessionSettings {
-    SessionSettings {
-        openai_api_key: settings.openai_api_key.trim().to_string(),
-        transcription_model: settings.transcription_model.clone(),
-        prompt: settings.transcription_prompt.clone(),
-        refine_enabled: settings.refine_enabled,
-        refine_prompt: settings.refine_prompt.clone(),
-        standard_only: false,
     }
 }
 
@@ -281,31 +267,6 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         assert!(!json.contains("sk-secret"));
         assert!(!json.contains("openaiApiKey"));
-    }
-
-    #[test]
-    fn each_dictation_sends_the_saved_key_model_and_prompts() {
-        let settings = AppSettings {
-            openai_api_key: " sk-saved \n".into(),
-            transcription_model: "gpt-live-transcribe".into(),
-            transcription_prompt: "Glossary: Zoon".into(),
-            refine_enabled: false,
-            refine_prompt: "Use British spelling.".into(),
-            ..AppSettings::default()
-        };
-        assert_eq!(
-            session_settings(&settings),
-            SessionSettings {
-                openai_api_key: "sk-saved".into(),
-                transcription_model: "gpt-live-transcribe".into(),
-                prompt: "Glossary: Zoon".into(),
-                refine_enabled: false,
-                refine_prompt: "Use British spelling.".into(),
-                standard_only: false,
-            }
-        );
-        let without_key = session_settings(&AppSettings::default());
-        assert_eq!(without_key.openai_api_key, "");
     }
 
     #[test]

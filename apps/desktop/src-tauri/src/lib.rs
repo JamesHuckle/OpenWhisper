@@ -24,7 +24,7 @@ use recordings::{
     ActiveRecording, RecordingMetadata, RecordingStartResponse,
 };
 use serde::{Deserialize, Serialize};
-use settings::{frontend_settings_from, session_settings, AppSettings, FrontendSettings};
+use settings::{frontend_settings_from, AppSettings, FrontendSettings};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ use tauri::{
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use transcriber::SavedAudio;
-use transcription_sessions::{FinalizeAudio, Sessions, SESSION_EVENT};
+use transcription_sessions::{opens_live_session, FinalizeAudio, Sessions, SESSION_EVENT};
 use uuid::Uuid;
 
 /// How often the pill checks which monitor the cursor is on while it is
@@ -486,13 +486,16 @@ async fn worker_start_session(
     standard_only: Option<bool>,
 ) -> Result<SessionStartResponse, String> {
     // The session keeps the settings saved at this moment, so a saved change
-    // applies to the next dictation.
-    let mut settings = session_settings(&lock(&state.settings));
+    // applies to the next dictation. The lock is released here, before the
+    // Live connection is awaited.
+    let settings = lock(&state.settings).clone();
     // Saved audio, and a Live dictation whose connection failed, are
     // transcribed from the file with Standard; no Live connection is opened.
-    settings.standard_only = standard_only.unwrap_or(false);
-    let live = settings.opens_live_session();
-    let session_id = transcription(&state)?.start(settings).await?;
+    let standard_only = standard_only.unwrap_or(false);
+    let live = opens_live_session(&settings, standard_only);
+    let session_id = transcription(&state)?
+        .start(settings, standard_only)
+        .await?;
     Ok(SessionStartResponse { session_id, live })
 }
 
