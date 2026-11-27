@@ -645,7 +645,11 @@ function setState(next: WidgetState) {
   // does not change when the microphone comes on.
   widget.dataset.state = next === "starting" ? "recording" : next;
   if (next === "starting") widget.dataset.silent = "true";
-  else if (next === "idle") delete widget.dataset.silent;
+  else if (next === "idle") {
+    delete widget.dataset.silent;
+    // An open menu's Transcribe buttons were drawn disabled while busy.
+    refreshRecordings();
+  }
   syncApiKeyBubble();
   void applyOverlayLayout();
 }

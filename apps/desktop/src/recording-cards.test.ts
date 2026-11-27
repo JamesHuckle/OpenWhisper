@@ -36,9 +36,20 @@ let holdTranscription = false;
 // Dictations get a session, so a recording runs until it is stopped.
 let dictating = false;
 
+// Set while the final paste waits, so a test can finish it.
+let finishPaste: (() => void) | null = null;
+let holdPaste = false;
+
 const invoke = vi.hoisted(() => vi.fn());
+// The page's event listeners, by event name, so a test can push app events.
+const listeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    listeners.set(name, handler);
+    return () => {};
+  }),
+}));
 vi.mock("@tauri-apps/plugin-autostart", () => ({ enable: vi.fn(), isEnabled: vi.fn() }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn() }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check: vi.fn() }));
@@ -94,6 +105,9 @@ beforeAll(async () => {
     if (dictating && command === "recording_begin") return { id: "rec-live" };
     if (dictating && command === "worker_start_session") return { session_id: "session-live" };
     if (holdTranscription && command === "worker_start_session") return new Promise(() => {});
+    if (holdPaste && command === "insert_final_text") {
+      return new Promise((resolve) => (finishPaste = () => resolve({ outcome: "pasted" })));
+    }
     return undefined;
   });
   // Microphone capture, faked so a recording can start.
@@ -318,4 +332,27 @@ describe("settings arrow on the pill", () => {
       expect([widget().dataset.state, menuShown()]).toEqual([state, false]);
     });
   }
+
+  it("enables Transcribe again when a dictation ends after its list redrew during the paste", async () => {
+    await startDictation("recording");
+    listed = recordings;
+    arrow().click();
+    await settled();
+    // Enter on the pill stops the recording and keeps the menu open.
+    widget().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settled();
+    holdPaste = true;
+    listeners.get("worker-session-event")!({
+      payload: { session_id: "session-live", event: { type: "final", text: "Hello" }, done: true },
+    });
+    await settled();
+    const transcribe = () => cards().querySelector<HTMLButtonElement>(".recording-transcribe")!;
+    expect([widget().dataset.state, transcribe().disabled]).toEqual(["transcribing", true]);
+
+    finishPaste!();
+    holdPaste = false;
+    await settled();
+
+    expect([widget().dataset.state, menuShown(), transcribe().disabled]).toEqual(["idle", true, false]);
+  });
 });
