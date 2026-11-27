@@ -143,12 +143,17 @@ export function createDictationController(deps: DictationDeps) {
   // Transcription sessions
   // -------------------------------------------------------------------------
   /** Starts a session and returns its ID; standardOnly opens no Live connection. */
-  async function startSession(standardOnly = false): Promise<string> {
-    const session = (await invoke(
+  // `live` is false when the app opened a Standard session, such as when
+  // Standard was saved after this dictation chose Live.
+  async function openSession(standardOnly = false) {
+    return (await invoke(
       "worker_start_session",
       standardOnly ? { standardOnly } : {},
-    )) as { session_id: string };
-    return session.session_id;
+    )) as { session_id: string; live?: boolean };
+  }
+
+  async function startSession(standardOnly = false): Promise<string> {
+    return (await openSession(standardOnly)).session_id;
   }
 
   /** Stops a session; a failure (the session may already be gone) is only logged. */
@@ -374,9 +379,15 @@ export function createDictationController(deps: DictationDeps) {
         startSession: async () => {
           if (live) {
             try {
-              const sessionId = await startSession();
-              liveSession = true;
-              return sessionId;
+              const session = await openSession();
+              if (session.live !== false) liveSession = true;
+              else if (op === operationId) {
+                // Standard was saved since; it reads the saved recording.
+                log("session opened as Standard; not streaming audio");
+                streamAudioToWorker = false;
+                audioQueue.reset();
+              }
+              return session.session_id;
             } catch (error) {
               if (op !== operationId) throw error;
               // The Live connection could not open. Recording goes on, and

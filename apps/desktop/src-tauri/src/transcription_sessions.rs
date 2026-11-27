@@ -66,6 +66,13 @@ pub struct SessionSettings {
     pub standard_only: bool,
 }
 
+impl SessionSettings {
+    /// True when a session started with these settings is a Live one.
+    pub fn opens_live_session(&self) -> bool {
+        !self.standard_only && self.transcription_model == live_transcription_model()
+    }
+}
+
 pub enum FinalizeAudio {
     /// The chunks a Live session was sent: raw 16-bit mono PCM at
     /// [`MICROPHONE_SAMPLE_RATE`].
@@ -238,6 +245,7 @@ impl Sessions {
     /// Starts a dictation and returns its session id. A Live dictation
     /// connects at once, so the first words are heard.
     pub async fn start(&self, settings: SessionSettings) -> Result<String, String> {
+        let live = settings.opens_live_session();
         let mut model = settings.transcription_model;
         if settings.standard_only && model == live_transcription_model() {
             model = default_transcription_model();
@@ -260,7 +268,7 @@ impl Sessions {
             refine_enabled: settings.refine_enabled,
             refine_prompt: settings.refine_prompt,
             api_key: settings.openai_api_key,
-            live: model == live_transcription_model(),
+            live,
             model,
             cancel: CancellationToken::new(),
             state: Mutex::new(SessionState::default()),
@@ -1263,6 +1271,19 @@ mod tests {
             Some("gpt-transcribe")
         );
         assert_eq!(realtime.connections.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn only_a_live_model_without_standard_only_opens_a_live_session() {
+        let settings = |transcription_model: String, standard_only| SessionSettings {
+            transcription_model,
+            standard_only,
+            ..SessionSettings::default()
+        };
+        let live = live_transcription_model().to_string();
+        assert!(settings(live.clone(), false).opens_live_session());
+        assert!(!settings(live, true).opens_live_session());
+        assert!(!settings(default_transcription_model(), false).opens_live_session());
     }
 
     #[tokio::test]

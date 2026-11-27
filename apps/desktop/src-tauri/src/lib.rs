@@ -168,6 +168,8 @@ fn position_main_window_before_reveal(app: &AppHandle) -> Result<bool, String> {
 #[derive(Debug, Serialize)]
 struct SessionStartResponse {
     session_id: String,
+    /// The window streams audio only to a Live session.
+    live: bool,
 }
 
 fn recordings_root(app_handle: &AppHandle) -> Result<PathBuf, String> {
@@ -489,8 +491,9 @@ async fn worker_start_session(
     // Saved audio, and a Live dictation whose connection failed, are
     // transcribed from the file with Standard; no Live connection is opened.
     settings.standard_only = standard_only.unwrap_or(false);
+    let live = settings.opens_live_session();
     let session_id = transcription(&state)?.start(settings).await?;
-    Ok(SessionStartResponse { session_id })
+    Ok(SessionStartResponse { session_id, live })
 }
 
 /// Stops a session at once, even while it is being transcribed.

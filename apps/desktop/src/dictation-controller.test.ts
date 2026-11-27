@@ -244,6 +244,23 @@ describe("dictation controller", () => {
     expect(app.named("worker_append_audio_chunk")).toEqual([]);
   });
 
+  it("streams no audio when the app opens a Standard session for a Live recording", async () => {
+    // Standard was saved after this dictation chose Live, so the app opened Standard.
+    const { app, mic, dictation } = setup(LIVE_TRANSCRIPTION_MODEL);
+    app.answers.worker_start_session = { session_id: "s-1", live: false };
+    await startRecording(dictation);
+
+    mic.hear(BATCH, 1);
+    await dictation.toggleRecording();
+    await settle();
+
+    expect(app.named("worker_append_audio_chunk")).toEqual([]);
+    expect(app.named("worker_finalize_session_audio")).toEqual([]);
+    expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", sessionId: "s-1" },
+    ]);
+  });
+
   it("sends Standard audio only to the backup and transcribes the saved file once", async () => {
     const { app, mic, dictation, states } = setup();
     await startRecording(dictation);
