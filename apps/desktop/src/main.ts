@@ -741,7 +741,7 @@ function refreshRecordings() {
 
 async function drawRecordings(recordings: RecordingMetadata[]) {
   recentRecordings.replaceChildren();
-  for (const recording of recordings.slice(0, 4)) {
+  for (const recording of recordings) {
     const transcript = recording.transcript.trim();
     const card = recordingCardTemplate.content.firstElementChild!.cloneNode(true) as HTMLElement;
     const cardPart = <PartElement extends HTMLElement>(selector: string) =>

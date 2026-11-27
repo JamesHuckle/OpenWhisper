@@ -184,6 +184,21 @@ describe("recent recording cards", () => {
     );
   });
 
+  it("draws every recording the app returns, in its order, with its full transcript", async () => {
+    // The app returns only the newest four (recording_list).
+    const newestFour = [4, 3, 2, 1].map((index) => ({
+      ...recordings[0],
+      id: `rec-${index}`,
+      name: `Note ${index}`,
+      transcript: `The whole transcript of note ${index}, every word.`,
+    }));
+    await openMenuWith(newestFour);
+
+    expect([...cards().querySelectorAll(".recording-transcript-text")].map((text) => text.textContent)).toEqual(
+      newestFour.map((recording) => recording.transcript),
+    );
+  });
+
   it("shows the empty message when there are no recordings", async () => {
     await openMenuWith([]);
 

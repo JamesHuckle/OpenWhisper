@@ -19,7 +19,7 @@ use overlay_geometry::{
 use paste_target::WriteOutcome;
 use recording_store::PcmWavWriter;
 use recordings::{
-    close_active_recording, finish_recording, import_recording, list_recording_metadata, now_ms,
+    close_active_recording, finish_recording, import_recording, list_menu_recordings, now_ms,
     read_recording_metadata, recording_parts_path, recover_interrupted, write_recording_metadata,
     ActiveRecording, RecordingMetadata, RecordingStartResponse,
 };
@@ -361,7 +361,7 @@ fn recording_finish(
 #[tauri::command(async)]
 fn recording_list(app_handle: AppHandle) -> Result<Vec<RecordingMetadata>, String> {
     let root = recordings_root(&app_handle)?;
-    list_recording_metadata(&root).map_err(|e| e.to_string())
+    list_menu_recordings(&root).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

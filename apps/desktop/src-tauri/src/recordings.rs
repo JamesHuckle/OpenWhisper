@@ -21,6 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub const RECORDING_RETENTION_COUNT: usize = 10;
+/// How many of the newest recordings the desktop menu shows.
+pub const MENU_RECORDING_COUNT: usize = 4;
 pub const PARTS_FILE_NAME: &str = "parts.json";
 /// The error of a recording the app stopped during, set by [`recover_interrupted`].
 pub const RECORDING_INTERRUPTED_MESSAGE: &str =
@@ -104,6 +106,14 @@ pub fn list_recording_metadata(root: &std::path::Path) -> Result<Vec<RecordingMe
         recordings.push(metadata);
     }
     recordings.sort_by(|left, right| right.created_at_ms.cmp(&left.created_at_ms));
+    Ok(recordings)
+}
+
+/// The newest [`MENU_RECORDING_COUNT`] recordings, newest first: all the menu
+/// shows, so the older ones' transcripts are not sent to the page.
+pub fn list_menu_recordings(root: &std::path::Path) -> Result<Vec<RecordingMetadata>> {
+    let mut recordings = list_recording_metadata(root)?;
+    recordings.truncate(MENU_RECORDING_COUNT);
     Ok(recordings)
 }
 
@@ -307,6 +317,43 @@ mod tests {
             let path = root.join(recording.id).join(recording.file_name);
             assert_eq!(&fs::read(path).unwrap()[0..4], b"RIFF");
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_menu_gets_only_the_newest_recordings_with_their_full_transcripts() {
+        let root = std::env::temp_dir().join(format!("openwhisper-store-test-{}", Uuid::new_v4()));
+        // Saved out of order, so the listing must sort them.
+        for index in [3_u128, 0, 5, 1, 4, 2] {
+            write_recording_metadata(
+                &root,
+                &RecordingMetadata {
+                    id: format!("recording-{index}"),
+                    created_at_ms: index,
+                    name: format!("Recording {index}"),
+                    source: "microphone".to_string(),
+                    mime_type: "audio/wav".to_string(),
+                    file_name: "audio.wav".to_string(),
+                    status: "complete".to_string(),
+                    bytes: 44,
+                    transcript: format!("The whole transcript of recording {index}, every word."),
+                    error: String::new(),
+                },
+            )
+            .unwrap();
+        }
+
+        let menu = list_menu_recordings(&root).unwrap();
+        let ids: Vec<&str> = menu.iter().map(|recording| recording.id.as_str()).collect();
+        assert_eq!(ids, ["recording-5", "recording-4", "recording-3", "recording-2"]);
+        for recording in &menu {
+            assert_eq!(
+                recording.transcript,
+                format!("The whole transcript of {}, every word.", recording.id.replace('-', " "))
+            );
+        }
+        // Retention and recovery still see every recording.
+        assert_eq!(list_recording_metadata(&root).unwrap().len(), 6);
         fs::remove_dir_all(root).unwrap();
     }
 
