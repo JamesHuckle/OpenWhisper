@@ -108,6 +108,10 @@ export function createDictationController(deps: DictationDeps) {
   // Set while a stop waits for the microphone's last samples; whatever
   // finishes the recording waits for them too, so they are saved and sent.
   let captureStopping: Promise<void> | null = null;
+  // Set when the microphone failed to stop for the current recording. The
+  // recording then fails, keeping the audio it received, once its session is
+  // ready; it is never transcribed.
+  let captureStopError: unknown = null;
   // Audio captured before the backup file opened, kept by the operation
   // number of the recording a cancel stopped, so the backup still saves it
   // once it opens. A stop still waiting for the microphone adds its last
@@ -254,7 +258,12 @@ export function createDictationController(deps: DictationDeps) {
   // and the pill to that one.
   async function handleTranscriptionFailure(error: unknown, current: () => boolean) {
     if (!current()) return false;
-    if (capture.isActive()) await capture.stop();
+    if (capture.isActive()) {
+      // A microphone that cannot stop cleanly is closed by cleanup.
+      await capture.stop().catch((error) => {
+        log(`capture stop failed=${errorMessage(error)}`);
+      });
+    }
     if (!current()) return false;
     flushAudioBatch();
     await backupTail;
@@ -313,6 +322,7 @@ export function createDictationController(deps: DictationDeps) {
       currentRecordingId = null;
       backupTail = Promise.resolve();
       backupError = null;
+      captureStopError = null;
       pendingAudioParts = [];
       pendingAudioBytes = 0;
       shouldPasteFinalTranscript = true;
@@ -380,6 +390,8 @@ export function createDictationController(deps: DictationDeps) {
           }
         },
         startSession: async () => {
+          // The microphone failed to stop while this started: no session opens.
+          if (captureStopError) throw captureStopError;
           if (live) {
             try {
               const session = await openSession();
@@ -456,6 +468,10 @@ export function createDictationController(deps: DictationDeps) {
     captureStopping = stopping;
     try {
       await stopping;
+    } catch (error) {
+      log(`capture stop error=${errorMessage(error)}`);
+      // Fails the recording below, or once its session is ready.
+      if (op === operationId) captureStopError = error;
     } finally {
       if (captureStopping === stopping) captureStopping = null;
     }
@@ -469,6 +485,7 @@ export function createDictationController(deps: DictationDeps) {
     const sessionId = currentSessionId;
     if (!sessionId) return;
     try {
+      if (captureStopError) throw captureStopError;
       await audioQueue.drain();
       await backupTail;
       if (backupError) throw backupError;
@@ -511,6 +528,7 @@ export function createDictationController(deps: DictationDeps) {
       !fellBackToStandard &&
       currentRecordingId !== null &&
       backupError === null &&
+      captureStopError === null &&
       error !== audioRules.no_audio_message
     );
   }

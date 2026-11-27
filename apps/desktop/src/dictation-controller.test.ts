@@ -104,6 +104,8 @@ function fakeCapture() {
   let stopHeld: Promise<void> | null = null;
   let finishStop = () => undefined as void;
   let rejectStop = (_error: unknown) => undefined as void;
+  // Set by failEveryStop: every stop fails and leaves the microphone open.
+  let stopError: unknown = null;
   const capture: AudioCapture = {
     start: async (send) => {
       onAudio = send;
@@ -112,6 +114,7 @@ function fakeCapture() {
     isActive: () => active,
     stop: async () => {
       if (stopHeld) await stopHeld;
+      if (stopError) throw stopError;
       active = false;
     },
     discard: () => {
@@ -136,6 +139,10 @@ function fakeCapture() {
     finishStop: () => finishStop(),
     /** Fails the held stop, as when the microphone cannot be closed cleanly. */
     failStop: (error: unknown) => rejectStop(error),
+    /** Fails every later stop; only discard closes the microphone then. */
+    failEveryStop(error: unknown) {
+      stopError = error;
+    },
     /** Sends captured PCM bytes, all set to value. */
     hear(bytes: number, value = 1) {
       if (!onAudio) throw new Error("capture has not started");
@@ -842,6 +849,100 @@ describe("dictation controller", () => {
       { recordingId: "rec-1", status: "failed", transcript: "", error: "Disk full" },
     ]);
     expect(dictation.state).toBe("idle");
+  });
+
+  // A recording whose microphone could not stop: it is saved with the audio
+  // it received, marked failed and shown as a failure, and the pill is idle.
+  function expectMicrophoneStopFailure(
+    { app, mic, dictation, failures }: ReturnType<typeof setup>,
+    savedAudio: number[],
+  ) {
+    expect(failures).toEqual([{ message: "Microphone stop failed", recordingSaved: true }]);
+    expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+      { recordingId: "rec-1", status: "failed", transcript: "", error: "Microphone stop failed" },
+    ]);
+    const saved = app.named("recording_append_chunk").map((call) => Array.from(call.args as Uint8Array));
+    expect(saved.flat()).toEqual(savedAudio);
+    expect(app.commands()).not.toContain("recording_transcribe");
+    expect(app.commands()).not.toContain("worker_finalize_session_audio");
+    expect(mic.capture.isActive()).toBe(false);
+    expect(dictation.lastFailedRecordingId).toBe("rec-1");
+    expect(dictation.state).toBe("idle");
+  }
+
+  describe("a microphone that cannot stop", () => {
+    it("fails a Standard toggle recording and stops its session", async () => {
+      const run = setup();
+      await startRecording(run.dictation);
+      run.mic.hear(100, 5);
+      run.mic.failEveryStop(new Error("Microphone stop failed"));
+
+      await run.dictation.toggleRecording();
+      await settle();
+
+      expectMicrophoneStopFailure(run, Array(100).fill(5));
+      expect(run.app.named("worker_stop_session").map((call) => call.args)).toEqual([
+        { sessionId: "s-1" },
+      ]);
+    });
+
+    it("fails a Live hold recording instead of transcribing it with Standard", async () => {
+      const run = setup(LIVE_TRANSCRIPTION_MODEL);
+      await run.dictation.pressToTalkStart();
+      expect(run.dictation.state).toBe("recording");
+      run.mic.hear(100, 6);
+      run.mic.failEveryStop(new Error("Microphone stop failed"));
+
+      await run.dictation.pressToTalkStop();
+      await settle();
+
+      expectMicrophoneStopFailure(run, Array(100).fill(6));
+      expect(run.app.named("worker_start_session")).toHaveLength(1);
+      expect(run.app.named("worker_stop_session").map((call) => call.args)).toEqual([
+        { sessionId: "s-1" },
+      ]);
+    });
+
+    it("fails a recording whose session opens while the stop fails", async () => {
+      const run = setup();
+      run.app.hold("worker_start_session");
+      void run.dictation.toggleRecording();
+      await settle();
+      run.mic.hear(100, 7);
+
+      run.mic.holdStop();
+      const stopping = run.dictation.stopRecording();
+      await settle();
+      run.mic.failEveryStop(new Error("Microphone stop failed"));
+      run.mic.failStop(new Error("Microphone stop failed"));
+      await stopping;
+      expect(run.dictation.state).toBe("transcribing");
+      run.app.release("worker_start_session");
+      await settle();
+
+      expectMicrophoneStopFailure(run, Array(100).fill(7));
+      expect(run.app.named("worker_stop_session").map((call) => call.args)).toEqual([
+        { sessionId: "s-1" },
+      ]);
+    });
+
+    it("fails a recording released while the microphone opens, without opening a session", async () => {
+      const run = setup();
+      run.app.hold("recording_begin");
+      run.mic.failEveryStop(new Error("Microphone stop failed"));
+
+      const press = run.dictation.pressToTalkStart();
+      await run.dictation.pressToTalkStop();
+      await settle();
+      expect(run.dictation.state).toBe("transcribing");
+      run.mic.hear(100, 8);
+      run.app.release("recording_begin");
+      await press;
+      await settle();
+
+      expectMicrophoneStopFailure(run, Array(100).fill(8));
+      expect(run.app.commands()).not.toContain("worker_start_session");
+    });
   });
 
   it("stops once the microphone is open after a second toggle press during startup", async () => {
