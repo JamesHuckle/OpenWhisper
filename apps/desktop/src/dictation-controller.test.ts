@@ -515,6 +515,58 @@ describe("dictation controller", () => {
     expect(dictation.state).toBe("idle");
   });
 
+  describe("a press after cancelling a start while worker_start_session is pending", () => {
+    type Shortcut = "toggle" | "hold";
+    // Press, stop at once (toggle pressed again, hold released), cancel while
+    // the session opens, then press a shortcut again: a new recording starts
+    // at once, and the cancelled start finishing late leaves it running.
+    async function cancelPendingStart(first: Shortcut, next: Shortcut) {
+      const { app, mic, dictation } = setup();
+      const press = (shortcut: Shortcut) =>
+        shortcut === "toggle" ? dictation.toggleRecording() : dictation.pressToTalkStart();
+      const stop = (shortcut: Shortcut) =>
+        shortcut === "toggle" ? dictation.toggleRecording() : dictation.pressToTalkStop();
+      app.hold("worker_start_session");
+      const cancelled = press(first);
+      void stop(first);
+      await settle();
+      expect(dictation.state).toBe("transcribing");
+      await dictation.cancelTranscription();
+      expect(dictation.state).toBe("idle");
+
+      app.answers.recording_begin = { id: "rec-2" };
+      app.answers.worker_start_session = { session_id: "s-2" };
+      app.stopHolding("worker_start_session");
+      const second = press(next);
+      await settle();
+      expect(dictation.state).toBe("recording");
+      expect(app.named("worker_start_session")).toHaveLength(2);
+      await second;
+
+      app.release("worker_start_session", { session_id: "s-1" });
+      await cancelled;
+      await settle();
+      expect(dictation.state).toBe("recording");
+      expect(mic.capture.isActive()).toBe(true);
+      expect(app.named("worker_stop_session").map((call) => call.args)).toEqual([
+        { sessionId: "s-1" },
+      ]);
+
+      await stop(next);
+      await settle();
+      expect(app.named("recording_transcribe").map((call) => call.args)).toEqual([
+        { recordingId: "rec-2", sessionId: "s-2" },
+      ]);
+    }
+
+    it("starts a new recording with the toggle shortcut", () => cancelPendingStart("toggle", "toggle"));
+    it("starts a new recording with the hold shortcut", () => cancelPendingStart("hold", "hold"));
+    it("keeps a toggle recording started after a cancelled hold start", () =>
+      cancelPendingStart("hold", "toggle"));
+    it("keeps a hold recording started after a cancelled toggle start", () =>
+      cancelPendingStart("toggle", "hold"));
+  });
+
   it("shows a session error while recording as a failure and keeps the recording", async () => {
     const { app, mic, dictation, failures, toasts } = setup();
     await startRecording(dictation);
@@ -908,7 +960,6 @@ describe("dictation controller", () => {
 
     app.answers.recording_begin = { id: "rec-2" };
     app.answers.worker_start_session = { session_id: "s-2" };
-    // The hold shortcut, as the toggle still counts the first startup as running.
     const second = dictation.pressToTalkStart();
     await settle();
     expect(dictation.state).toBe("recording");

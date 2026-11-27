@@ -118,9 +118,12 @@ export function createDictationController(deps: DictationDeps) {
   >();
   let shouldPasteFinalTranscript = true;
   let pressToTalkHeld = false;
-  let pressToTalkStarting = false;
-  let toggleRecordingStarting = false;
-  let toggleStopRequestedDuringStart = false;
+  // The start each shortcut is running, if any. A cancel ends it at once, so
+  // the next press starts a new recording, and the start it cancelled, once
+  // it finishes, sees it is no longer current and leaves that recording alone.
+  // stopRequested: the toggle was pressed again while it started.
+  let holdStart: object | null = null;
+  let toggleStart: { stopRequested: boolean } | null = null;
   // Set from when an import or retry is sure to run until the pill shows it
   // transcribing, so no other transcription or dictation starts meanwhile.
   let storedAudioStarting = false;
@@ -282,7 +285,7 @@ export function createDictationController(deps: DictationDeps) {
   // -------------------------------------------------------------------------
   async function startRecording() {
     const startupStartedAt = performance.now();
-    log(`startRecording enter state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`);
+    log(`startRecording enter state=${state} held=${pressToTalkHeld} starting=${holdStart !== null}`);
     if (state !== "idle" || storedAudioStarting) return;
     const op = ++operationId;
     // Settles this start's backupOpened; called on every way the start ends.
@@ -336,7 +339,7 @@ export function createDictationController(deps: DictationDeps) {
 
           // A hold shortcut may be released, or a toggle shortcut may be pressed
           // again, while microphone permission/capture is still starting.
-          if ((pressToTalkStarting && !pressToTalkHeld) || toggleStopRequestedDuringStart) {
+          if (op === operationId && ((holdStart && !pressToTalkHeld) || toggleStart?.stopRequested)) {
             await stopRecording();
           }
         },
@@ -553,6 +556,8 @@ export function createDictationController(deps: DictationDeps) {
 
   async function cancelOnce() {
     const cancelledOp = operationId++;
+    holdStart = null;
+    toggleStart = null;
     if (!currentRecordingId && (pendingAudioParts.length > 0 || captureStopping)) {
       // The backup is still opening; it saves this audio once it opens.
       audioCancelledBeforeBackup.set(cancelledOp, {
@@ -793,21 +798,20 @@ export function createDictationController(deps: DictationDeps) {
   async function toggleRecording() {
     // A second press while the microphone is still opening stops the recording
     // as soon as it starts (and a third press keeps it going after all).
-    if (toggleRecordingStarting && (state === "idle" || state === "starting")) {
-      toggleStopRequestedDuringStart = !toggleStopRequestedDuringStart;
+    if (toggleStart && (state === "idle" || state === "starting")) {
+      toggleStart.stopRequested = !toggleStart.stopRequested;
       return;
     }
     if (state === "idle") {
-      toggleRecordingStarting = true;
-      toggleStopRequestedDuringStart = false;
+      const start = { stopRequested: false };
+      toggleStart = start;
       try {
         await startRecording();
-        if (toggleStopRequestedDuringStart && currentState() === "recording") {
+        if (toggleStart === start && start.stopRequested && currentState() === "recording") {
           await stopRecording();
         }
       } finally {
-        toggleRecordingStarting = false;
-        toggleStopRequestedDuringStart = false;
+        if (toggleStart === start) toggleStart = null;
       }
     } else if (state === "recording") {
       await stopRecording();
@@ -815,27 +819,30 @@ export function createDictationController(deps: DictationDeps) {
   }
 
   async function pressToTalkStart() {
-    log(`pressToTalkStart event state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`);
+    log(`pressToTalkStart event state=${state} held=${pressToTalkHeld} starting=${holdStart !== null}`);
     pressToTalkHeld = true;
-    if (state !== "idle" || pressToTalkStarting) return;
+    if (state !== "idle" || holdStart) return;
 
-    pressToTalkStarting = true;
+    const start = {};
+    holdStart = start;
+    // Set when the user released the shortcut while this start was still in
+    // flight and it is still current, so it stops once recording is active.
+    let releasedDuringStart = false;
     try {
       await startRecording();
+      releasedDuringStart = holdStart === start && !pressToTalkHeld && capture.isActive();
     } finally {
-      pressToTalkStarting = false;
+      if (holdStart === start) holdStart = null;
     }
 
-    // If the user released the shortcut while startup was still in flight,
-    // stop immediately once recording is actually active.
-    if (!pressToTalkHeld && capture.isActive()) {
+    if (releasedDuringStart) {
       log("pressToTalkStart detected release during startup");
       await stopRecording();
     }
   }
 
   async function pressToTalkStop() {
-    log(`pressToTalkStop event state=${state} held=${pressToTalkHeld} starting=${pressToTalkStarting}`);
+    log(`pressToTalkStop event state=${state} held=${pressToTalkHeld} starting=${holdStart !== null}`);
     pressToTalkHeld = false;
     if (state === "recording") {
       await stopRecording();
