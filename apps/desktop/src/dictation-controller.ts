@@ -86,9 +86,12 @@ export function createDictationController(deps: DictationDeps) {
   let liveTranscript = "";
   let streamTextToTarget = false;
   // Live transcription hears audio while it is recorded, so its session gets
-  // every chunk. Otherwise audio goes only to the saved backup, and the
-  // transcriber reads that file once the recording stops.
-  let streamAudioToWorker = false;
+  // every chunk, in order, through the dictation's own queue. Without one
+  // (Standard, or once Live is given up) audio goes only to the saved backup,
+  // and the transcriber reads that file once the recording stops. Each Live
+  // dictation gets a new queue, so a replaced one's late uploads and failures
+  // never reach the next.
+  let liveAudioQueue: SessionAudioQueue | null = null;
   // The dictation's session is a Live one. If it fails, the saved recording
   // is transcribed with Standard instead, once (fellBackToStandard).
   let sessionWasLive = false;
@@ -137,9 +140,6 @@ export function createDictationController(deps: DictationDeps) {
   let startsRefused = false;
   // runOnceIdle's tasks waiting for the current dictation to finish.
   let tasksWaitingForIdle: (() => void)[] = [];
-  const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
-    sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer),
-  );
 
   function setState(next: WidgetState) {
     log(`setState ${state} -> ${next}`);
@@ -262,7 +262,7 @@ export function createDictationController(deps: DictationDeps) {
       .catch((error) => {
         backupError ??= error;
       });
-    if (streamAudioToWorker) audioQueue.append(combined.buffer);
+    liveAudioQueue?.append(combined.buffer);
   }
 
   // Writes a recording's final metadata; true once it is written. A failure
@@ -356,7 +356,11 @@ export function createDictationController(deps: DictationDeps) {
         return;
       }
       const live = isLiveTranscription(settings.transcriptionModel);
-      streamAudioToWorker = live;
+      liveAudioQueue = live
+        ? new SessionAudioQueue((sessionId, buffer) =>
+            sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer),
+          )
+        : null;
       sessionWasLive = false;
       fellBackToStandard = false;
 
@@ -440,8 +444,7 @@ export function createDictationController(deps: DictationDeps) {
               else if (op === operationId) {
                 // Standard was saved since; it reads the saved recording.
                 log("session opened as Standard; not streaming audio");
-                streamAudioToWorker = false;
-                audioQueue.reset();
+                liveAudioQueue = null;
               }
               return session.session_id;
             } catch (error) {
@@ -449,8 +452,7 @@ export function createDictationController(deps: DictationDeps) {
               // The Live connection could not open. Recording goes on, and
               // the saved recording is transcribed with Standard on stop.
               log(`live session start failed=${errorMessage(error)}; using Standard`);
-              streamAudioToWorker = false;
-              audioQueue.reset();
+              liveAudioQueue = null;
               return startSession(true);
             }
           }
@@ -467,7 +469,7 @@ export function createDictationController(deps: DictationDeps) {
       }
       currentSessionId = sessionId;
       sessionWasLive = liveSession;
-      audioQueue.attachSession(currentSessionId);
+      liveAudioQueue?.attachSession(sessionId);
       liveTranscript = "";
       streamTextToTarget = sessionWasLive;
       targetWriteQueue = Promise.resolve();
@@ -516,8 +518,7 @@ export function createDictationController(deps: DictationDeps) {
           // and no audio goes to a session this recording never uses. The
           // audio already received is still saved.
           capture.discard();
-          streamAudioToWorker = false;
-          audioQueue.reset();
+          liveAudioQueue = null;
         }
       }
     })();
@@ -537,13 +538,17 @@ export function createDictationController(deps: DictationDeps) {
   async function finalizeRecording() {
     const sessionId = currentSessionId;
     if (!sessionId) return;
+    const queue = liveAudioQueue;
+    // False once a cancel, a newer recording or the Standard fallback took
+    // this recording over while it waited; then that one finishes it.
+    const owned = () => currentSessionId === sessionId && liveAudioQueue === queue;
     try {
       if (captureStopError) throw captureStopError;
-      await audioQueue.drain();
+      await queue?.drain();
       await backupTail;
       if (backupError) throw backupError;
-      if (currentSessionId !== sessionId) return;
-      if (streamAudioToWorker) {
+      if (!owned()) return;
+      if (queue) {
         await invoke("worker_finalize_session_audio", { sessionId });
       } else {
         // The transcriber reads the saved backup from disk, so the audio
@@ -557,8 +562,8 @@ export function createDictationController(deps: DictationDeps) {
     } catch (err) {
       log(`stopRecording error=${errorMessage(err)}`);
       // Cancel answers at once, so a cancelled session's last request can
-      // still fail here; the cancel already tidied up.
-      if (currentSessionId !== sessionId) return;
+      // still fail here; the cancel or the Standard fallback handles it.
+      if (!owned()) return;
       const message = errorMessage(err);
       if (canTranscribeWithStandard(message)) {
         await transcribeWithStandard(message);
@@ -567,7 +572,7 @@ export function createDictationController(deps: DictationDeps) {
       // The app keeps the session, and a Live session its connection, until
       // it is stopped.
       await stopSession(sessionId);
-      await failAndReset(err, () => currentSessionId === sessionId);
+      await failAndReset(err, owned);
     }
   }
 
@@ -593,9 +598,8 @@ export function createDictationController(deps: DictationDeps) {
     fellBackToStandard = true;
     const op = operationId;
     log(`live transcription failed=${error}; transcribing the saved recording with Standard`);
-    streamAudioToWorker = false;
+    liveAudioQueue = null;
     streamTextToTarget = false;
-    audioQueue.reset();
     try {
       // The failed session may already be gone; stopping it closes its connection.
       if (failedSessionId) await stopSession(failedSessionId);
@@ -642,7 +646,7 @@ export function createDictationController(deps: DictationDeps) {
     // Audio still waiting for a full batch is saved with the recording, and
     // so are the microphone's last samples when a stop is waiting for them.
     // None of it goes to the stopping session.
-    streamAudioToWorker = false;
+    liveAudioQueue = null;
     flushAudioBatch();
     const stopping = captureStopping;
     const sessionId = currentSessionId;
@@ -761,12 +765,11 @@ export function createDictationController(deps: DictationDeps) {
     deps.stopMeter();
     capture.discard();
     currentSessionId = null;
-    audioQueue.reset();
+    liveAudioQueue = null;
     pendingAudioParts = [];
     pendingAudioBytes = 0;
     liveTranscript = "";
     streamTextToTarget = false;
-    streamAudioToWorker = false;
   }
 
   // -------------------------------------------------------------------------

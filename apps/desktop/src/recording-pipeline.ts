@@ -75,13 +75,13 @@ export async function startCaptureFirst<Capture, Backup, Session>(steps: {
 /**
  * Keeps audio captured before a session exists, then uploads every chunk
  * serially. Serial uploads make the byte order independent of IPC latency.
+ * Each recording gets its own queue, so one's uploads never reach another.
  */
 export class SessionAudioQueue {
   private sessionId: string | null = null;
   private buffered: ArrayBuffer[] = [];
   private uploadTail: Promise<void> = Promise.resolve();
   private firstError: unknown = null;
-  private generation = 0;
 
   constructor(private readonly upload: AudioChunkUploader) {}
 
@@ -108,26 +108,13 @@ export class SessionAudioQueue {
     if (this.firstError !== null) throw this.firstError;
   }
 
-  reset(): void {
-    this.generation += 1;
-    this.sessionId = null;
-    this.buffered = [];
-    this.uploadTail = Promise.resolve();
-    this.firstError = null;
-  }
-
   private scheduleUpload(sessionId: string, buffer: ArrayBuffer): void {
-    const generation = this.generation;
     this.uploadTail = this.uploadTail
       .then(async () => {
         await this.upload(sessionId, buffer);
       })
       .catch((error) => {
-        if (generation === this.generation) this.rememberError(error);
+        if (this.firstError === null) this.firstError = error;
       });
-  }
-
-  private rememberError(error: unknown): void {
-    if (this.firstError === null) this.firstError = error;
   }
 }

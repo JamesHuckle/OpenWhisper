@@ -1457,6 +1457,36 @@ describe("dictation controller", () => {
       await expectStandardTranscriptPasted(env);
     });
 
+    // Its last audio is still being sent to the Live session as it stops, so
+    // finalizing waits; the session errs meanwhile and Standard takes over.
+    for (const outcome of ["arrives", "fails"] as const) {
+      it(`is transcribed with Standard once when its last Live upload ${outcome} after Standard took over`, async () => {
+        const env = await liveDictationStopped();
+        env.app.hold("worker_append_audio_chunk");
+        env.app.hold("worker_stop_session");
+        env.mic.hear(640, 7);
+        // Finalizing waits for the held upload, so the stop is not awaited here.
+        void env.dictation.toggleRecording();
+        await settle();
+
+        await env.dictation.receiveSessionEvent(
+          sessionEvent({ type: "error", text: "Realtime transcription session is closed" }, true),
+        );
+        await settle();
+        if (outcome === "arrives") env.app.release("worker_append_audio_chunk");
+        else env.app.reject("worker_append_audio_chunk", new Error("Realtime transcription session is closed"));
+        await settle();
+        env.app.release("worker_stop_session");
+        await settle();
+
+        expect(env.app.commands()).not.toContain("worker_finalize_session_audio");
+        expect(env.app.named("worker_stop_session").map((call) => call.args)).toEqual([
+          { sessionId: "s-1" },
+        ]);
+        await expectStandardTranscriptPasted(env);
+      });
+    }
+
     it("is not transcribed again when it held no audio", async () => {
       const { app, dictation, failures } = await liveDictationStopped();
       await dictation.toggleRecording();

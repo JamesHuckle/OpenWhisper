@@ -223,45 +223,6 @@ describe("recording startup latency contracts", () => {
     await expect(queue.drain()).rejects.toThrow("shell rejected the chunk");
   });
 
-  it("cannot leak audio buffered before a reset into the next recording", async () => {
-    const uploaded: number[] = [];
-    const queue = new SessionAudioQueue(async (_sessionId, buffer) => {
-      uploaded.push(valueOf(buffer));
-    });
-
-    queue.append(chunk(4));
-    queue.reset();
-    queue.attachSession("next-recording");
-    queue.append(chunk(5));
-    await queue.drain();
-
-    expect(uploaded).toEqual([5]);
-  });
-
-  it("cannot fail the next recording with a late upload failure from before a reset", async () => {
-    const uploaded: string[] = [];
-    let failOldUpload!: (error: Error) => void;
-    const oldUpload = new Promise<void>((_resolve, reject) => {
-      failOldUpload = reject;
-    });
-    const queue = new SessionAudioQueue(async (sessionId, buffer) => {
-      if (sessionId === "old-recording") await oldUpload;
-      uploaded.push(`${sessionId}:${valueOf(buffer)}`);
-    });
-
-    queue.attachSession("old-recording");
-    queue.append(chunk(4));
-    queue.reset();
-    queue.attachSession("next-recording");
-    queue.append(chunk(5));
-    await queue.drain();
-
-    failOldUpload(new Error("old shell session closed"));
-    await settle();
-    await expect(queue.drain()).resolves.toBeUndefined();
-    expect(uploaded).toEqual(["next-recording:5"]);
-  });
-
   it("sends batched audio to the shell as the same raw bytes, in order", async () => {
     const calls: { command: string; bytes: number[]; headers: unknown }[] = [];
     let releaseFirst!: () => void;
