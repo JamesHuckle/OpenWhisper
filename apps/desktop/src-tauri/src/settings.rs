@@ -322,6 +322,54 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_menu_gets_the_preferences_and_a_key_preview_but_no_key() {
+        let settings = AppSettings {
+            openai_api_key: "sk-active-secret".into(),
+            plain_openai_api_key: "sk-legacy-secret".into(),
+            transcription_model: "gpt-4o-transcribe".into(),
+            transcription_prompt: "Names: Zoon.".into(),
+            refine_enabled: false,
+            refine_prompt: "Use British spelling.".into(),
+            show_idle_pill: false,
+            hold_to_talk: false,
+        };
+
+        let menu = serde_json::to_value(frontend_settings_from(&settings)).unwrap();
+
+        assert_eq!(
+            menu,
+            json!({
+                "hasOpenaiApiKey": true,
+                "openaiApiKeyPreview": "sk-a********",
+                "transcriptionModel": "gpt-4o-transcribe",
+                "transcriptionPrompt": "Names: Zoon.",
+                "refineEnabled": false,
+                "refinePrompt": "Use British spelling.",
+                "showIdlePill": false,
+                "holdToTalk": false
+            })
+        );
+        assert!(!menu.to_string().contains("secret"), "{menu}");
+    }
+
+    #[test]
+    fn the_settings_menu_without_a_key_has_no_preview() {
+        let menu = serde_json::to_value(frontend_settings_from(&AppSettings::default())).unwrap();
+
+        assert_eq!(menu["hasOpenaiApiKey"], json!(false));
+        assert_eq!(menu["openaiApiKeyPreview"], json!(null));
+    }
+
+    #[test]
+    fn the_key_preview_shows_at_most_the_first_four_characters() {
+        assert_eq!(masked_api_key_preview(""), None);
+        assert_eq!(masked_api_key_preview("   "), None);
+        assert_eq!(masked_api_key_preview(" abc "), Some("abc".into()));
+        assert_eq!(masked_api_key_preview("abcd"), Some("abcd".into()));
+        assert_eq!(masked_api_key_preview(" abcde "), Some("abcd********".into()));
+    }
+
+    #[test]
     fn settings_without_idle_pill_preference_keep_showing_it() {
         let settings: AppSettings = serde_json::from_value(json!({})).unwrap();
 
