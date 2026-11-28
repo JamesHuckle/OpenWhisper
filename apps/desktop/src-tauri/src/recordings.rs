@@ -648,6 +648,9 @@ mod tests {
         assert_eq!(metadata.mime_type, "audio/x-m4a");
         assert_eq!(metadata.file_name, "audio.m4a");
         assert_eq!(metadata.bytes, 9);
+        assert_eq!(metadata.status, "saved");
+        assert!(metadata.created_at_ms > 0);
+        assert_eq!((metadata.transcript.as_str(), metadata.error.as_str()), ("", ""));
         assert_eq!(fs::read(root.join(&stored.id).join("audio.m4a")).unwrap(), b"m4a audio");
         assert_eq!(fs::read(&source).unwrap(), b"m4a audio", "the original is untouched");
 
