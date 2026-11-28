@@ -1893,6 +1893,32 @@ mod tests {
             ["He said \"Hi.\"", "Then left!", "Why?", "ok"]
         );
         assert_eq!(split_sentences("No end"), ["No end"]);
+        assert_eq!(
+            split_sentences("She said \u{201c}go.\u{201d} It\u{2019}s \u{2018}fine.\u{2019} Done"),
+            ["She said \u{201c}go.\u{201d}", "It\u{2019}s \u{2018}fine.\u{2019}", "Done"]
+        );
+        assert_eq!(
+            split_sentences("(See above.) [Really?]\u{a0}Yes!\u{3000}\nNext"),
+            ["(See above.)", "[Really?]", "Yes!", "Next"]
+        );
+        assert_eq!(
+            split_sentences("  v1.2 is out.Really e.g.x  "),
+            ["v1.2 is out.Really e.g.x"]
+        );
+        assert_eq!(split_sentences(" ... "), ["..."]);
+    }
+
+    #[test]
+    fn up_to_four_short_sentences_are_tidied_unchanged_in_one_chunk() {
+        let text = "One.  Two! Three? Four.";
+        assert_eq!(chunk_for_polish(text), [text]);
+        let five = "One.  Two! Three? Four. Five";
+        assert_eq!(chunk_for_polish(five), ["One. Two! Three? Four. Five"]);
+        let long_sentence = format!("{}.", "w".repeat(MAX_POLISH_CHUNK_CHARS + 1));
+        assert_eq!(
+            chunk_for_polish(&format!("{long_sentence} Short.")),
+            [long_sentence.as_str(), "Short."]
+        );
     }
 
     #[test]
