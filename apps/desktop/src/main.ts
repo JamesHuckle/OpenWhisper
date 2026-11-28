@@ -793,15 +793,6 @@ async function drawRecordings(recordings: RecordingMetadata[]) {
         transcriptToggle.title = next ? "Collapse transcript" : "Show full transcript";
         if (menuOpen) void applyOverlayLayout(true);
       });
-
-      // Only offer the disclosure when the preview is actually truncated.
-      // Measured after layout so short transcripts read as plain text.
-      requestAnimationFrame(() => {
-        const clamped = transcriptText.scrollHeight - transcriptText.clientHeight > 2;
-        panel.dataset.clamped = String(clamped);
-        transcriptToggle.hidden = !clamped;
-        if (clamped && menuOpen) void applyOverlayLayout(true);
-      });
     } else {
       panel.remove();
       transcribeButton.title = `Transcribe ${recording.name}`;
@@ -819,6 +810,20 @@ async function drawRecordings(recordings: RecordingMetadata[]) {
     empty.className = "recordings-empty";
     empty.textContent = "No saved recordings yet";
     recentRecordings.appendChild(empty);
+  }
+  // Only offer the disclosure when a preview is actually truncated, so short
+  // transcripts read as plain text. Every preview is measured after layout in
+  // one frame, then the window gets one layout for the whole redraw.
+  await new Promise(requestAnimationFrame);
+  const previews = [...recentRecordings.querySelectorAll<HTMLElement>(".recording-transcript")].map(
+    (panel) => {
+      const text = panel.querySelector(".recording-transcript-text")!;
+      return { panel, clamped: text.scrollHeight - text.clientHeight > 2 };
+    },
+  );
+  for (const { panel, clamped } of previews) {
+    panel.dataset.clamped = String(clamped);
+    panel.querySelector<HTMLButtonElement>(".recording-transcript-toggle")!.hidden = !clamped;
   }
   await applyOverlayLayout(true);
 }

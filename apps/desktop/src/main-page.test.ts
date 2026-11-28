@@ -304,6 +304,30 @@ describe("recent recording cards", () => {
     ]);
   });
 
+  it("measures every transcript preview, then sends the window one layout per redraw", async () => {
+    const fourLong = [4, 3, 2, 1].map((index) => ({
+      ...recordings[0],
+      id: `rec-${index}`,
+      transcript: `A transcript of note ${index} long enough to need Show more.`,
+    }));
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(60);
+    await openMenuWith(fourLong);
+    // A redraw while the menu stays open: the open menu's own layout is
+    // unchanged, so every layout request left comes from the redraw.
+    invoke.mockClear();
+    await openMenuWith(fourLong);
+    scrollHeight.mockRestore();
+
+    const toggles = [...cards().querySelectorAll<HTMLButtonElement>(".recording-transcript-toggle")];
+    expect(toggles.map((toggle) => toggle.hidden)).toEqual([false, false, false, false]);
+    expect(commandCalls("overlay_apply_layout")).toHaveLength(1);
+
+    // Show more still sends its own layout.
+    toggles[0].click();
+    await settled();
+    expect(commandCalls("overlay_apply_layout")).toHaveLength(2);
+  });
+
   it("disables Transcribe while a recording is transcribing", async () => {
     // Saved audio stays transcribing while the app has not answered.
     holdTranscription = true;
