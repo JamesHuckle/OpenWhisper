@@ -1225,6 +1225,60 @@ describe("dictation controller", () => {
     expect(app.commands()).not.toContain("recording_transcribe");
   });
 
+  describe("two Live recordings in a row", () => {
+    function liveAudioSent(app: ReturnType<typeof setup>["app"]) {
+      return app
+        .named("worker_append_audio_chunk")
+        .map((call) => `${call.headers!["session-id"]}:${new Uint8Array(call.args as ArrayBuffer)[0]}`);
+    }
+
+    it("never sends audio held for a cancelled recording's session to the next one", async () => {
+      const { app, mic, dictation } = setup(LIVE_TRANSCRIPTION_MODEL);
+      app.hold("worker_start_session");
+      void dictation.toggleRecording();
+      await settle();
+      mic.hear(BATCH, 4);
+      await dictation.cancelTranscription();
+      app.release("worker_start_session");
+      await settle();
+
+      app.stopHolding("worker_start_session");
+      app.answers.recording_begin = { id: "rec-2" };
+      app.answers.worker_start_session = { session_id: "s-2" };
+      await startRecording(dictation);
+      mic.hear(BATCH, 5);
+      await settle();
+
+      expect(liveAudioSent(app)).toEqual(["s-2:5"]);
+    });
+
+    it("never fails the next recording with a cancelled recording's late upload failure", async () => {
+      const { app, mic, dictation, failures } = setup(LIVE_TRANSCRIPTION_MODEL);
+      app.hold("worker_append_audio_chunk");
+      await startRecording(dictation);
+      mic.hear(BATCH, 4);
+      await settle();
+      await dictation.cancelTranscription();
+
+      app.stopHolding("worker_append_audio_chunk");
+      app.answers.recording_begin = { id: "rec-2" };
+      app.answers.worker_start_session = { session_id: "s-2" };
+      await startRecording(dictation);
+      mic.hear(BATCH, 5);
+      await settle();
+      app.reject("worker_append_audio_chunk", new Error("old session closed"));
+      await dictation.toggleRecording();
+      await settle();
+
+      expect(liveAudioSent(app)).toEqual(["s-1:4", "s-2:5"]);
+      expect(app.named("worker_finalize_session_audio").map((call) => call.args)).toEqual([
+        { sessionId: "s-2" },
+      ]);
+      expect(failures).toEqual([]);
+      expect(dictation.state).toBe("transcribing");
+    });
+  });
+
   it("stops the Live session when its audio could not be sent and transcribes the saved recording with Standard", async () => {
     const { app, mic, dictation, failures } = setup(LIVE_TRANSCRIPTION_MODEL);
     app.fail("worker_append_audio_chunk", new Error("Connection lost"));
