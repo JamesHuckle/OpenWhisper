@@ -82,30 +82,27 @@ fn backup_may_hold_plain_api_key(settings_path: &Path) -> bool {
     }
 }
 
+/// What the settings menu sees: the saved preferences and a masked preview of
+/// the key, never the key itself. Built only by `frontend_settings_from`.
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FrontendSettings {
-    pub has_openai_api_key: bool,
-    pub openai_api_key_preview: Option<String>,
-    pub transcription_model: String,
-    pub transcription_prompt: String,
-    pub refine_enabled: bool,
-    pub refine_prompt: String,
-    pub show_idle_pill: bool,
-    pub hold_to_talk: bool,
+    has_openai_api_key: bool,
+    openai_api_key_preview: Option<String>,
+    /// A copy with both key fields cleared.
+    #[serde(flatten)]
+    settings: AppSettings,
 }
 
 pub fn frontend_settings_from(settings: &AppSettings) -> FrontendSettings {
     let openai_api_key_preview = masked_api_key_preview(&settings.openai_api_key);
+    let mut settings = settings.clone();
+    settings.openai_api_key.clear();
+    settings.plain_openai_api_key.clear();
     FrontendSettings {
         has_openai_api_key: openai_api_key_preview.is_some(),
         openai_api_key_preview,
-        transcription_model: settings.transcription_model.clone(),
-        transcription_prompt: settings.transcription_prompt.clone(),
-        refine_enabled: settings.refine_enabled,
-        refine_prompt: settings.refine_prompt.clone(),
-        show_idle_pill: settings.show_idle_pill,
-        hold_to_talk: settings.hold_to_talk,
+        settings,
     }
 }
 
@@ -350,6 +347,8 @@ mod tests {
             })
         );
         assert!(!menu.to_string().contains("secret"), "{menu}");
+        let debug = format!("{:?}", frontend_settings_from(&settings));
+        assert!(!debug.contains("secret"), "{debug}");
     }
 
     #[test]
@@ -374,7 +373,10 @@ mod tests {
         let settings: AppSettings = serde_json::from_value(json!({})).unwrap();
 
         assert!(settings.show_idle_pill);
-        assert!(frontend_settings_from(&settings).show_idle_pill);
+        assert_eq!(
+            serde_json::to_value(frontend_settings_from(&settings)).unwrap()["showIdlePill"],
+            json!(true)
+        );
     }
 
     #[test]
@@ -382,6 +384,9 @@ mod tests {
         let settings: AppSettings = serde_json::from_value(json!({})).unwrap();
 
         assert!(settings.hold_to_talk);
-        assert!(frontend_settings_from(&settings).hold_to_talk);
+        assert_eq!(
+            serde_json::to_value(frontend_settings_from(&settings)).unwrap()["holdToTalk"],
+            json!(true)
+        );
     }
 }
