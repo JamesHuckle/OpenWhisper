@@ -45,6 +45,24 @@ android {
         buildConfig = true
     }
 
+    // The persistent release key from scripts/setup-android-signing.ps1 (or the
+    // release workflow's secrets). Gradle aligns and signs the release APK with
+    // it; without OPENWHISPER_ANDROID_KEYSTORE the release APK stays unsigned
+    // and debug builds and tests work as before.
+    signingConfigs {
+        create("release") {
+            val releaseKeystore = System.getenv("OPENWHISPER_ANDROID_KEYSTORE")
+            if (!releaseKeystore.isNullOrBlank()) {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("OPENWHISPER_ANDROID_STORE_PASSWORD")
+                keyAlias = System.getenv("OPENWHISPER_ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("OPENWHISPER_ANDROID_KEY_PASSWORD")
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
@@ -52,6 +70,7 @@ android {
         }
         release {
             buildConfigField("boolean", "DEMO_TRANSCRIBER", "false")
+            signingConfig = signingConfigs.getByName("release").takeIf { it.storeFile != null }
         }
     }
 

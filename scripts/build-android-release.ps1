@@ -7,8 +7,6 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $envPath = Join-Path $repoRoot ".env"
 $androidProject = Join-Path $repoRoot "apps\android"
-$androidSdk = Join-Path $repoRoot ".tools\android-sdk"
-$jdkRoot = Join-Path $repoRoot ".tools\jdk-17"
 
 . "$PSScriptRoot/load-env.ps1" -Path $envPath
 
@@ -59,55 +57,22 @@ if (-not $SkipBuild) {
   }
 }
 
-$unsignedApk = Join-Path $androidProject "app\build\outputs\apk\release\app-release-unsigned.apk"
-if (-not (Test-Path -LiteralPath $unsignedApk)) {
-  throw "Unsigned release APK not found: $unsignedApk"
+# Gradle aligns and signs the release APK with the keystore above
+# (signingConfigs in apps/android/app/build.gradle.kts). -SkipBuild reuses the
+# signed APK from an earlier build.
+$signedApk = Join-Path $androidProject "app\build\outputs\apk\release\app-release.apk"
+if (-not (Test-Path -LiteralPath $signedApk)) {
+  throw "Signed release APK not found: $signedApk"
 }
 
-$buildTools = Get-ChildItem -LiteralPath (Join-Path $androidSdk "build-tools") -Directory |
-  Sort-Object { [version]$_.Name } -Descending |
-  Select-Object -First 1
-if (-not $buildTools) {
-  throw "Android build tools are missing. Run .\scripts\bootstrap-android.ps1 first."
-}
-
-$zipalign = Join-Path $buildTools.FullName "zipalign.exe"
-$apkSigner = Join-Path $buildTools.FullName "apksigner.bat"
 $outputDirectory = Join-Path $androidProject "app\build\outputs\apk\public"
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 
-$alignedApk = Join-Path $outputDirectory "OpenWhisper-Android-aligned.apk"
 $versionedApk = Join-Path $outputDirectory "OpenWhisper-Android-v$version.apk"
 $stableApk = Join-Path $outputDirectory "OpenWhisper-Android.apk"
 $checksumPath = Join-Path $outputDirectory "OpenWhisper-Android-v$version.apk.sha256"
 
-foreach ($path in @($alignedApk, $versionedApk, $stableApk, $checksumPath)) {
-  if (Test-Path -LiteralPath $path) {
-    Remove-Item -LiteralPath $path -Force
-  }
-}
-
-$env:JAVA_HOME = $jdkRoot
-$env:Path = "$(Join-Path $jdkRoot 'bin');$env:Path"
-
-Write-Host "==> Aligning Android release APK"
-& $zipalign -P 16 -f 4 $unsignedApk $alignedApk
-if ($LASTEXITCODE -ne 0) {
-  throw "zipalign failed."
-}
-
-Write-Host "==> Signing Android release APK"
-& $apkSigner sign `
-  --ks $env:OPENWHISPER_ANDROID_KEYSTORE `
-  --ks-key-alias $env:OPENWHISPER_ANDROID_KEY_ALIAS `
-  --ks-pass env:OPENWHISPER_ANDROID_STORE_PASSWORD `
-  --key-pass env:OPENWHISPER_ANDROID_KEY_PASSWORD `
-  --out $versionedApk `
-  $alignedApk
-if ($LASTEXITCODE -ne 0) {
-  throw "apksigner failed."
-}
-
+Copy-Item -LiteralPath $signedApk -Destination $versionedApk -Force
 Copy-Item -LiteralPath $versionedApk -Destination $stableApk -Force
 $sha256 = (Get-FileHash -LiteralPath $versionedApk -Algorithm SHA256).Hash.ToLowerInvariant()
 [IO.File]::WriteAllText(
@@ -115,7 +80,6 @@ $sha256 = (Get-FileHash -LiteralPath $versionedApk -Algorithm SHA256).Hash.ToLow
   "$sha256  $(Split-Path -Leaf $versionedApk)`n",
   [Text.UTF8Encoding]::new($false)
 )
-Remove-Item -LiteralPath $alignedApk -Force
 
 & "$PSScriptRoot/test-android-release.ps1" -ApkPath $versionedApk -ExpectedVersion $version
 if ($LASTEXITCODE -ne 0) {

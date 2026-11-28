@@ -202,9 +202,13 @@ secrets listed in the README under "Releasing a new version".
 Releases are built by the GitHub Actions release workflow
 (`.github/workflows/release.yml`) on every push to `main` that changes app
 code. It builds, lints, signs and verifies the APK with
-`scripts/build-android-release.ps1`, uploads it to a draft release together
-with the Windows build, checks both update feeds, publishes the release and
-re-downloads the public APK to check its SHA-256 digest.
+`scripts/build-android-release.ps1`: Gradle aligns and signs the release APK
+with the keystore named by `OPENWHISPER_ANDROID_KEYSTORE` (the release
+`signingConfig` in `apps/android/app/build.gradle.kts`; without that variable
+the release APK stays unsigned and debug builds need no key). The workflow
+uploads it to a draft release together with the Windows build, checks both
+update feeds, publishes the release and re-downloads the public APK to check
+its SHA-256 digest.
 
 Every release publishes both a versioned APK and the stable
 `OpenWhisper-Android.apk` asset used by the latest-download URL. Windows and
