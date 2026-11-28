@@ -676,41 +676,25 @@ fn build_polish_system(custom_prompt: &str) -> String {
 
 /// The transcript in sentences: each ends at `.`, `!` or `?`, with any
 /// closing quotes or brackets after it, followed by white space.
-fn split_sentences(text: &str) -> Vec<String> {
+fn split_sentences(text: &str) -> Vec<&str> {
+    static SENTENCE_END: OnceLock<Regex> = OnceLock::new();
+    let sentence_end = SENTENCE_END.get_or_init(|| {
+        Regex::new(r#"[.!?]["'\x{201d}\x{2019})\]]*\s+"#).expect("the sentence-end pattern")
+    });
     let text = text.trim();
-    let mut sentences = Vec::new();
     let mut start = 0;
-    let mut chars = text.char_indices().peekable();
-    while let Some((_, c)) = chars.next() {
-        if !matches!(c, '.' | '!' | '?') {
-            continue;
-        }
-        while let Some(&(_, next)) = chars.peek() {
-            if matches!(next, '"' | '\'' | '\u{201d}' | '\u{2019}' | ')' | ']') {
-                chars.next();
-            } else {
-                break;
-            }
-        }
-        let end = chars.peek().map_or(text.len(), |&(at, _)| at);
-        let mut spaced = false;
-        while let Some(&(_, next)) = chars.peek() {
-            if next.is_whitespace() {
-                spaced = true;
-                chars.next();
-            } else {
-                break;
-            }
-        }
-        if spaced {
-            sentences.push(text[start..end].trim().to_string());
-            start = chars.peek().map_or(text.len(), |&(at, _)| at);
-        }
-    }
-    sentences.push(text[start..].trim().to_string());
+    let mut sentences: Vec<&str> = sentence_end
+        .find_iter(text)
+        .map(|sentence_end| {
+            let sentence = text[start..sentence_end.end()].trim();
+            start = sentence_end.end();
+            sentence
+        })
+        .collect();
+    sentences.push(text[start..].trim());
     sentences.retain(|sentence| !sentence.is_empty());
     if sentences.is_empty() {
-        vec![text.to_string()]
+        vec![text]
     } else {
         sentences
     }
@@ -724,7 +708,7 @@ fn chunk_for_polish(text: &str) -> Vec<String> {
         return vec![text.to_string()];
     }
     let mut chunks = Vec::new();
-    let mut current: Vec<String> = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
     let mut current_chars = 0;
     for sentence in sentences {
         let chars = sentence.chars().count();
@@ -1895,7 +1879,11 @@ mod tests {
         assert_eq!(split_sentences("No end"), ["No end"]);
         assert_eq!(
             split_sentences("She said \u{201c}go.\u{201d} It\u{2019}s \u{2018}fine.\u{2019} Done"),
-            ["She said \u{201c}go.\u{201d}", "It\u{2019}s \u{2018}fine.\u{2019}", "Done"]
+            [
+                "She said \u{201c}go.\u{201d}",
+                "It\u{2019}s \u{2018}fine.\u{2019}",
+                "Done"
+            ]
         );
         assert_eq!(
             split_sentences("(See above.) [Really?]\u{a0}Yes!\u{3000}\nNext"),
