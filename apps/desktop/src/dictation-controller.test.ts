@@ -644,19 +644,50 @@ describe("dictation controller", () => {
     expect(dictation.state).toBe("idle");
   });
 
-  it("ends a session whose final text is empty without saving or pasting anything", async () => {
-    const { app, dictation, pill } = setup();
-    await startRecording(dictation);
-    await dictation.toggleRecording();
+  // The app sends no blank final itself, but a lone U+FEFF survives its trim and not this one.
+  for (const [kind, model, text] of [
+    ["Standard", DEFAULT_TRANSCRIPTION_MODEL, "  "],
+    ["Live", LIVE_TRANSCRIPTION_MODEL, "\uFEFF"],
+  ]) {
+    it(`marks a ${kind} recording whose final text trims to empty failed, pastes nothing and lets Transcribe retry it`, async () => {
+      const { app, mic, dictation, failures, pill } = setup(model);
+      await startRecording(dictation);
+      mic.hear(BATCH);
+      await dictation.toggleRecording();
 
-    await dictation.receiveSessionEvent(sessionEvent({ type: "final", text: "  " }, true));
+      await dictation.receiveSessionEvent(sessionEvent({ type: "final", text }, true));
 
-    expect(app.commands()).not.toContain("recording_finish");
-    expect(app.commands()).not.toContain("insert_final_text");
-    expect(app.commands()).not.toContain("copy_to_clipboard");
-    expect(pill.cleared).toBe(1);
-    expect(dictation.state).toBe("idle");
-  });
+      expect(app.commands()).not.toContain("insert_final_text");
+      expect(app.commands()).not.toContain("copy_to_clipboard");
+      expect(app.named("recording_finish").map((call) => call.args)).toEqual([
+        { recordingId: "rec-1", status: "failed", transcript: "", error: "No audio found" },
+      ]);
+      expect(failures).toEqual([{ message: "No audio found", recordingSaved: true }]);
+      expect(dictation.lastFailedRecordingId).toBe("rec-1");
+      expect(pill.cleared).toBe(1);
+      // The menu enables Transcribe for a recording once idle and no longer current.
+      expect(dictation.state).toBe("idle");
+      expect(dictation.currentRecordingId).toBeNull();
+
+      app.answers.worker_start_session = { session_id: "s-2" };
+      await dictation.retranscribeRecording("rec-1");
+      expect(app.named("recording_transcribe").at(-1)?.args).toEqual({ recordingId: "rec-1", sessionId: "s-2" });
+      await dictation.receiveSessionEvent({
+        session_id: "s-2",
+        event: { type: "final", text: "Found it" },
+        done: true,
+      });
+      expect(app.named("recording_finish").at(-1)?.args).toEqual({
+        recordingId: "rec-1",
+        status: "complete",
+        transcript: "Found it",
+        error: "",
+      });
+      expect(app.named("copy_to_clipboard").map((call) => call.args)).toEqual([{ text: "Found it" }]);
+      expect(app.commands()).not.toContain("insert_final_text");
+      expect(dictation.state).toBe("idle");
+    });
+  }
 
   it("marks a transcribing dictation failed once when its session reports an error", async () => {
     const { app, dictation, failures, pill } = setup();

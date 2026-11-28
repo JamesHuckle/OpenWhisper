@@ -835,20 +835,22 @@ export function createDictationController(deps: DictationDeps) {
     // A cancel (or a new recording) while this waits takes the session over;
     // then nothing more is written, recorded or cleaned up here.
     const owned = () => currentSessionId === sessionId;
-    if (transcript) {
-      // Saved before it is copied or pasted, so a delivery error never turns a
-      // paid transcription into a failed recording.
-      await deliverFinalTranscript({
-        invoke,
-        transcript,
-        paste: shouldPasteFinalTranscript,
-        owned,
-        saveRecording: (saved) => finishCurrentRecording("complete", saved, ""),
-        liveTypingDone: () => targetWriteQueue,
-        notify: deps.showToast,
-        log,
-      });
-    }
+    // The app ends an empty transcript as no audio, but text it keeps (a lone
+    // U+FEFF) can still trim to nothing here; it ends the same way, so the
+    // recording is marked failed and Transcribe can retry it.
+    if (!transcript) return failSession(sessionId, audioRules.no_audio_message);
+    // Saved before it is copied or pasted, so a delivery error never turns a
+    // paid transcription into a failed recording.
+    await deliverFinalTranscript({
+      invoke,
+      transcript,
+      paste: shouldPasteFinalTranscript,
+      owned,
+      saveRecording: (saved) => finishCurrentRecording("complete", saved, ""),
+      liveTypingDone: () => targetWriteQueue,
+      notify: deps.showToast,
+      log,
+    });
     if (owned()) endSession();
   }
 
