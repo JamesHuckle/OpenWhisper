@@ -252,9 +252,9 @@ export function gitIn(root) {
   return (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
 }
 
-const git = gitIn(repositoryRoot);
+const repositoryGit = gitIn(repositoryRoot);
 
-function gh(...args) {
+function githubCli(...args) {
   return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim();
 }
 
@@ -327,7 +327,7 @@ export function planRelease({ run, committed, head = "HEAD", onMain = true }) {
 function plan() {
   const ref = process.env.GITHUB_REF;
   const { release, version, message } = planRelease({
-    run: git,
+    run: repositoryGit,
     committed: committedVersion(repositoryRoot),
     onMain: !ref || ref === "refs/heads/main",
   });
@@ -447,7 +447,9 @@ function parseOptions(args) {
   return options;
 }
 
-async function publish(options) {
+// The release workflow's publish step. Tests pass their own `git` (to skip
+// the fetch), `gh` (to record GitHub commands) and `download` (for the public files).
+export async function publish(options, { git = repositoryGit, gh = githubCli, download = fetchWithRetry } = {}) {
   const { version, assets, target } = options;
   const repository = options.repository ?? process.env.GITHUB_REPOSITORY;
   if (!parseVersion(version) || !assets || !target || !repository) {
@@ -536,10 +538,10 @@ async function publish(options) {
     version,
     signature,
     apkSha256,
-    windows: JSON.parse(await fetchWithRetry(latest(names.windowsFeed))),
-    android: JSON.parse(await fetchWithRetry(latest(names.androidFeed))),
+    windows: JSON.parse(await download(latest(names.windowsFeed))),
+    android: JSON.parse(await download(latest(names.androidFeed))),
   });
-  const publicApk = await fetchWithRetry(downloadUrl(repository, tag, names.androidStableApk));
+  const publicApk = await download(downloadUrl(repository, tag, names.androidStableApk));
   if (createHash("sha256").update(publicApk).digest("hex") !== apkSha256) {
     publicProblems.push("The public APK does not match the built APK.");
   }

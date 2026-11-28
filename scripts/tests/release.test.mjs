@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
@@ -19,6 +19,7 @@ import {
   needsRelease,
   nextVersion,
   planRelease,
+  publish,
   releaseAssetNames,
   repositoryRoot,
   setVersion,
@@ -379,26 +380,35 @@ describe("update feeds", () => {
     assert.match(problems[1], /^OpenWhisper-Android-update\.json is wrong\.[\s\S]*actual .*"sha256":"(00){32}"/);
   });
 
+  // Each change must be reported as its own feed being wrong, with both versions of that feed.
+  const feedNames = { windows: "latest.json", android: "OpenWhisper-Android-update.json" };
+  const wrongFeed = (which, expected, actual) =>
+    `${feedNames[which]} is wrong.\n  expected ${JSON.stringify(expected)}\n  actual   ${JSON.stringify(actual)}`;
+  const checkEachChange = (feeds, changes) => {
+    const check = (feed) => checkFeeds({ repository, version, signature, apkSha256, ...feed });
+    assert.deepEqual(check(feeds()), []);
+    for (const [which, change] of changes) {
+      const feed = feeds();
+      change(feed);
+      assert.deepEqual(check(feed), [wrongFeed(which, feeds()[which], feed[which])], change.toString());
+    }
+  };
+
   it("refuses a feed with any of its version, link, signature or checksum changed", () => {
     const pubDate = "2026-11-15T10:00:00Z";
     const feeds = () => ({
       windows: windowsFeed({ repository, version, signature, pubDate }),
       android: androidFeed({ repository, version, sha256: apkSha256 }),
     });
-    const changes = [
-      (feed) => { feed.windows.version = "0.2.27"; },
-      (feed) => { feed.windows.platforms["windows-x86_64"].url += "?old"; },
-      (feed) => { feed.windows.platforms["windows-x86_64"].signature = "b3RoZXI="; },
-      (feed) => { feed.android.versionName = "0.2.27"; },
-      (feed) => { feed.android.versionCode = 2027; },
-      (feed) => { feed.android.apkUrl += "?old"; },
-      (feed) => { feed.android.sha256 = "00".repeat(32); },
-    ];
-    for (const change of changes) {
-      const feed = feeds();
-      change(feed);
-      assert.notDeepEqual(checkFeeds({ repository, version, signature, apkSha256, ...feed }), [], change.toString());
-    }
+    checkEachChange(feeds, [
+      ["windows", (feed) => { feed.windows.version = "0.2.27"; }],
+      ["windows", (feed) => { feed.windows.platforms["windows-x86_64"].url += "?old"; }],
+      ["windows", (feed) => { feed.windows.platforms["windows-x86_64"].signature = "b3RoZXI="; }],
+      ["android", (feed) => { feed.android.versionName = "0.2.27"; }],
+      ["android", (feed) => { feed.android.versionCode = 2027; }],
+      ["android", (feed) => { feed.android.apkUrl += "?old"; }],
+      ["android", (feed) => { feed.android.sha256 = "00".repeat(32); }],
+    ]);
   });
 
   it("refuses changed release notes, added fields or platforms and a bad publish date", () => {
@@ -408,21 +418,141 @@ describe("update feeds", () => {
     });
     const check = (feed) => checkFeeds({ repository, version, signature, apkSha256, ...feed });
     assert.deepEqual(check(feeds("2027-01-31T23:59:59Z")), []);
-    const changes = [
-      (feed) => { feed.windows.notes = "Other notes"; },
-      (feed) => { feed.windows.platforms["darwin-aarch64"] = feed.windows.platforms["windows-x86_64"]; },
-      (feed) => { feed.android.releaseNotes = "Other notes"; },
-      (feed) => { feed.android.minSdk = 28; },
-      (feed) => { delete feed.windows.pub_date; },
-    ];
-    for (const change of changes) {
-      const feed = feeds();
-      change(feed);
-      assert.equal(check(feed).length >= 1, true, change.toString());
-    }
+    checkEachChange(feeds, [
+      ["windows", (feed) => { feed.windows.notes = "Other notes"; }],
+      ["windows", (feed) => { feed.windows.platforms["darwin-aarch64"] = feed.windows.platforms["windows-x86_64"]; }],
+      ["android", (feed) => { feed.android.releaseNotes = "Other notes"; }],
+      ["android", (feed) => { feed.android.minSdk = 28; }],
+    ]);
+    const undated = feeds();
+    delete undated.windows.pub_date;
+    assert.deepEqual(check(undated), [
+      "latest.json has the publish date undefined.",
+      wrongFeed("windows", windowsFeed({ repository, version, signature, pubDate: undefined }), undated.windows),
+    ]);
     for (const pubDate of ["not-a-date", "2026-02-30T10:00:00Z", "2026-11-15", "2026-11-15T10:00:00.123Z", 20261115]) {
       assert.deepEqual(check(feeds(pubDate)), [`latest.json has the publish date ${JSON.stringify(pubDate)}.`], String(pubDate));
     }
+  });
+});
+
+// publish() as the release workflow runs it, on a throwaway history (see
+// releaseHistory) with GitHub faked in memory. Every gh command and git fetch
+// is recorded; `changeDraft` can spoil the draft's files after the upload.
+async function runPublish(t, { history, releases, changeDraft = () => {} }) {
+  t.mock.method(console, "log", () => {});
+  const repository = "owner/OpenWhisper";
+  const version = "0.2.28";
+  const names = releaseAssetNames(version);
+  const assets = mkdtempSync(join(tmpdir(), "openwhisper-publish-"));
+  t.after(() => rmSync(assets, { recursive: true, force: true }));
+  writeFileSync(join(assets, names.windowsInstaller), "installer bytes");
+  writeFileSync(join(assets, names.windowsSignature), "c2lnbmF0dXJl\n");
+  writeFileSync(join(assets, names.androidApk), "apk bytes");
+  const apkSha256 = createHash("sha256").update("apk bytes").digest("hex");
+  writeFileSync(join(assets, names.androidChecksum), `${apkSha256}  ${names.androidApk}\n`);
+
+  const commands = [];
+  const list = typeof releases === "function" ? releases(assets) : releases;
+  const draftFiles = new Map();
+  const gh = (...args) => {
+    commands.push(args);
+    const [group, action] = args;
+    if (group === "api" && args.includes("--slurp")) return JSON.stringify([list]);
+    if (action === "create") list.push({ tag_name: args[2], draft: true, id: 1, assets: [] });
+    if (action === "upload") {
+      for (const file of args.slice(args.indexOf("--clobber") + 1)) draftFiles.set(basename(file), readFileSync(file));
+      changeDraft(draftFiles, names);
+    }
+    if (action === "view") {
+      const files = [...draftFiles].map(([name, bytes]) => ({ name, state: "uploaded", size: bytes.length }));
+      return JSON.stringify({ isDraft: true, assets: files });
+    }
+    if (action === "download") {
+      const directory = args[args.indexOf("--dir") + 1];
+      mkdirSync(directory, { recursive: true });
+      for (const [index, arg] of args.entries()) {
+        if (arg === "--pattern") writeFileSync(join(directory, args[index + 1]), draftFiles.get(args[index + 1]));
+      }
+    }
+    return "";
+  };
+  const git = (...args) => {
+    if (args[0] !== "fetch") return history.run(...args);
+    commands.push(["git", ...args]);
+    return "";
+  };
+  // The public links serve the files publish staged.
+  const download = async (url) => readFileSync(join(assets, basename(url)));
+  const run = publish({ version, assets, target: history.next, repository }, { git, gh, download });
+  return { run, commands, names, kinds: () => commands.map((command) => command.slice(0, 2).join(" ")) };
+}
+
+describe("release publish", () => {
+  const published = (tag, extra = {}) => ({ tag_name: tag, draft: false, assets: [], ...extra });
+  const newRelease = ["git fetch", "api repos/owner/OpenWhisper/releases", "release create", "release upload", "release view"];
+
+  it("publishes a complete, correct draft as latest", async (t) => {
+    const history = releaseHistory();
+    t.after(history.cleanup);
+    const { run, commands, kinds } = await runPublish(t, { history, releases: [published("v0.2.27")] });
+    await run;
+    assert.deepEqual(kinds(), [...newRelease, "release download", "git fetch", "api repos/owner/OpenWhisper/releases", "release edit"]);
+    assert.deepEqual(commands.at(-1), ["release", "edit", "v0.2.28", "--repo", "owner/OpenWhisper", "--draft=false", "--latest"]);
+    const create = commands.find((command) => command[1] === "create");
+    assert.equal(create[create.indexOf("--target") + 1], history.next);
+  });
+
+  it("never publishes a draft that is missing a file", async (t) => {
+    const history = releaseHistory();
+    t.after(history.cleanup);
+    const { run, kinds } = await runPublish(t, {
+      history,
+      releases: [published("v0.2.27")],
+      changeDraft: (files, names) => files.delete(names.windowsStableInstaller),
+    });
+    await assert.rejects(run, /^Error: The draft is incomplete:\nv0\.2\.28 is missing OpenWhisper_x64-setup\.exe\.$/);
+    assert.deepEqual(kinds(), newRelease);
+  });
+
+  it("never publishes a draft whose downloaded update feed is wrong", async (t) => {
+    const history = releaseHistory();
+    t.after(history.cleanup);
+    const { run, kinds } = await runPublish(t, {
+      history,
+      releases: [published("v0.2.27")],
+      // Same size, so only the feed check can catch it.
+      changeDraft: (files, names) => {
+        const feed = JSON.parse(files.get(names.androidFeed));
+        feed.sha256 = "00".repeat(32);
+        files.set(names.androidFeed, Buffer.from(JSON.stringify(feed)));
+      },
+    });
+    await assert.rejects(
+      run,
+      /^Error: The draft's update feeds are wrong:\nOpenWhisper-Android-update\.json is wrong\.\n.*\n {2}actual .*"sha256":"(00){32}"/,
+    );
+    assert.deepEqual(kinds(), [...newRelease, "release download"]);
+  });
+
+  it("only checks a release a stopped run already published from the same commit", async (t) => {
+    const history = releaseHistory();
+    t.after(history.cleanup);
+    history.run("tag", "v0.2.28", history.next);
+    // GitHub already holds every file publish stages, at the staged sizes.
+    const releases = (missing) => (assets) => {
+      stageRelease({ directory: assets, repository: "owner/OpenWhisper", version: "0.2.28", pubDate: "2026-11-15T10:00:00Z" });
+      const files = readdirSync(assets).filter((name) => name !== missing)
+        .map((name) => ({ name, state: "uploaded", size: readFileSync(join(assets, name)).length }));
+      return [published("v0.2.27"), published("v0.2.28", { assets: files })];
+    };
+    const complete = await runPublish(t, { history, releases: releases() });
+    await complete.run;
+    assert.deepEqual(complete.kinds(), ["git fetch", "api repos/owner/OpenWhisper/releases"]);
+    // A published release that lost a file fails without touching GitHub.
+    const incomplete = await runPublish(t, { history, releases: releases("latest.json") });
+    await assert.rejects(incomplete.run, /^Error: The published release is incomplete:\nv0\.2\.28 is missing latest\.json\.$/);
+    assert.deepEqual(incomplete.kinds(), ["git fetch", "api repos/owner/OpenWhisper/releases"]);
   });
 });
 
