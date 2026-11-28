@@ -25,6 +25,8 @@ if ($missingVariables) {
 if (-not (Test-Path -LiteralPath $env:OPENWHISPER_ANDROID_KEYSTORE)) {
   throw "Android release keystore not found: $env:OPENWHISPER_ANDROID_KEYSTORE"
 }
+# Gradle would resolve a relative path from apps\android\app, not from here.
+$env:OPENWHISPER_ANDROID_KEYSTORE = (Resolve-Path -LiteralPath $env:OPENWHISPER_ANDROID_KEYSTORE).Path
 
 $gradleFile = Join-Path $androidProject "app\build.gradle.kts"
 $gradleText = Get-Content -LiteralPath $gradleFile -Raw
@@ -59,7 +61,7 @@ if (-not $SkipBuild) {
 
 # Gradle aligns and signs the release APK with the keystore above
 # (signingConfigs in apps/android/app/build.gradle.kts). -SkipBuild reuses the
-# signed APK from an earlier build.
+# signed APK from an earlier build made with these variables set.
 $signedApk = Join-Path $androidProject "app\build\outputs\apk\release\app-release.apk"
 if (-not (Test-Path -LiteralPath $signedApk)) {
   throw "Signed release APK not found: $signedApk"
