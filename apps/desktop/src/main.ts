@@ -1178,7 +1178,7 @@ async function checkForUpdates() {
 // ---------------------------------------------------------------------------
 if (import.meta.env.DEV) {
   Object.defineProperty(window, "__openWhisperTest", {
-    value: { openMenu, collapseOverlay },
+    value: { openMenu, collapseOverlay, checkForUpdates },
     configurable: true,
   });
 }

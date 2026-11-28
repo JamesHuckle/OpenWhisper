@@ -2,6 +2,8 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_TRANSCRIPTION_MODEL, LIVE_TRANSCRIPTION_MODEL } from "./models";
 import { PCM_FLUSHED } from "./pcm-capture";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 
 // Renders the real menu page (main.ts) headless with the Tauri bridge faked:
 // the recent recording cards it draws, the pill's settings arrow while a
@@ -88,8 +90,15 @@ async function answerLikeTheApp(command: string, args?: Record<string, unknown>)
 
 const settled = () => new Promise((resolve) => setTimeout(resolve, 20));
 const page = () =>
-  (window as unknown as { __openWhisperTest: { openMenu: () => Promise<void>; collapseOverlay: () => Promise<void> } })
-    .__openWhisperTest;
+  (
+    window as unknown as {
+      __openWhisperTest: {
+        openMenu: () => Promise<void>;
+        collapseOverlay: () => Promise<void>;
+        checkForUpdates: () => Promise<void>;
+      };
+    }
+  ).__openWhisperTest;
 const cards = () => document.getElementById("recent-recordings")!;
 const widget = () => document.getElementById("widget")!;
 const menuShown = () => !document.getElementById("mic-menu")!.classList.contains("hidden");
@@ -492,5 +501,62 @@ describe("pill and menu behaviour once guarded by source text checks", () => {
       widget().title,
       menuShown(),
     ]).toEqual(["idle", "Network down", "Network down", false]);
+  });
+});
+
+describe("Windows update", () => {
+  // What the update did, in order, with the pill's state when it installed.
+  let steps: string[] = [];
+  let installFails = false;
+  const update = {
+    version: "9.9.9",
+    download: vi.fn(async () => void steps.push("download")),
+    install: vi.fn(async () => {
+      steps.push(`install while ${widget().dataset.state}`);
+      if (installFails) throw new Error("installer failed");
+    }),
+    downloadAndInstall: vi.fn(async () => {
+      await update.download();
+      await update.install();
+    }),
+  };
+  const toastText = () => document.getElementById("toast")!.textContent;
+
+  beforeEach(async () => {
+    holdTranscription = false;
+    dictating = true;
+    await returnToIdle();
+    steps = [];
+    installFails = false;
+    vi.mocked(check).mockResolvedValue(update as never);
+    vi.mocked(relaunch).mockImplementation(async () => void steps.push("relaunch"));
+  });
+
+  it("installs an accepted update at once and relaunches when no dictation runs", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    await page().checkForUpdates();
+
+    expect(steps).toEqual(["download", "install while idle", "relaunch"]);
+  });
+
+  it("downloads, installs and relaunches nothing when the user declines", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    await page().checkForUpdates();
+
+    expect(steps).toEqual([]);
+  });
+
+  it("keeps the current app and says so when an accepted update fails", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    installFails = true;
+
+    await page().checkForUpdates();
+
+    expect([steps, toastText()]).toEqual([
+      ["download", "install while idle"],
+      "Update failed. Your current app and settings are unchanged.",
+    ]);
   });
 });
