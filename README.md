@@ -29,7 +29,8 @@ Android version file.
 Vercel deploys `apps/web` from `main`. Users receive updates as follows:
 
 - Windows checks the signed feed at startup, announces the new version, and
-  installs it after the user confirms.
+  installs it after the user confirms, once any dictation running then has
+  delivered its text; no new dictation starts while it installs.
 - Android 0.2.0 and newer checks when opened and daily while its accessibility
   service is enabled, posts an update notification, verifies the APK, and opens
   Android's required installation confirmation.

@@ -508,11 +508,14 @@ describe("Windows update", () => {
   // What the update did, in order, with the pill's state when it installed.
   let steps: string[] = [];
   let installFails = false;
+  // Settles when the fake installer finishes; a test may hold it.
+  let installing: Promise<void> = Promise.resolve();
   const update = {
     version: "9.9.9",
     download: vi.fn(async () => void steps.push("download")),
     install: vi.fn(async () => {
       steps.push(`install while ${widget().dataset.state}`);
+      await installing;
       if (installFails) throw new Error("installer failed");
     }),
     downloadAndInstall: vi.fn(async () => {
@@ -528,6 +531,7 @@ describe("Windows update", () => {
     await returnToIdle();
     steps = [];
     installFails = false;
+    installing = Promise.resolve();
     vi.mocked(check).mockResolvedValue(update as never);
     vi.mocked(relaunch).mockImplementation(async () => void steps.push("relaunch"));
   });
@@ -558,5 +562,52 @@ describe("Windows update", () => {
       ["download", "install while idle"],
       "Update failed. Your current app and settings are unchanged.",
     ]);
+    // Dictations start again once the install has failed.
+    await startDictation("recording");
+  });
+
+  it("installs only once a running dictation has pasted its text, then starts no new one", async () => {
+    // F1 (2026-11-28): the installer closes the app, so installing during a
+    // dictation lost the recording's end and its transcript.
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await startDictation("recording");
+
+    const checking = page().checkForUpdates();
+    await settled();
+    expect([steps, toastText()]).toEqual([["download"], "The update will install when this dictation finishes."]);
+
+    widget().click();
+    await settled();
+    holdPaste = true;
+    listeners.get("worker-session-event")!({
+      payload: { session_id: "session-live", event: { type: "final", text: "Hello" }, done: true },
+    });
+    await settled();
+    expect([steps, widget().dataset.state]).toEqual([["download"], "transcribing"]);
+
+    let finishInstall!: () => void;
+    installing = new Promise((resolve) => (finishInstall = resolve));
+    finishPaste!();
+    holdPaste = false;
+    await settled();
+    expect(steps).toEqual(["download", "install while idle"]);
+
+    // The pill, its microphone button and both shortcuts all start nothing now.
+    invoke.mockClear();
+    widget().click();
+    document.getElementById("btn-mic")!.click();
+    listeners.get("toggle-recording")!({ payload: undefined });
+    listeners.get("press-to-talk-start")!({ payload: undefined });
+    listeners.get("press-to-talk-stop")!({ payload: undefined });
+    await settled();
+    expect([widget().dataset.state, toastText(), commandCalls("recording_begin")]).toEqual([
+      "idle",
+      "Installing the OpenWhisper update…",
+      [],
+    ]);
+
+    finishInstall();
+    await checking;
+    expect(steps).toEqual(["download", "install while idle", "relaunch"]);
   });
 });

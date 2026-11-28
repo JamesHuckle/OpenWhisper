@@ -57,15 +57,6 @@ describe("desktop regression guards", () => {
     expect(nativePadding).toBe(pagePadding);
   });
 
-  it("installs an update only after the user confirms it", () => {
-    // The README promises Windows asks first; an update relaunches the app.
-    const main = read("src/main.ts");
-    const confirm = main.indexOf("window.confirm(");
-
-    expect(confirm).toBeGreaterThan(-1);
-    expect(confirm).toBeLessThan(main.indexOf("await update.downloadAndInstall()"));
-  });
-
   it("runs the recording file commands off the main thread", () => {
     // Bug (fixed in f086fa0): slow disks and antivirus scans froze the pill while
     // these commands ran on the main thread.

@@ -1162,8 +1162,16 @@ async function checkForUpdates() {
       );
       if (!updateAccepted) return;
       showToast("Downloading OpenWhisper update…", 30_000);
-      await update.downloadAndInstall();
-      await relaunch();
+      await update.download();
+      // Installing closes the app, so it waits for a running dictation to
+      // deliver its text, and no new one starts while it installs.
+      if (dictation.state !== "idle") {
+        showToast("The update will install when this dictation finishes.", 6000);
+      }
+      await dictation.runOnceIdle(async () => {
+        await update.install();
+        await relaunch();
+      });
     }
   } catch {
     if (updateAccepted) {

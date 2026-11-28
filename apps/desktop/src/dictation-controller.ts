@@ -132,6 +132,11 @@ export function createDictationController(deps: DictationDeps) {
   // Set from when an import or retry is sure to run until the pill shows it
   // transcribing, so no other transcription or dictation starts meanwhile.
   let storedAudioStarting = false;
+  // Set while a task runOnceIdle started runs (the update installing), so no
+  // dictation, import or retry starts that it would interrupt.
+  let startsRefused = false;
+  // runOnceIdle's tasks waiting for the current dictation to finish.
+  let tasksWaitingForIdle: (() => void)[] = [];
   const audioQueue = new SessionAudioQueue((sessionId, buffer) =>
     sendAudioChunk(invoke, "worker_append_audio_chunk", sessionId, buffer),
   );
@@ -140,6 +145,39 @@ export function createDictationController(deps: DictationDeps) {
     log(`setState ${state} -> ${next}`);
     state = next;
     deps.setState(next);
+    if (isIdle()) for (const startTask of tasksWaitingForIdle.splice(0)) startTask();
+  }
+
+  function isIdle() {
+    return state === "idle" && !storedAudioStarting;
+  }
+
+  // True, after telling the user why, while runOnceIdle's task runs.
+  function refuseWhileStartsRefused(): boolean {
+    if (startsRefused) deps.showToast("Installing the OpenWhisper update…");
+    return startsRefused;
+  }
+
+  /**
+   * Runs `task` once nothing is recording or transcribing: at once when idle,
+   * otherwise as the current dictation, import or retry finishes. No new one
+   * starts from then until `task` ends.
+   */
+  async function runOnceIdle<T>(task: () => Promise<T>): Promise<T> {
+    await new Promise<void>((resolve) => {
+      // Refused in the same step that sees idle, so nothing starts in between.
+      const refuseStartsThenRun = () => {
+        startsRefused = true;
+        resolve();
+      };
+      if (isIdle()) refuseStartsThenRun();
+      else tasksWaitingForIdle.push(refuseStartsThenRun);
+    });
+    try {
+      return await task();
+    } finally {
+      startsRefused = false;
+    }
   }
 
   // Read through a call, so a check after an await sees changes made meanwhile.
@@ -296,7 +334,7 @@ export function createDictationController(deps: DictationDeps) {
   async function startRecording() {
     const startupStartedAt = performance.now();
     log(`startRecording enter state=${state} held=${pressToTalkHeld} starting=${holdStart !== null}`);
-    if (state !== "idle" || storedAudioStarting) return;
+    if (state !== "idle" || storedAudioStarting || refuseWhileStartsRefused()) return;
     const op = ++operationId;
     // Settles this start's backupOpened; called on every way the start ends.
     let markBackupOpened = () => undefined as void;
@@ -308,8 +346,10 @@ export function createDictationController(deps: DictationDeps) {
 
     try {
       const settings = await deps.settings();
-      // Cancelled or replaced meanwhile: the cancel already tidied up.
-      if (op !== operationId) return;
+      // Cancelled or replaced meanwhile: the cancel already tidied up. A start
+      // whose key was known missing leaves the pill idle, so runOnceIdle's
+      // task may have begun meanwhile.
+      if (op !== operationId || startsRefused) return;
       if (!settings.hasOpenaiApiKey) {
         deps.showToast("Set your OpenAI API key first (click arrow)");
         setState("idle");
@@ -625,7 +665,8 @@ export function createDictationController(deps: DictationDeps) {
   // Imports and retries wait for the controller; true when it is busy, after
   // telling the user so.
   function refuseWhileBusy(): boolean {
-    if (state === "idle" && !storedAudioStarting) return false;
+    if (refuseWhileStartsRefused()) return true;
+    if (isIdle()) return false;
     deps.showToast("Finish the current recording first");
     return true;
   }
@@ -922,6 +963,7 @@ export function createDictationController(deps: DictationDeps) {
     get lastFailedRecordingId(): string | null {
       return lastFailedRecordingId;
     },
+    runOnceIdle,
     toggleRecording,
     stopRecording,
     cancelTranscription,
