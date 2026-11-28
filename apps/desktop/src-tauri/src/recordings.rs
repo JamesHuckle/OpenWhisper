@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub const RECORDING_RETENTION_COUNT: usize = 10;
@@ -229,6 +229,61 @@ fn close_recording_file(
     Ok(Some(metadata))
 }
 
+/// The details of a recording made now, with no transcript or error yet.
+fn new_metadata(
+    id: &str,
+    name: String,
+    source: String,
+    mime_type: &str,
+    file_name: &str,
+    status: &str,
+    bytes: u64,
+) -> RecordingMetadata {
+    RecordingMetadata {
+        id: id.to_string(),
+        created_at_ms: now_ms(),
+        name,
+        source,
+        mime_type: mime_type.to_string(),
+        file_name: file_name.to_string(),
+        status: status.to_string(),
+        bytes,
+        transcript: String::new(),
+        error: String::new(),
+    }
+}
+
+/// Starts a microphone recording: an empty WAV file, kept open in
+/// `recordings`, whose saved details say "recording". One runs at a time, so
+/// any the window left open (for example after a reload) are closed first and
+/// their files are complete. Finishing or importing a recording prunes old
+/// ones, not starting it.
+pub fn begin_recording(
+    recordings: &std::sync::Mutex<HashMap<String, ActiveRecording>>,
+    root: &std::path::Path,
+    source: String,
+    name: String,
+) -> Result<RecordingStartResponse, String> {
+    let left_open: Vec<String> = lock(recordings).keys().cloned().collect();
+    for recording_id in left_open {
+        close_active_recording(recordings, root, &recording_id)?;
+    }
+    let id = Uuid::new_v4().to_string();
+    let dir = root.join(&id);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let writer = PcmWavWriter::create(
+        &dir.join("audio.wav"),
+        recording_store::MICROPHONE_SAMPLE_RATE,
+        Instant::now(),
+    )
+    .map_err(|e| e.to_string())?;
+    let bytes = writer.file_bytes();
+    let metadata = new_metadata(&id, name, source, "audio/wav", "audio.wav", "recording", bytes);
+    write_recording_metadata(root, &metadata).map_err(|e| e.to_string())?;
+    lock(recordings).insert(id.clone(), ActiveRecording { writer, metadata });
+    Ok(RecordingStartResponse { id })
+}
+
 /// Copies an audio file from disk into a new saved recording.
 pub fn import_recording(
     root: &std::path::Path,
@@ -259,18 +314,7 @@ pub fn import_recording(
             return Err(format!("Could not copy the selected audio file: {error}"));
         }
     };
-    let metadata = RecordingMetadata {
-        id: id.clone(),
-        created_at_ms: now_ms(),
-        name,
-        source: "import".to_string(),
-        mime_type: mime_type.to_string(),
-        file_name,
-        status: "saved".to_string(),
-        bytes,
-        transcript: String::new(),
-        error: String::new(),
-    };
+    let metadata = new_metadata(&id, name, "import".into(), mime_type, &file_name, "saved", bytes);
     write_recording_metadata(root, &metadata).map_err(|e| e.to_string())?;
     prune_recordings(root, RECORDING_RETENTION_COUNT).map_err(|e| e.to_string())?;
     Ok(RecordingStartResponse { id })
@@ -279,7 +323,6 @@ pub fn import_recording(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     #[test]
     fn recording_store_keeps_ten_readable_wavs() {
@@ -385,43 +428,69 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// Starts a recording as the app does, saves its details and writes four
-    /// bytes of audio, leaving its file open.
+    /// Writes four bytes of audio to a recording still open.
+    fn append_four_bytes(
+        recordings: &std::sync::Mutex<HashMap<String, ActiveRecording>>,
+        id: &str,
+    ) {
+        let mut open = lock(recordings);
+        open.get_mut(id).unwrap().writer.append(&[1, 2, 3, 4], Instant::now()).unwrap();
+    }
+
+    /// Starts a recording as the app does and writes four bytes of audio,
+    /// leaving its file open. Returns the open recordings and its id.
     fn start_open_recording(
         root: &std::path::Path,
-        id: &str,
-    ) -> std::sync::Mutex<HashMap<String, ActiveRecording>> {
-        fs::create_dir_all(root.join(id)).unwrap();
-        let started = Instant::now();
-        let mut writer =
-            PcmWavWriter::create(&root.join(id).join("audio.wav"), 24_000, started).unwrap();
-        let metadata = RecordingMetadata {
-            id: id.to_string(),
-            created_at_ms: 1,
-            name: "Active".to_string(),
-            source: "microphone".to_string(),
-            mime_type: "audio/wav".to_string(),
-            file_name: "audio.wav".to_string(),
-            status: "recording".to_string(),
-            bytes: writer.file_bytes(),
-            transcript: String::new(),
-            error: String::new(),
-        };
-        write_recording_metadata(root, &metadata).unwrap();
-        writer.append(&[1, 2, 3, 4], started).unwrap();
+    ) -> (std::sync::Mutex<HashMap<String, ActiveRecording>>, String) {
         let recordings = std::sync::Mutex::new(HashMap::new());
-        recordings
-            .lock()
+        let id = begin_recording(&recordings, root, "microphone".into(), "Active".into())
             .unwrap()
-            .insert(id.to_string(), ActiveRecording { writer, metadata });
-        recordings
+            .id;
+        append_four_bytes(&recordings, &id);
+        (recordings, id)
+    }
+
+    #[test]
+    fn beginning_a_recording_saves_an_empty_wav_and_closes_the_one_left_open() {
+        let root = std::env::temp_dir().join(format!("openwhisper-begin-test-{}", Uuid::new_v4()));
+        let recordings = std::sync::Mutex::new(HashMap::new());
+
+        let first = begin_recording(&recordings, &root, "microphone".into(), "First".into())
+            .unwrap()
+            .id;
+
+        let wav = fs::read(root.join(&first).join("audio.wav")).unwrap();
+        assert_eq!(wav, recording_store::wav_header(0, 1, 2, 24_000));
+        let details = read_recording_metadata(&root, &first).unwrap();
+        assert_eq!(details.id, first);
+        assert!(details.created_at_ms > 0);
+        assert_eq!((details.name.as_str(), details.source.as_str()), ("First", "microphone"));
+        assert_eq!(details.mime_type, "audio/wav");
+        assert_eq!(details.file_name, "audio.wav");
+        assert_eq!((details.status.as_str(), details.bytes), ("recording", 44));
+        assert_eq!((details.transcript.as_str(), details.error.as_str()), ("", ""));
+        append_four_bytes(&recordings, &first);
+
+        // The window reloaded and started another without finishing the first.
+        let second = begin_recording(&recordings, &root, "microphone".into(), "Second".into())
+            .unwrap()
+            .id;
+
+        let wav = fs::read(root.join(&first).join("audio.wav")).unwrap();
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
+        let closed = read_recording_metadata(&root, &first).unwrap();
+        assert_eq!((closed.status.as_str(), closed.bytes), ("recording", 48));
+        let open: Vec<String> = lock(&recordings).keys().cloned().collect();
+        assert_eq!(open, [second.clone()]);
+        assert_eq!(read_recording_metadata(&root, &second).unwrap().bytes, 44);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn closing_an_open_recording_writes_its_final_length() {
         let root = std::env::temp_dir().join(format!("openwhisper-wav-test-{}", Uuid::new_v4()));
-        let id = "active";
-        let recordings = start_open_recording(&root, id);
+        let (recordings, id) = start_open_recording(&root);
+        let id = id.as_str();
 
         close_active_recording(&recordings, &root, id).unwrap();
 
@@ -439,27 +508,28 @@ mod tests {
     #[test]
     fn finishing_saves_the_final_length_and_outcome_of_an_open_or_closed_recording() {
         let root = std::env::temp_dir().join(format!("openwhisper-finish-test-{}", Uuid::new_v4()));
-        let open = start_open_recording(&root, "open");
-        let closed = start_open_recording(&root, "closed");
+        let (open, open_id) = start_open_recording(&root);
+        let (closed, closed_id) = start_open_recording(&root);
         // Transcribing a saved recording closes it before it finishes.
-        close_active_recording(&closed, &root, "closed").unwrap();
+        close_active_recording(&closed, &root, &closed_id).unwrap();
 
-        for (id, recordings) in [("open", &open), ("closed", &closed)] {
+        for (label, id, recordings) in [("open", &open_id, &open), ("closed", &closed_id, &closed)]
+        {
             finish_recording(recordings, &root, id, "complete".into(), "Hello.".into(), "".into())
                 .unwrap();
 
             let wav = fs::read(root.join(id).join("audio.wav")).unwrap();
-            assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4, "{id}");
+            assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4, "{label}");
             let finished = read_recording_metadata(&root, id).unwrap();
-            assert_eq!(finished.bytes, 48, "{id}");
-            assert_eq!(finished.status, "complete", "{id}");
-            assert_eq!(finished.transcript, "Hello.", "{id}");
-            assert!(recordings.lock().unwrap().is_empty(), "{id}");
+            assert_eq!(finished.bytes, 48, "{label}");
+            assert_eq!(finished.status, "complete", "{label}");
+            assert_eq!(finished.transcript, "Hello.", "{label}");
+            assert!(recordings.lock().unwrap().is_empty(), "{label}");
         }
         // The open recording's details were saved once: the backup is still
         // the details saved when it started.
         let backup: RecordingMetadata = serde_json::from_slice(
-            &fs::read(json_file::backup_path(&recording_metadata_path(&root, "open"))).unwrap(),
+            &fs::read(json_file::backup_path(&recording_metadata_path(&root, &open_id))).unwrap(),
         )
         .unwrap();
         assert_eq!((backup.status.as_str(), backup.bytes), ("recording", 44));

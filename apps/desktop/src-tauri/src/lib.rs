@@ -17,10 +17,9 @@ use overlay_geometry::{
     OverlayPlacement, OverlayRevealIntent, PlacementVisibility,
 };
 use paste_target::WriteOutcome;
-use recording_store::PcmWavWriter;
 use recordings::{
-    close_active_recording, finish_recording, import_recording, list_menu_recordings, now_ms,
-    read_recording_metadata, recording_parts_path, recover_interrupted, write_recording_metadata,
+    begin_recording, close_active_recording, finish_recording, import_recording,
+    list_menu_recordings, read_recording_metadata, recording_parts_path, recover_interrupted,
     ActiveRecording, RecordingMetadata, RecordingStartResponse,
 };
 use serde::{Deserialize, Serialize};
@@ -43,7 +42,6 @@ use tauri_plugin_log::{attach_logger, log::LevelFilter, RotationStrategy, Target
 use tauri_plugin_opener::OpenerExt;
 use transcriber::SavedAudio;
 use transcription_sessions::{opens_live_session, FinalizeAudio, Sessions, SESSION_EVENT};
-use uuid::Uuid;
 
 /// How often the pill checks which monitor the cursor is on while it is
 /// moving to another one.
@@ -201,38 +199,7 @@ fn recording_begin(
     source: String,
     name: String,
 ) -> Result<RecordingStartResponse, String> {
-    let root = recordings_root(&app_handle)?;
-    // One microphone recording runs at a time. Close any the UI left open
-    // (for example after a reload) so their files are complete.
-    let left_open: Vec<String> = lock(&state.recordings).keys().cloned().collect();
-    for recording_id in left_open {
-        close_active_recording(&state.recordings, &root, &recording_id)?;
-    }
-    let id = Uuid::new_v4().to_string();
-    let dir = root.join(&id);
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let writer = PcmWavWriter::create(
-        &dir.join("audio.wav"),
-        recording_store::MICROPHONE_SAMPLE_RATE,
-        Instant::now(),
-    )
-    .map_err(|e| e.to_string())?;
-    let metadata = RecordingMetadata {
-        id: id.clone(),
-        created_at_ms: now_ms(),
-        name,
-        source,
-        mime_type: "audio/wav".to_string(),
-        file_name: "audio.wav".to_string(),
-        status: "recording".to_string(),
-        bytes: writer.file_bytes(),
-        transcript: String::new(),
-        error: String::new(),
-    };
-    write_recording_metadata(&root, &metadata).map_err(|e| e.to_string())?;
-    lock(&state.recordings).insert(id.clone(), ActiveRecording { writer, metadata });
-    // Finishing or importing a recording prunes old ones, not starting it.
-    Ok(RecordingStartResponse { id })
+    begin_recording(&state.recordings, &recordings_root(&app_handle)?, source, name)
 }
 
 /// Reads an audio chunk the page sends as raw bytes, with the id of its
