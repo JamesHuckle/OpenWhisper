@@ -470,7 +470,15 @@ export function createDictationController(deps: DictationDeps) {
         log(`capture stop error=${errorMessage(error)}`);
         // Fails the recording below, once its session is ready, or in the
         // Standard fallback that started while this waited.
-        if (op === operationId) captureStopError = error;
+        if (op === operationId) {
+          captureStopError = error;
+          // The microphone is released now, not once the session is ready,
+          // and no audio goes to a session this recording never uses. The
+          // audio already received is still saved.
+          capture.discard();
+          streamAudioToWorker = false;
+          audioQueue.reset();
+        }
       }
     })();
     captureStopping = stopping;

@@ -926,6 +926,30 @@ describe("dictation controller", () => {
       ]);
     });
 
+    it("releases a Live recording's microphone at once and streams nothing when the stop fails before its session opens", async () => {
+      const run = setup(LIVE_TRANSCRIPTION_MODEL);
+      run.app.hold("worker_start_session");
+      void run.dictation.toggleRecording();
+      await settle();
+      run.mic.hear(BATCH, 7);
+
+      run.mic.holdStop();
+      const stopping = run.dictation.stopRecording();
+      await settle();
+      run.mic.failEveryStop(new Error("Microphone stop failed"));
+      run.mic.failStop(new Error("Microphone stop failed"));
+      await stopping;
+      expect(run.mic.capture.isActive()).toBe(false);
+      run.app.release("worker_start_session");
+      await settle();
+
+      expectMicrophoneStopFailure(run, Array(BATCH).fill(7));
+      expect(run.app.commands()).not.toContain("worker_append_audio_chunk");
+      expect(run.app.named("worker_stop_session").map((call) => call.args)).toEqual([
+        { sessionId: "s-1" },
+      ]);
+    });
+
     it("fails a recording released while the microphone opens, without opening a session", async () => {
       const run = setup();
       run.app.hold("recording_begin");
