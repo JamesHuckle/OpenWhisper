@@ -949,7 +949,8 @@ body {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.menu-key-input {
+.menu-key-input,
+.menu-prompt-input {
   display: block;
   width: calc(100% - 32px);
   margin: 6px 16px;
@@ -964,7 +965,15 @@ body {
   outline: none;
 }
 
-.menu-key-input:focus {
+.menu-prompt-input {
+  resize: vertical;
+  min-height: 56px;
+  max-height: 120px;
+  line-height: 1.45;
+}
+
+.menu-key-input:focus,
+.menu-prompt-input:focus {
   border-color: rgba(126, 240, 191, 0.4);
 }
 
@@ -1016,29 +1025,6 @@ body {
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
-}
-
-.menu-prompt-input {
-  display: block;
-  width: calc(100% - 32px);
-  margin: 6px 16px;
-  padding: 9px 11px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--text);
-  font-size: 12px;
-  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
-  letter-spacing: 0.02em;
-  outline: none;
-  resize: vertical;
-  min-height: 56px;
-  max-height: 120px;
-  line-height: 1.45;
-}
-
-.menu-prompt-input:focus {
-  border-color: rgba(126, 240, 191, 0.4);
 }
 
 .menu-prompt-hint {
