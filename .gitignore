@@ -31,3 +31,6 @@ artifacts/
 binaries/
 *.exe
 *.sig
+
+# Tauri build output (written by apps/desktop/src-tauri/build.rs)
+apps/desktop/src-tauri/gen/schemas/
